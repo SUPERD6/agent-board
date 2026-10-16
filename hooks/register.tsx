@@ -401,13 +401,16 @@ const handOverPrompt = (row: TaskRow): string =>
     .filter(line => line !== '')
     .join('')
 
-// A press on 完成: the step is ticked in the file, by the person's own hand.
-const tickStep = async ($: EngineInterface, ref: StepRef): Promise<void> => {
+// A press on 完成: the step is ticked in the file, by the person's own hand, and journaled
+// like a step Claude finished.
+const tickStep = async ($: EngineInterface, ref: StepRef): Promise<boolean> => {
   const path = await progressPath($)
   const before = await readText($, path)
   const after = setManualStep(before, ref, 'x')
   if (after !== before) await $.fs.write(path, after)
   await poll($)
+
+  return after !== before
 }
 
 // A side question: answered over this session's transcript, without a turn of its own.
@@ -776,7 +779,9 @@ export const register: Register = on => {
         $.prompt.submit({ text: handOverPrompt(row) }).catch(() => undefined)
       },
       tick: ref => {
-        enqueue(() => tickStep($, ref)).catch(() => undefined)
+        enqueue(() => tickStep($, ref))
+          .then(ticked => (ticked ? journal($, [{ project: ref.project, task: ref.title, step: ref.step }]) : undefined))
+          .catch(() => undefined)
       },
       ask: input => {
         if (!isQuickAdd(input)) {

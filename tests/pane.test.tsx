@@ -267,9 +267,10 @@ test('the pane acts: tick a step, hand a task to Claude, take over, ask aside', 
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop', props: PROPS })
 
-  // 完成 on a waiting step ticks it in the file.
+  // 完成 on a waiting step ticks it in the file, and the journal has it for the report.
   await ui.press({ key: '求職::Google 暑期實習::1::done' })
   expect(world.files.get(FILE)).toContain('- [x] 推薦信 — 等教授回覆')
+  expect(world.files.get('/home/me/.claude/progress-journal-2026-10.md')).toMatch(/ · 求職 · Google 暑期實習 · 推薦信 — 等教授回覆\n$/)
 
   // Opening a row shows its steps and actions; 交給 Claude sends a prompt.
   await ui.press({ key: '求職::Google 暑期實習' })

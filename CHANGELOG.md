@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.1 — 2026-10-16
+
+- **A step ticked in the pane is journaled too.** 完成 / 完成這步 on a hand-kept
+  step (job hunting, say) now adds its line to the journal, so 週報 lists it
+  beside the steps Claude finished. Test: `the pane acts: tick a step, hand a
+  task to Claude, take over, ask aside`.
+
 ## 0.5.0 — 2026-10-16
 
 - **Its own repository and marketplace.** Install with
