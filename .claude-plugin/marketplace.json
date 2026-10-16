@@ -1,0 +1,15 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "claude-progress-pane",
+  "description": "A side pane of every project's work, kept in step with Claude's Task list",
+  "owner": { "name": "Wenyu Chiou" },
+  "plugins": [
+    {
+      "name": "project-progress",
+      "description": "Side pane of every project's work, kept in step with Claude's Task list and carried across compaction",
+      "source": "./",
+      "category": "productivity",
+      "strict": true
+    }
+  ]
+}

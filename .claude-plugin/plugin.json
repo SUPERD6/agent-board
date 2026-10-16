@@ -1,0 +1,10 @@
+{
+  "name": "project-progress",
+  "version": "0.5.0",
+  "description": "Side pane of every project's work, kept in step with Claude's Task list and carried across compaction",
+  "author": { "name": "Wenyu Chiou" },
+  "homepage": "https://github.com/WenyuChiou/claude-progress-pane",
+  "repository": "https://github.com/WenyuChiou/claude-progress-pane",
+  "keywords": ["progress", "tasks", "pane", "compaction"],
+  "types": "./types/index.d.ts"
+}
