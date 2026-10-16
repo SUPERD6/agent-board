@@ -1,32 +1,50 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { ProgressAnswer, ProgressMirror, ProgressSnapshot } from '../types'
-import { extractAutoBlock, removeAutoBlock, setManualStep, shortId, takeArchivable, upsertAutoBlock } from './blocks'
+import type { RenderSurface } from 'claude-code'
+
+import type { ProgressAnswer, ProgressMirror, ProgressPr, ProgressSnapshot } from '../types'
+import {
+  addManualTask,
+  extractAutoBlock,
+  removeAutoBlock,
+  setManualStep,
+  shortId,
+  takeArchivable,
+  upsertAutoBlock,
+} from './blocks'
+import { ciFinished, GH_FIELDS, prFromGh } from './github'
+import { appendJournal, journalLine, journalPath, parseJournal, previousMonth, progressReport } from './journal'
+import type { JournalEntry } from './journal'
 import {
   applyTaskCreate,
   applyTaskUpdate,
   applyTodoWrite,
   cleanTitle,
+  completedSince,
   emptyMirror,
   fallbackTitle,
   fromTaskList,
   isStaleStoreKey,
+  noticesOf,
   resumeNote,
   stateOf,
 } from './mirror'
 import type { ListedTask } from './mirror'
 import { baseName, countSteps, isHereProject, isTaskComplete, parseProgress } from './parse'
 import { drawPane } from './pane'
-import { RULE, RULE_ID } from './rule'
 import type { PaneActions, PaneModel, PaneUi } from './pane'
-import { buildView } from './view'
+import { isQuickAdd, parseQuickAdd, quickAddWords } from './quick'
+import { RULE, RULE_ID } from './rule'
+import { buildView, statusLine } from './view'
 import type { StepRef, TaskRow } from './view'
 
 const PANE = 'project-progress'
 const TITLE = '進度'
 const POLL_MS = 2000
 const TICK_MS = 30 * 1000
+// How often a pull request whose checks are still running is looked at again.
+const PR_MS = 2 * 60 * 1000
 const DAY = 24 * 60 * 60 * 1000
 
 const EMPTY: ProgressSnapshot = { path: '', isMissing: true, error: null, mtimeMs: 0, size: 0, projects: [] }
@@ -39,6 +57,7 @@ const hasTaskTools = atom({ plugin: 'project-progress', key: 'hasTaskTools' } as
 
 const expanded = atom({ plugin: 'project-progress', key: 'expanded' } as const, '')
 const answer = atom({ plugin: 'project-progress', key: 'answer' } as const, null as ProgressAnswer | null)
+const isNotifyOn = atom({ plugin: 'project-progress', key: 'isNotifyOn' } as const, true)
 
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error))
 
@@ -47,6 +66,11 @@ let isPolling = false
 let isTurnRunning = false
 let writes: Promise<unknown> = Promise.resolve()
 let askSeq = 0
+let isPaneOpen = false
+let lastStatus: string | undefined
+let isCheckingPr = false
+// gh is tried until it fails to start (not installed) or says it is signed out.
+let hasGh = true
 
 // CLAUDE_PROGRESS_FILE wins; otherwise ~/.claude/progress.md. USERPROFILE comes first
 // because that is where Claude Code keeps ~/.claude on Windows even when HOME is set
@@ -89,12 +113,24 @@ const poll = async ($: EngineInterface): Promise<void> => {
         size: stat.size,
         projects,
       }))
+      await refreshStatus($)
     } catch (error) {
       await update($, snapshot, () => ({ ...EMPTY, path, isMissing: false, error: messageOf(error) }))
     }
   } finally {
     isPolling = false
   }
+}
+
+// The line under the prompt, for when the pane is not on screen; written only when it
+// changes.
+const refreshStatus = async ($: EngineInterface): Promise<void> => {
+  const text = isPaneOpen
+    ? undefined
+    : statusLine(buildView((await read($, snapshot)).projects, await read($, here), await read($, mine), await $.clock.now()))
+  if (text === lastStatus) return
+  lastStatus = text
+  $.ui.status(text)
 }
 
 // A file that is not there reads as empty; one that is there and cannot be read (too big,
@@ -142,13 +178,45 @@ const writeMine = async ($: EngineInterface): Promise<void> => {
 
 const queueWrite = ($: EngineInterface): Promise<void> => enqueue(() => writeMine($)).catch(() => undefined)
 
-// Saves the mirror for this session (the pane redraws) and across restarts ($.store).
-const saveMine = async ($: EngineInterface, change: (mirror: ProgressMirror) => ProgressMirror): Promise<void> => {
+const notify = async ($: EngineInterface, text: string, project: string): Promise<void> => {
+  if (!(await read($, isNotifyOn))) return
+  await $.ui.notify(text, { title: `進度 · ${project}` }).catch(() => undefined)
+}
+
+// Finished steps, a line each in this month's journal.
+const journal = ($: EngineInterface, entries: ReadonlyArray<Omit<JournalEntry, 'at'>>): Promise<void> =>
+  enqueue(async () => {
+    const at = await $.clock.now()
+    const path = journalPath(await progressPath($), at)
+    const before = await readText($, path)
+    await $.fs.write(path, appendJournal(before, entries.map(entry => journalLine(entry, at))))
+  }).catch(() => undefined)
+
+// Saves the mirror for this session (the pane redraws) and across restarts ($.store). What
+// changed is journaled and, when it needs the person, notified; `quiet` skips both, for a
+// re-read of a list whose changes happened while the mod was not looking.
+const saveMine = async (
+  $: EngineInterface,
+  change: (mirror: ProgressMirror) => ProgressMirror,
+  quiet = false,
+): Promise<void> => {
   const current = await read($, mine)
   if (current === null) return
   const next = change(current)
   await update($, mine, () => next)
   await $.store.set(`mirror:${next.sessionId}`, next)
+  if (!quiet) {
+    const finished = completedSince(current, next)
+    const title = next.title || fallbackTitle(next)
+    if (finished.length > 0) {
+      journal(
+        $,
+        finished.map(task => ({ project: next.project, task: title, step: task.subject })),
+      ).catch(() => undefined)
+    }
+    for (const text of noticesOf(current, next)) await notify($, text, next.project)
+  }
+  await refreshStatus($)
 }
 
 // The project this session writes under: the remote's repo name, else the folder's.
@@ -183,14 +251,15 @@ const detectHere = async ($: EngineInterface): Promise<void> => {
   await update($, here, () => [...names].filter(name => name !== ''))
 }
 
-// The mirror outlives a reload in $.state and a restart in $.store.
-const loadMine = async ($: EngineInterface): Promise<void> => {
+// The mirror outlives a reload in $.state and a restart in $.store. A mirror stored by an
+// older version gets the fields it lacks from a fresh one.
+const loadMine = async ($: EngineInterface, cwd: string): Promise<void> => {
   const sessionId = await $.session.id()
   const held = await read($, mine)
   if (held !== null && held.sessionId === sessionId) return
-  const stored = (await $.store.get(`mirror:${sessionId}`)) as ProgressMirror | undefined
-  const fresh = emptyMirror(sessionId, await projectName($), await $.clock.now())
-  await update($, mine, () => stored ?? fresh)
+  const stored = (await $.store.get(`mirror:${sessionId}`)) as Partial<ProgressMirror> | undefined
+  const fresh = emptyMirror(sessionId, await projectName($), await $.clock.now(), cwd)
+  await update($, mine, () => (stored === undefined ? fresh : { ...fresh, ...stored, cwd: stored.cwd || cwd }))
 }
 
 // Claude's own list, read when the mirror missed calls (installed mid-session, a reload).
@@ -200,7 +269,37 @@ const resync = async ($: EngineInterface): Promise<void> => {
   const listed = (ran.result as { tasks?: ListedTask[] } | undefined)?.tasks
   if (listed === undefined) return
   const at = await $.clock.now()
-  await saveMine($, mirror => fromTaskList(mirror, listed, at))
+  await saveMine($, mirror => fromTaskList(mirror, listed, at), true)
+}
+
+// The pull request of this branch, through the person's own gh; only in a GitHub repo.
+const refreshPr = async ($: EngineInterface): Promise<void> => {
+  if (!hasGh || isCheckingPr) return
+  const repo = await $.session.repo().catch(() => null)
+  if (repo?.remote?.includes('github') !== true) return
+  isCheckingPr = true
+  try {
+    const ran = await $.process
+      .run(['gh', 'pr', 'view', '--json', GH_FIELDS], { cwd: repo.root, timeoutMs: 15000 })
+      .catch((error: unknown) => {
+        // Not installed: stop asking. A timeout is tried again next time.
+        if (/ENOENT|not found|cannot start|spawn/i.test(messageOf(error))) hasGh = false
+        return null
+      })
+    if (ran === null) return
+    if (ran.exitCode !== 0 && /gh auth login/.test(ran.stderr)) hasGh = false
+    const pr: ProgressPr | null = ran.exitCode === 0 ? prFromGh(ran.stdout) : null
+    const mirror = await read($, mine)
+    if (mirror === null) return
+    const before = mirror.pr ?? null
+    if (JSON.stringify(before) === JSON.stringify(pr)) return
+    await saveMine($, one => ({ ...one, pr }))
+    const finished = ciFinished(before, pr)
+    if (finished !== null) await notify($, finished, mirror.project)
+    if (mirror.tasks.length > 0) await queueWrite($)
+  } finally {
+    isCheckingPr = false
+  }
 }
 
 const nameTask = async ($: EngineInterface): Promise<void> => {
@@ -332,6 +431,50 @@ const askAside = async ($: EngineInterface, question: string): Promise<void> => 
   await update($, answer, () => ({ question: text, text: reply, isAsking: false }))
 }
 
+// A line from the pane's box that starts with +: a hand-kept task, written under its
+// project. Without a `專案：` the session's repo is the project, or 待辦 outside one.
+const quickAdd = async ($: EngineInterface, input: string): Promise<string> => {
+  const repo = await $.session.repo().catch(() => null)
+  const fallback = repo === null ? '待辦' : ((await read($, mine))?.project ?? '待辦')
+  const entry = parseQuickAdd(input, fallback)
+  if (entry === null) return '要加什麼？例如「+ 求職：Google 實習 截止 11-01；改履歷；投遞」。'
+  const wrote = await enqueue(async () => {
+    const path = await progressPath($)
+    const before = await readText($, path)
+    await $.fs.write(path, addManualTask(before, entry))
+    await poll($)
+  })
+    .then(() => true)
+    .catch(() => false)
+
+  return wrote ? quickAddWords(entry) : '讀不到進度檔，沒有加進去。'
+}
+
+// What finished in the last `days` days (from the journal), what is open and what waits.
+const buildReport = async ($: EngineInterface, days: number): Promise<string> => {
+  const at = await $.clock.now()
+  const path = await progressPath($)
+  const months = [...new Set([journalPath(path, previousMonth(at)), journalPath(path, at)])]
+  const texts = await Promise.all(months.map(one => readText($, one).catch(() => '')))
+
+  return progressReport(texts.flatMap(parseJournal), (await read($, snapshot)).projects, await read($, mine), at, days)
+}
+
+// Shows `text` under the pane's box, copied to the clipboard when the surface allows.
+const showCopied = async ($: EngineInterface, question: string, text: string, surface?: RenderSurface): Promise<void> => {
+  const copied = await $.ui
+    .copy(surface === undefined ? { text } : { text, surface })
+    .then(result => result.isCopied)
+    .catch(() => false)
+  await update($, answer, () => ({ question, text, isAsking: false, copied }))
+}
+
+const setNotify = async ($: EngineInterface, isOn: boolean): Promise<void> => {
+  await update($, isNotifyOn, () => isOn)
+  if (isOn) await $.store.delete('notifyOff')
+  else await $.store.set('notifyOff', true)
+}
+
 const settle = async ($: EngineInterface): Promise<void> => {
   const at = await $.clock.now()
   await saveMine($, mirror => ({ ...mirror, state: stateOf(mirror, isTurnRunning), updated: at }))
@@ -342,11 +485,13 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'progress',
-      description: '進度面板：開啟；「整理」封存完成的；「同步」重讀 Task 清單',
-      argumentHint: '[整理|同步]',
+      description: '進度面板：開啟；整理、同步、加 …、週報、今天、通知 開/關',
+      argumentHint: '[整理|同步|加 …|週報|今天|通知 開/關]',
     })
     await detectHere($)
-    await loadMine($)
+    await loadMine($, e.cwd)
+    await update($, isNotifyOn, () => true)
+    if ((await $.store.get('notifyOff')) === true) await update($, isNotifyOn, () => false)
     const tools = await $.tool.list().catch(() => [])
     const hasTools = tools.length === 0 || tools.some(tool => tool.name === 'TaskCreate' || tool.name === 'TodoWrite')
     await update($, hasTaskTools, () => hasTools)
@@ -363,11 +508,29 @@ export const register: Register = on => {
       $.clock
         .now()
         .then(at => update($, now, () => at))
+        .then(() => refreshStatus($))
         .catch(() => undefined)
+    })
+    // Checks still running are looked at again until they finish.
+    $.clock.every(PR_MS, () => {
+      read($, mine)
+        .then(mirror => (mirror?.pr?.ci === 'pending' ? refreshPr($) : undefined))
+        .catch(() => undefined)
+    })
+    $.clock.after(1, () => {
+      refreshPr($).catch(() => undefined)
     })
     enqueue(() => archiveOld($)).catch(() => undefined)
     if ((await $.store.get('closedByPerson')) !== true) {
-      $.ui.open({ id: PANE, title: TITLE }).catch(() => undefined)
+      $.ui
+        .open({ id: PANE, title: TITLE })
+        .then(opened => {
+          isPaneOpen = opened.isPlaced
+          return refreshStatus($)
+        })
+        .catch(() => undefined)
+    } else {
+      await refreshStatus($)
     }
 
     return next(e)
@@ -384,12 +547,34 @@ export const register: Register = on => {
     if (arg === '同步' || arg === 'sync') {
       await resync($)
       await settle($)
+      await refreshPr($)
 
       return { text: '已從 Task 清單重新同步。' }
+    }
+    const add = /^(?:加|新增|add|[+＋])\s*(.*)$/is.exec(arg)
+    if (add !== null) return { text: await quickAdd($, add[1] ?? '') }
+    if (arg === '週報' || arg === '今天' || arg === 'report' || arg === 'today') {
+      const text = await buildReport($, arg === '今天' || arg === 'today' ? 1 : 7)
+      const copied = await $.ui
+        .copy({ text })
+        .then(result => result.isCopied)
+        .catch(() => false)
+
+      return { text: copied ? `${text}\n\n（已複製到剪貼簿）` : text }
+    }
+    const toggle = /^(?:通知|notify)\s*(開|關|on|off)?$/i.exec(arg)
+    if (toggle !== null) {
+      const word = toggle[1]?.toLowerCase()
+      const isOn = word === undefined ? !(await read($, isNotifyOn)) : word === '開' || word === 'on'
+      await setNotify($, isOn)
+
+      return { text: isOn ? '桌面通知已打開：需要你、做完、CI 跑完時會通知。' : '桌面通知已關掉。' }
     }
     await poll($)
     await $.store.delete('closedByPerson')
     const opened = await $.ui.open({ id: PANE, title: TITLE, focus: true })
+    isPaneOpen = opened.isPlaced
+    await refreshStatus($)
     const { path } = await read($, snapshot)
 
     return { text: opened.isPlaced ? `進度面板已開啟：${path}` : `進度面板開不了：${opened.reason}` }
@@ -429,6 +614,9 @@ export const register: Register = on => {
         })
       }
     }
+    $.clock.after(1, () => {
+      refreshPr($).catch(() => undefined)
+    })
 
     return next(e)
   })
@@ -446,6 +634,13 @@ export const register: Register = on => {
       const at = await $.clock.now()
       await saveMine($, one => applyTaskCreate(one, e, id, at))
       await settle($)
+      // Named now rather than at the end of the turn, so the journal and the pane carry the
+      // real name from the first finished step.
+      if ((await read($, mine))?.isTitleFinal === false) {
+        $.clock.after(1, () => {
+          nameTask($).catch(() => undefined)
+        })
+      }
     } catch {
       // The tool already ran; a failed mirror update must not touch its result.
     }
@@ -521,8 +716,13 @@ export const register: Register = on => {
   // The person closing the pane is remembered: it stops opening by itself until /progress.
   on('ui.close', async ($, e, next) => {
     if (e.id === PANE && e.origin.kind === 'person') await $.store.set('closedByPerson', true)
+    const closed = await next(e)
+    if (e.id === PANE) {
+      isPaneOpen = false
+      await refreshStatus($)
+    }
 
-    return next(e)
+    return closed
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
@@ -535,6 +735,7 @@ export const register: Register = on => {
       Text: table.Text,
       Button: table.Button,
       Input: 'Input' in table ? table.Input : null,
+      Link: 'Link' in table ? table.Link : null,
     }
     if (snap.error !== null) {
       const { Box, Text } = table
@@ -556,6 +757,7 @@ export const register: Register = on => {
       path: snap.path,
       width: Math.max(8, Math.min(28, e.props.bodyColumns - 4)),
       hasTaskTools: await read($, hasTaskTools),
+      isNotifyOn: await read($, isNotifyOn),
     }
     const actions: PaneActions = {
       toggle: key => {
@@ -576,11 +778,31 @@ export const register: Register = on => {
       tick: ref => {
         enqueue(() => tickStep($, ref)).catch(() => undefined)
       },
-      ask: question => {
-        askAside($, question).catch(() => undefined)
+      ask: input => {
+        if (!isQuickAdd(input)) {
+          askAside($, input).catch(() => undefined)
+          return
+        }
+        quickAdd($, input)
+          .then(text => update($, answer, () => ({ question: input.trim(), text, isAsking: false })))
+          .catch(() => undefined)
       },
       clearAnswer: () => {
         update($, answer, () => null).catch(() => undefined)
+      },
+      copyResume: (row, surface) => {
+        if (row.resume === null) return
+        showCopied($, `回到「${row.title}」的指令，貼到終端機執行`, row.resume, surface).catch(() => undefined)
+      },
+      report: surface => {
+        buildReport($, 7)
+          .then(text => showCopied($, '週報', text, surface))
+          .catch(() => undefined)
+      },
+      toggleNotify: () => {
+        read($, isNotifyOn)
+          .then(isOn => setNotify($, !isOn))
+          .catch(() => undefined)
       },
     }
 

@@ -56,7 +56,15 @@ test('reads projects, tasks, notes, every status and the due date', () => {
 test('a block between auto markers carries its session, state and time', () => {
   const panel = parseProgress(SAMPLE)[1]?.tasks[0]
   expect(panel?.title).toBe('進度面板')
-  expect(panel?.auto).toEqual({ session: '2be48af2', state: 'waiting', updated: Date.parse('2026-10-16T10:00:00.000Z') })
+  expect(panel?.auto).toEqual({
+    session: '2be48af2',
+    state: 'waiting',
+    updated: Date.parse('2026-10-16T10:00:00.000Z'),
+    resume: null,
+    dir: null,
+    pr: null,
+    ci: null,
+  })
   expect(panel?.steps.map(s => s.depth)).toEqual([0, 0, 1])
 })
 

@@ -3,12 +3,47 @@
 ## 0.5.0 — 2026-10-16
 
 - **Its own repository and marketplace.** Install with
-  `claude plugin marketplace add WenyuChiou/claude-progress-pane` and
-  `claude plugin install project-progress@claude-progress-pane`; update with
-  `claude plugin update`. The zip and its installer are gone.
-  `scripts/setup.ps1` / `setup.sh` set `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` and
-  move a zip install over: its folder leaves `CLAUDE_CODE_PLUGIN_DIRS`, so the
-  mod does not load twice, and its block leaves `CLAUDE.md`.
+  `claude plugin marketplace add WenyuChiou/claude-progress-pane` and the setup
+  script; update with `claude plugin update`. The zip and its installer are
+  gone. `scripts/setup.ps1` / `setup.sh` install the plugin, set
+  `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` and move a zip install over: its folder
+  leaves `CLAUDE_CODE_PLUGIN_DIRS`, so the mod does not load twice, and its
+  block leaves `CLAUDE.md`. They also run piped from a URL (`irm … | iex`)
+  once the repository is public.
+- **Quick add.** A line starting with `+` in the pane's box, or `/progress 加 …`,
+  becomes a hand-kept task under its project, with its due date and steps.
+  Tests: `a quick add reads the project, the due date and the steps`; `a quick
+  add lands at the end of its section, or a new one, and reads back with its
+  date`; `a + line in the pane adds a task to the file, under its project`.
+- **Pull request and CI.** Through the person's own `gh`, the card shows the
+  branch's PR as a link, re-checks every two minutes while checks run, and
+  writes `pr=` / `ci=` into the block so other sessions' rows show it.
+  Tests: `gh's answer becomes one word for CI, and words for the card`; `the
+  pull request shows on the card and in the block, and a finished CI run
+  notifies`.
+- **Notifications.** A step that needs you, the list finishing, and CI
+  finishing each raise one desktop notification; 通知：開/關 or
+  `/progress 通知 關` turns them off. Tests: `a step that needs you and a
+  finished list each notify once`; `a step that needs you notifies, the whole
+  list finishing notifies, and 通知：關 silences both`.
+- **Status line.** With the pane closed or not placed, one line under the
+  prompt. Tests: `the status line says where things stand, and nothing when
+  nothing does`; `with the pane closed, the line under the prompt carries the
+  progress`.
+- **Journal and report.** Each finished step is a line in
+  `progress-journal-YYYY-MM.md`; 週報 / `/progress 週報` / `/progress 今天`
+  copy what finished, what is open and what waits on you. The task is now
+  named when its first step is created, so the journal carries the real name.
+  Tests: `finished steps are found once, journaled as lines, and read back`;
+  `the report groups what finished by task, then lists open work and what
+  waits on you`; `finished steps reach the journal, and 週報 copies a report of
+  them`.
+- **Resume.** A block carries its session's full id and folder; an ended
+  session's row offers 複製續接指令 (`cd … && claude --resume …`, or
+  `Set-Location` on Windows). Tests: `the marker carries the resume id, the
+  folder and the pull request, and reads back`; `an ended session offers the
+  command that reopens it where it ran`; `an ended session elsewhere offers
+  its resume command, copied for the terminal`.
 - **The rule rides the system prompt.** The mod adds how Claude should keep the
   Task list to each session that has the Task tools, instead of the installer
   writing it into `CLAUDE.md`, so uninstalling leaves nothing behind. Where an

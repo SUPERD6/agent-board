@@ -1,5 +1,6 @@
-import type { ProgressMirror, ProgressProject, ProgressStepStatus, ProgressTask } from '../types'
+import type { ProgressAuto, ProgressMirror, ProgressProject, ProgressStepStatus, ProgressTask } from '../types'
 import { shortId } from './blocks'
+import { ciWords, prWords } from './github'
 import { doingTask, fallbackTitle } from './mirror'
 import { countSteps, currentStepIndex, isHereProject, isTaskComplete } from './parse'
 
@@ -49,12 +50,20 @@ export type TaskRow = {
   left: string[]
   next: StepRef | null
   due: { date: string; left: string; tone: Tone } | null
+  // Another session's pull request, in words (`PR #12 · CI 失敗`), or ''.
+  pr: string
+  // For an ended session: the command that reopens it, ready to paste.
+  resume: string | null
 }
+
+// This session's pull request, for the card.
+export type PrView = { text: string; url: string; tone: Tone }
 
 export type DoneItem = { project: string; title: string; when: string }
 
 export type View = {
   current: CurrentView | null
+  pr: PrView | null
   waiting: WaitingItem[]
   due: TaskRow[]
   active: TaskRow[]
@@ -182,6 +191,38 @@ const currentOf = (mirror: ProgressMirror): CurrentView | null => {
   }
 }
 
+// Reopens an ended session where it ran: PowerShell for a Windows folder, a POSIX shell
+// otherwise. Both quote the folder, so spaces and quotes in it survive.
+export const resumeCommand = (sessionId: string, dir: string | null): string => {
+  const resume = `claude --resume ${sessionId}`
+  if (dir === null || dir === '') return resume
+  if (/^[A-Za-z]:[\\/]|\\/.test(dir)) return `Set-Location -LiteralPath '${dir.replace(/'/g, "''")}'; ${resume}`
+
+  return `cd '${dir.replace(/'/g, "'\\''")}' && ${resume}`
+}
+
+const autoPr = (auto: ProgressAuto | null): string => {
+  if (auto === null || auto.pr === null) return ''
+  return [`PR #${auto.pr}`, ciWords(auto.ci)].filter(part => part !== '').join(' · ')
+}
+
+const prView = (mine: ProgressMirror | null): PrView | null => {
+  const pr = mine?.pr ?? null
+  if (pr === null) return null
+  const tone: Tone =
+    pr.state !== 'open'
+      ? 'quiet'
+      : pr.ci === 'fail'
+        ? 'alert'
+        : pr.review === 'changes'
+          ? 'warn'
+          : pr.ci === 'pending'
+            ? 'accent'
+            : 'quiet'
+
+  return { text: prWords(pr), url: pr.url, tone }
+}
+
 const rowSteps = (task: ProgressTask): ViewStep[] => {
   const current = currentStepIndex(task)
 
@@ -271,6 +312,8 @@ export const buildView = (
             ? { project: name, title, step: open.text, line: open.line, raw: open.raw }
             : null,
         due: null,
+        pr: autoPr(task.auto),
+        resume: auto === 'ended' && task.auto?.resume ? resumeCommand(task.auto.resume, task.auto.dir) : null,
       }
 
       // Work with a date close by is listed once, under 快到期.
@@ -289,11 +332,34 @@ export const buildView = (
 
   return {
     current: mine === null ? null : currentOf(mine),
+    pr: prView(mine),
     waiting,
     due: due.map(({ days: _days, ...row }) => row),
     active: active.map(({ rank: _rank, order: _order, ...row }) => row),
     recent: recent.slice(0, 3).map(({ at: _at, ...item }) => item),
   }
+}
+
+const clip = (text: string, room: number): string => {
+  const chars = [...text]
+  return chars.length > room ? `${chars.slice(0, room - 1).join('')}…` : text
+}
+
+// One line under the prompt for when the pane is not on screen: this session's task, what
+// waits on you, what is due within three days, and the pull request.
+export const statusLine = (view: View): string | undefined => {
+  const current = view.current
+  const urgent = view.due.filter(row => row.due !== null && row.due.tone === 'alert').length
+  const parts = [
+    current === null || current.state === 'done'
+      ? ''
+      : `${clip(current.title, 14)} ${current.done}/${current.total} · ${clip(current.status, 18)}`,
+    view.waiting.length > 0 ? `${view.waiting.length} 件等你` : '',
+    urgent > 0 ? `${urgent} 件快到期` : '',
+    view.pr === null ? '' : view.pr.text,
+  ].filter(part => part !== '')
+
+  return parts.length === 0 ? undefined : `進度 · ${parts.join(' · ')}`
 }
 
 export const progressBar = (done: number, total: number, width: number): { filled: string; rest: string } => {

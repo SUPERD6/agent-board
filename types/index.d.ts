@@ -9,8 +9,33 @@ export type ProgressStep = { text: string; status: ProgressStepStatus; depth: nu
 // ended: the session closed with open steps
 export type ProgressSessionState = 'working' | 'waiting' | 'done' | 'ended'
 
-// Present on a block a session's mod writes itself, between its auto markers.
-export type ProgressAuto = { session: string; state: ProgressSessionState; updated: number }
+// A pull request's checks rolled into one word: none ran, some still running, all passed,
+// or at least one failed.
+export type ProgressCi = 'none' | 'pending' | 'pass' | 'fail'
+
+// The pull request of a session's branch, as `gh pr view` reports it.
+export type ProgressPr = {
+  number: number
+  url: string
+  state: 'open' | 'closed' | 'merged'
+  isDraft: boolean
+  ci: ProgressCi
+  failed: number
+  review: 'approved' | 'changes' | 'required' | null
+}
+
+// Present on a block a session's mod writes itself, between its auto markers. `resume` is
+// the full session id and `dir` the folder it ran in, for a resume command; `pr` and `ci`
+// say how its pull request stands.
+export type ProgressAuto = {
+  session: string
+  state: ProgressSessionState
+  updated: number
+  resume: string | null
+  dir: string | null
+  pr: number | null
+  ci: ProgressCi | null
+}
 
 export type ProgressTask = {
   title: string
@@ -45,7 +70,10 @@ export type ProgressMirrorTask = {
 export type ProgressMirror = {
   sessionId: string
   project: string
+  // The folder the session runs in; empty in a mirror stored before 0.5.0.
+  cwd: string
   branch: string
+  pr: ProgressPr | null
   title: string
   isTitleFinal: boolean
   firstPrompt: string
@@ -54,8 +82,9 @@ export type ProgressMirror = {
   updated: number
 }
 
-// The pane's side question and its answer.
-export type ProgressAnswer = { question: string; text: string; isAsking: boolean }
+// What the pane shows under its input box: a side question's answer, what a quick add
+// wrote, or a report. `copied` says the text is also on the clipboard.
+export type ProgressAnswer = { question: string; text: string; isAsking: boolean; copied?: boolean }
 
 declare module 'claude-code' {
   interface PluginState {
@@ -67,6 +96,7 @@ declare module 'claude-code' {
       hasTaskTools: boolean
       expanded: string
       answer: ProgressAnswer | null
+      isNotifyOn: boolean
     }
   }
 }

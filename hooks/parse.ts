@@ -1,5 +1,6 @@
 import type {
   ProgressAuto,
+  ProgressCi,
   ProgressProject,
   ProgressSessionState,
   ProgressStep,
@@ -31,6 +32,17 @@ const STATUS: Record<string, ProgressStepStatus> = {
 }
 
 const SESSION_STATES: readonly ProgressSessionState[] = ['working', 'waiting', 'done', 'ended']
+const CI_STATES: readonly ProgressCi[] = ['none', 'pending', 'pass', 'fail']
+
+// `dir=` is written percent-encoded, so a folder with spaces stays one attribute.
+const decoded = (value: string | undefined): string | null => {
+  if (value === undefined || value === '') return null
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return null
+  }
+}
 
 export const parseAttrs = (raw: string): Record<string, string> => {
   const attrs: Record<string, string> = {}
@@ -48,8 +60,17 @@ export const autoOf = (raw: string): ProgressAuto | null => {
   if (session === undefined) return null
   const state = SESSION_STATES.find(one => one === attrs.state) ?? 'waiting'
   const updated = Date.parse(attrs.updated ?? '')
+  const pr = Number(attrs.pr)
 
-  return { session, state, updated: Number.isNaN(updated) ? 0 : updated }
+  return {
+    session,
+    state,
+    updated: Number.isNaN(updated) ? 0 : updated,
+    resume: attrs.resume ?? null,
+    dir: decoded(attrs.dir),
+    pr: Number.isInteger(pr) && pr > 0 ? pr : null,
+    ci: CI_STATES.find(one => one === attrs.ci) ?? null,
+  }
 }
 
 const indentOf = (lead: string): number => {

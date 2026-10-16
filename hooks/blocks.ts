@@ -1,6 +1,8 @@
 import type { ProgressMirror, ProgressMirrorTask, ProgressSessionState } from '../types'
-import type { StepRef } from './view'
+import { prWords } from './github'
 import { AUTO_END, AUTO_START, autoOf, parseAttrs, projectHead } from './parse'
+import type { QuickEntry } from './quick'
+import type { StepRef } from './view'
 
 // Each session's mod owns one block of the file, between its own markers, and rewrites
 // only that block: whatever people or other sessions wrote elsewhere stays byte for byte.
@@ -30,12 +32,29 @@ const markOf = (task: ProgressMirrorTask): string => {
   return task.status === 'in_progress' ? '~' : ' '
 }
 
+// The marker carries what another session's pane needs: the full id and folder for a
+// resume command, and how the pull request stands.
+const markerOf = (mirror: ProgressMirror): string => {
+  const pr = mirror.pr ?? null
+  const attrs = [
+    `session=${shortId(mirror.sessionId)}`,
+    `state=${mirror.state}`,
+    `updated=${new Date(mirror.updated).toISOString()}`,
+    mirror.sessionId.length > 8 ? `resume=${mirror.sessionId}` : '',
+    mirror.cwd ? `dir=${encodeURIComponent(mirror.cwd)}` : '',
+    pr === null ? '' : `pr=${pr.number} ci=${pr.ci}`,
+  ]
+
+  return `<!-- auto ${attrs.filter(attr => attr !== '').join(' ')} -->`
+}
+
 export const renderAutoBlock = (mirror: ProgressMirror): string[] => {
   const id = shortId(mirror.sessionId)
-  const meta = [STATE_WORDS[mirror.state], mirror.branch].filter(part => part !== '').join(' · ')
+  const pr = mirror.pr ?? null
+  const meta = [STATE_WORDS[mirror.state], mirror.branch, pr === null ? '' : prWords(pr)].filter(part => part !== '').join(' · ')
 
   return [
-    `<!-- auto session=${id} state=${mirror.state} updated=${new Date(mirror.updated).toISOString()} -->`,
+    markerOf(mirror),
     `### ${oneLine(mirror.title) || '（未命名）'}`,
     `> ${meta}`,
     ...mirror.tasks.map(task => {
@@ -233,6 +252,32 @@ export const takeArchivable = (text: string, now: number, keep?: string): Archiv
   return { text: removeSpans(text, spans), entries }
 }
 
+// A quick add from the pane: a hand-kept task at the end of its project's section (made
+// if missing), below whatever is there.
+export const addManualTask = (text: string, entry: QuickEntry): string => {
+  const eol = eolOf(text)
+  const lines = linesOf(text)
+  const task = [
+    `### ${oneLine(entry.title)}`,
+    ...(entry.due === null ? [] : [`> 截止 ${entry.due}`]),
+    ...entry.steps.map(step => `- [ ] ${oneLine(step)}`),
+  ]
+  if (lines.every(line => line.trim() === '')) {
+    return ['# 專案進度', '', `## ${entry.project}`, '', ...task].join(eol) + eol
+  }
+  const section = sectionRange(lines, entry.project)
+  if (section === null) {
+    while (lines.length > 0 && lines[lines.length - 1]?.trim() === '') lines.pop()
+
+    return [...lines, '', `## ${entry.project}`, '', ...task].join(eol) + eol
+  }
+  let at = section.end
+  while (at > section.heading + 1 && lines[at - 1]?.trim() === '') at -= 1
+  const isLast = section.end >= lines.length
+  lines.splice(at, section.end - at, '', ...task, ...(isLast ? [] : ['']))
+
+  return lines.join(eol) + eol
+}
 
 // Ticks one step of a hand-kept task (a press in the pane): the line the pane showed, if it
 // still reads as it did; else the one line in the file that does, if there is exactly one.

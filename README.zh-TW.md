@@ -6,16 +6,20 @@ Claude Code 的 Mod：在對話右邊開一個面板，用白話列出每個專�
 - **壓縮後接得上**：對話被壓縮時，摘要會保留清單，壓縮後補一段：目標、完成幾步、正在做哪步、接下來。
 - **知道其他對話**：每段記錄那個對話在做、等你、做完，還是沒做完就結束。新對話第一輪會知道同專案還沒做完的事。
 - **規則自己帶**：怎麼用 Task 清單的規則由 Mod 加進系統提示，不寫進 `CLAUDE.md`，移除後不留東西。
-- **可以點**：列可以展開看步驟；完成這步、交給 Claude、接手做完、完成、繼續、封存；底下的框可以問一句，答案顯示在面板，不打斷 Claude。
+- **可以點**：列可以展開看步驟；完成這步、交給 Claude、接手做完、複製續接指令（回到那個沒做完的舊對話）、完成、繼續、封存；底下的框可以問一句，答案顯示在面板，不打斷 Claude。
+- **一句話新增**：在同一個框打 `+` 開頭就新增一件事：`+ 求職：Meta 實習 截止 11-20；改履歷；投遞`。沒寫專案就放進目前的 repo；求職沒給步驟會帶上常用步驟。
+- **PR 和 CI**：本機有登入 [gh](https://cli.github.com) 的話，卡片顯示這個分支的 PR（`PR #12 · CI 失敗 2 · 等審查`，可點），CI 跑中每 2 分鐘重查；其他對話的列也看得到。
+- **桌面通知**：有步驟需要你、整份清單做完、這個分支的 CI 跑完時通知。面板底下「通知：開/關」或 `/progress 通知 關`。
+- **狀態列**：面板關著或終端機太窄時，輸入框下面有一行進度。
+- **日誌和週報**：每完成一步就在當月的 `progress-journal-YYYY-MM.md` 記一行。按「週報」（或 `/progress 週報`、`/progress 今天`）把最近 7 天整理成純文字：完成了什麼、還在做什麼、等你處理什麼，並複製到剪貼簿，可以直接貼給指導教授或貼到站會。
 
 ## 安裝
 
 需要 Claude Code 2.1.287 以上。
 
     claude plugin marketplace add WenyuChiou/claude-progress-pane
-    claude plugin install project-progress@claude-progress-pane
 
-再跑一次設定腳本：在 `settings.json` 打開 `CLAUDE_CODE_ENABLE_TODO_TOOLS=1`（新模型預設沒有 Task 工具，沒有它面板就沒東西可同步），並把舊的 zip 版換掉。
+再從 marketplace 抓下來的位置跑設定腳本：它會安裝外掛（裝過就跳過）、在 `settings.json` 打開 `CLAUDE_CODE_ENABLE_TODO_TOOLS=1`（新模型預設沒有 Task 工具，沒有它面板就沒東西可同步），並把舊的 zip 版換掉。可以重跑。
 
 Windows：
 
@@ -26,6 +30,10 @@ macOS / Linux：
     bash ~/.claude/plugins/marketplaces/claude-progress-pane/scripts/setup.sh
 
 重開 Claude Code。面板會自己開；`/progress` 重新打開。
+
+repo 改成公開的話，兩步可以變一行：
+
+    irm https://raw.githubusercontent.com/WenyuChiou/claude-progress-pane/main/scripts/setup.ps1 | iex
 
 **私人 repo**：Claude Code 用本機的 git 認證 clone，而且不會跳出登入。加不進去時先跑一次 `gh auth login` 和 `gh auth setup-git`；沒有 GitHub SSH key 的電腦再設 `CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1`。
 
@@ -53,9 +61,9 @@ macOS / Linux：
 
 照常工作。兩步以上的事 Claude 會列 Task 清單，面板跟著走。
 
-- `/progress` 打開面板；`/progress 整理` 立刻封存做完的；`/progress 同步` 重讀 Task 清單。
+- `/progress` 打開面板；`/progress 整理` 立刻封存做完的；`/progress 同步` 重讀 Task 清單和 PR；`/progress 加 …` 新增一件事；`/progress 週報`、`/progress 今天` 複製報告；`/progress 通知 開|關`。
 - 等你處理的步驟顯示在「等你處理」，按「完成」打勾。
-- 不在程式專案裡的事直接寫進同一個檔：
+- 不在程式專案裡的事可以用 `+` 加，或直接寫進同一個檔：
 
       ## 求職
       ### Google 暑期實習
@@ -73,4 +81,4 @@ macOS / Linux：
     claude plugin uninstall project-progress@claude-progress-pane
     claude plugin marketplace remove claude-progress-pane
 
-`progress.md`、封存檔和 `CLAUDE_CODE_ENABLE_TODO_TOOLS` 會留著。
+`progress.md`、封存檔、日誌和 `CLAUDE_CODE_ENABLE_TODO_TOOLS` 會留著。

@@ -25,6 +25,12 @@ type World = {
   unreadable?: Set<string>
   // When set, the next write to progress.md waits here; `reached` resolves once it does.
   hold?: { reached: () => void; release: Promise<void> }
+  // What the store holds at the start.
+  store?: Record<string, unknown>
+  // Every command the mod ran, when set.
+  ran?: string[][]
+  // Answers `gh`; other commands (git) answer the branch.
+  gh?: () => { exitCode: number; stdout: string; stderr: string }
 }
 
 // On Windows the engine resolves /home/me/... to X:\home\me\... before fs.* reaches these
@@ -35,7 +41,7 @@ const posix = (path: string): string => path.replace(/^[A-Za-z]:\\/, '/').replac
 const engineBeneath = (on: On, world: World): MockClock => {
   const clock = mock.clock(on, { now: Date.parse('2026-10-16T12:00:00.000Z') })
   mock.env(on, world.env ?? { HOME: '/home/me' })
-  mock.store(on)
+  mock.store(on, world.store)
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('session.end', ($, e) => ({ sessionId: e.sessionId }))
   on('session.id', () => ({ value: SESSION }))
@@ -53,9 +59,14 @@ const engineBeneath = (on: On, world: World): MockClock => {
   on('tool.list', () => ({
     value: world.hasTasks ? [{ name: 'TaskCreate', description: '', mcp: false }] : [{ name: 'Read', description: '', mcp: false }],
   }))
-  on('process.run', () => ({
-    value: { exitCode: 0, stdout: 'claude/progress-mod\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
-  }))
+  on('process.run', ($, e) => {
+    const ran =
+      e.argv[0] === 'gh' && world.gh !== undefined
+        ? world.gh()
+        : { exitCode: e.argv[0] === 'gh' ? 1 : 0, stdout: e.argv[0] === 'gh' ? '' : 'claude/progress-mod\n', stderr: '' }
+    world.ran?.push([...e.argv])
+    return { value: { ...ran, isStdoutTruncated: false, isStderrTruncated: false } }
+  })
   on('model.complete', () => ({
     value: {
       isAnswered: true as const,
@@ -401,4 +412,173 @@ test('the rule rides the system prompt only while the session has a Task list', 
 
   const without = await $.prompt.compose({ ...base, tools: ['Read'] })
   expect(without.sections.map(s => s.id)).toEqual(['intro'])
+})
+
+const JOURNAL = '/home/me/.claude/progress-journal-2026-10.md'
+
+// The engine's side of what the mod shows outside its pane, written down for the tests.
+const outside = (on: On) => {
+  const seen = { notified: [] as string[], copied: [] as string[], status: [] as Array<string | undefined> }
+  on('ui.notify', ($, e) => {
+    seen.notified.push(e.text)
+    return { value: { isSent: true as const, channel: 'terminal_bell' as const } }
+  })
+  on('ui.copy', ($, e) => {
+    seen.copied.push(e.text)
+    return { value: { isCopied: true as const } }
+  })
+  on('ui.status', ($, e) => {
+    seen.status.push(e.text)
+    return { value: undefined }
+  })
+
+  return seen
+}
+
+test('a + line in the pane adds a task to the file, under its project', async ($, on) => {
+  const world: World = { files: new Map([[FILE, JOBS]]), mtime: 1, hasTasks: true }
+  engineBeneath(on, world)
+  await $.session.start({ cwd: '/work/persona_framework', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop', props: PROPS })
+
+  await ui.input({ key: 'ask', text: '+ 求職：Meta 實習 截止 11-20' })
+  const text = world.files.get(FILE) ?? ''
+  expect(text).toContain('- [ ] 投遞\n\n### Meta 實習\n> 截止 11-20\n- [ ] 改履歷\n- [ ] 寫求職信\n- [ ] 投遞\n- [ ] 追蹤回覆\n\n## persona_framework')
+  expect(await ui.find({ type: 'Text', text: '已加進「求職」：Meta 實習（4 步，截止 11-20）' })).toBeDefined()
+
+  // The same through the command, with no project: this session's repo.
+  const ran = await $.command.run({ ...TIDY, args: '加 修 flaky 測試；重跑三次' })
+  expect(ran.text).toBe('已加進「persona_framework」：修 flaky 測試（1 步）')
+  expect(world.files.get(FILE)).toContain('### 修 flaky 測試\n- [ ] 重跑三次\n')
+  await ui.unmount()
+})
+
+test('finished steps reach the journal, and 週報 copies a report of them', async ($, on) => {
+  const world: World = { files: new Map(), mtime: 1, hasTasks: true }
+  const clock = engineBeneath(on, world)
+  const seen = outside(on)
+  await start($, '幫我重做進度面板')
+  await $.tool.call({ tool: 'TaskCreate', subject: '讀 API', description: '' })
+  await $.tool.call({ tool: 'TaskCreate', subject: '寫 Mod', description: '' })
+  // The task is named as soon as it has a step, so the journal carries the real name.
+  await clock.advance(10)
+  await $.tool.call({ tool: 'TaskUpdate', taskId: '1', status: 'completed' })
+
+  expect(world.files.get(JOURNAL)).toMatch(/^# 工作日誌\n- 2026-10-1\d \d\d:\d\d · persona_framework · 重做進度面板 · 讀 API\n$/)
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop', props: PROPS })
+  await ui.press({ key: 'report' })
+  expect(seen.copied.at(-1)).toContain('- persona_framework · 重做進度面板：讀 API')
+  expect(seen.copied.at(-1)).toContain('進行中\n- persona_framework · 重做進度面板：下一步 寫 Mod（1/2）')
+  expect(await ui.find({ type: 'Text', text: '已複製到剪貼簿' })).toBeDefined()
+  await ui.unmount()
+
+  const ran = await $.command.run({ ...TIDY, args: '今天' })
+  expect(ran.text).toContain('今天的進度')
+  expect(ran.text).toContain('（已複製到剪貼簿）')
+})
+
+test('a step that needs you notifies, the whole list finishing notifies, and 通知：關 silences both', async ($, on) => {
+  const world: World = { files: new Map(), mtime: 1, hasTasks: true }
+  engineBeneath(on, world)
+  const seen = outside(on)
+  await start($, '幫我重做進度面板')
+  await $.tool.call({ tool: 'TaskCreate', subject: '讀 API', description: '' })
+  await $.tool.call({ tool: 'TaskCreate', subject: '選版本', description: '' })
+  await $.tool.call({ tool: 'TaskUpdate', taskId: '2', metadata: { waiting: 'you' } })
+  expect(seen.notified).toEqual(['需要你：選版本'])
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop', props: PROPS })
+  await ui.press({ key: 'notify' })
+  expect(await ui.find({ type: 'Button', key: 'notify', text: '通知：關' })).toBeDefined()
+  await ui.unmount()
+
+  await $.tool.call({ tool: 'TaskUpdate', taskId: '1', status: 'completed' })
+  await $.tool.call({ tool: 'TaskUpdate', taskId: '2', status: 'completed' })
+  expect(seen.notified).toEqual(['需要你：選版本'])
+
+  const ran = await $.command.run({ ...TIDY, args: '通知 開' })
+  expect(ran.text).toContain('已打開')
+})
+
+test('the pull request shows on the card and in the block, and a finished CI run notifies', async ($, on) => {
+  const answers = ['PENDING', 'FAILURE']
+  const asked: string[][] = []
+  const world: World = {
+    files: new Map(),
+    mtime: 1,
+    hasTasks: true,
+    ran: asked,
+    gh: () => {
+      const conclusion = answers.length > 1 ? (answers.shift() ?? '') : (answers[0] ?? '')
+      const check = conclusion === 'PENDING' ? { status: 'IN_PROGRESS', conclusion: '' } : { status: 'COMPLETED', conclusion }
+      const stdout = JSON.stringify({
+        number: 12,
+        url: 'https://github.com/jhk482001/persona_framework/pull/12',
+        state: 'OPEN',
+        isDraft: false,
+        statusCheckRollup: [check],
+        reviewDecision: 'REVIEW_REQUIRED',
+      })
+      return { exitCode: 0, stdout, stderr: '' }
+    },
+  }
+  const clock = engineBeneath(on, world)
+  const seen = outside(on)
+  await start($, '幫我修 CI')
+  await $.tool.call({ tool: 'TaskCreate', subject: '看 log', description: '' })
+  await clock.advance(10)
+
+  expect(asked.some(argv => argv.join(' ').startsWith('gh pr view --json number,url'))).toBe(true)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: PROPS })
+  expect((await ui.find({ type: 'Link' }))?.props).toMatchObject({
+    href: 'https://github.com/jhk482001/persona_framework/pull/12',
+    label: 'PR #12 · CI 跑中 · 等審查',
+  })
+  await ui.unmount()
+
+  // Checks still running are looked at again; the run finishing is notified once.
+  await clock.advance(2 * 60 * 1000)
+  expect(seen.notified).toEqual(['PR #12 CI 失敗 1'])
+  expect(world.files.get(FILE)).toContain('pr=12 ci=fail -->')
+  expect(world.files.get(FILE)).toContain('PR #12 · CI 失敗 1 · 等審查')
+  await clock.advance(2 * 60 * 1000)
+  expect(seen.notified).toEqual(['PR #12 CI 失敗 1'])
+})
+
+test('with the pane closed, the line under the prompt carries the progress', async ($, on) => {
+  // Closed by hand in an earlier session, so it does not open by itself.
+  const world: World = { files: new Map([[FILE, JOBS]]), mtime: 1, hasTasks: true, store: { closedByPerson: true } }
+  engineBeneath(on, world)
+  const seen = outside(on)
+  await start($, '幫我重做進度面板')
+  await $.tool.call({ tool: 'TaskCreate', subject: '讀 API', description: '' })
+  expect(seen.status.at(-1)).toMatch(/^進度 · .* 0\/1 · Claude 正在做 · 1 件等你$/)
+
+  // Opened, the pane says it all, so the line is cleared.
+  await $.command.run({ ...TIDY, args: '' })
+  expect(seen.status.at(-1)).toBe(undefined)
+})
+
+test('an ended session elsewhere offers its resume command, copied for the terminal', async ($, on) => {
+  const file = `# 專案進度
+
+## FLOODABM
+<!-- auto session=dddddddd state=ended updated=2026-10-16T10:00:00.000Z resume=dddddddd-2222-3333 dir=%2Fwork%2FFLOODABM -->
+### 跑實驗
+- [x] 準備資料
+- [ ] 跑 100 次
+<!-- /auto session=dddddddd -->
+`
+  const world: World = { files: new Map([[FILE, file]]), mtime: 1, hasTasks: true }
+  engineBeneath(on, world)
+  const seen = outside(on)
+  await $.session.start({ cwd: '/work/persona_framework', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop', props: PROPS })
+  await ui.press({ key: 'FLOODABM::跑實驗' })
+  expect(await ui.find({ type: 'Button', key: 'FLOODABM::跑實驗::take' })).toBeUndefined()
+  await ui.press({ key: 'FLOODABM::跑實驗::resume' })
+  expect(seen.copied).toEqual(["cd '/work/FLOODABM' && claude --resume dddddddd-2222-3333"])
+  expect(await ui.find({ type: 'Text', text: '已複製到剪貼簿' })).toBeDefined()
+  await ui.unmount()
 })

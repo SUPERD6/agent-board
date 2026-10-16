@@ -25,10 +25,27 @@ up to date without anyone editing a file by hand. 中文說明：[README.zh-TW.m
 - **Interactive.** Each task row opens to its steps and its actions:
   完成這步 ticks a hand-kept step in the file, 交給 Claude sends the task to
   this session as a prompt, 接手做完 picks up work an ended session in this
-  project left. 完成 ticks a step that waits on you, 繼續 resumes this
+  project left, 複製續接指令 copies the command that reopens that session
+  where it ran. 完成 ticks a step that waits on you, 繼續 resumes this
   session, 封存 archives finished work, and the box at the bottom asks a side
   question that is answered in the pane without a turn of its own. Closing the
   pane by hand keeps it closed in later sessions until `/progress`.
+- **Quick add.** A line starting with `+` in that box becomes a hand-kept task:
+  `+ 求職：Meta 實習 截止 11-20；改履歷；投遞`. No project before the colon:
+  this session's repo. A job-hunting task given no steps gets the usual ones.
+- **Pull request and CI.** With [gh](https://cli.github.com) signed in, the
+  card shows this branch's PR as a link (`PR #12 · CI 失敗 2 · 等審查`), looks
+  again every two minutes while checks run, and other sessions' rows show it
+  too.
+- **Notifications.** A desktop notification when a step needs you, when the
+  whole list is done, and when this branch's CI finishes. 通知：開/關 at the
+  bottom of the pane, or `/progress 通知 關`.
+- **Status line.** With the pane closed, or a terminal too narrow for it, one
+  line under the prompt says where things stand.
+- **Journal and weekly report.** Every finished step gets a line in that
+  month's `progress-journal-YYYY-MM.md`. 週報 (or `/progress 週報`, `/progress 今天`)
+  turns the last seven days into plain text — finished, open, waiting on you —
+  and copies it, ready for a standup or a message to an advisor.
 
 Text the mod did not write (a hand-kept `## 求職` section, notes) is left byte
 for byte; each session rewrites only the lines between its own markers. Every
@@ -41,12 +58,13 @@ Needs Claude Code 2.1.287 or newer (function-hook mods); built and tested on
 2.1.289 through 2.1.301.
 
     claude plugin marketplace add WenyuChiou/claude-progress-pane
-    claude plugin install project-progress@claude-progress-pane
 
-Then run the setup script once. It sets `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` in
+Then run the setup script from the marketplace's copy. It installs the plugin
+(a no-op once done), sets `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` in
 `~/.claude/settings.json` (Claude Code leaves the Task tools out on models
 newer than Opus 4.7 / Sonnet 4.6 / Haiku 4.5 unless it is on, and without them
-there is nothing to mirror), and moves an old zip install over (below).
+there is nothing to mirror), and moves an old zip install over (below). It is
+safe to re-run.
 
 Windows:
 
@@ -57,6 +75,11 @@ macOS / Linux:
     bash ~/.claude/plugins/marketplaces/claude-progress-pane/scripts/setup.sh
 
 Restart Claude Code. The pane opens by itself; `/progress` reopens it.
+
+If the repository is public, the two steps are one line:
+
+    irm https://raw.githubusercontent.com/WenyuChiou/claude-progress-pane/main/scripts/setup.ps1 | iex
+    curl -fsSL https://raw.githubusercontent.com/WenyuChiou/claude-progress-pane/main/scripts/setup.sh | bash
 
 **Private repository.** Claude Code clones with your machine's own git
 credentials and never prompts. If the add fails, run `gh auth login` and
@@ -76,8 +99,8 @@ read as they are.
 
 Where an organization manages Claude Code, plugins you install yourself do
 not get the compaction or system-prompt hooks. There, run the script with
-`-KeepRule` (`--keep-rule` in bash) to keep the rule in `CLAUDE.md`; the
-compaction note is not available.
+`-KeepRule` (`--keep-rule` in bash) to keep the rule in `CLAUDE.md`. The
+compaction note is not available there.
 
 ## Update
 
@@ -96,7 +119,10 @@ Work as usual. For anything with two or more steps Claude makes a Task list,
 and the pane follows it.
 
 - `/progress` opens the pane; `/progress 整理` archives finished work now;
-  `/progress 同步` re-reads Claude's Task list.
+  `/progress 同步` re-reads Claude's Task list and the PR;
+  `/progress 加 …` adds a task (same as `+` in the pane);
+  `/progress 週報` / `/progress 今天` copies a report;
+  `/progress 通知 開|關` turns notifications on or off.
 - A step that needs you: Claude sets `metadata: {"waiting": "you"}` on it and
   it shows under 等你處理. `{"waiting": "run"}` is a step waiting on CI, a long
   run or someone else; `{"blocked": "why"}` is stuck.
@@ -112,7 +138,8 @@ and the pane follows it.
   `[x]` done · `[~]` doing · `[ ]` not started · `[?]` waiting on you ·
   `[>]` running · `[!]` blocked · `[-]` cancelled. `截止 MM-DD` puts the
   task under 快到期, red within three days.
-- `CLAUDE_PROGRESS_FILE` points the mod at another file.
+- `CLAUDE_PROGRESS_FILE` points the mod at another file; the archives and
+  journals sit beside it.
 
 In the terminal's default fullscreen layout the pane docks on the right: on
 its own from 144 columns, through `/progress` from 110. Under tmux or
@@ -124,7 +151,8 @@ draw no pane; under Remote Control it shows only in the local terminal.
     claude plugin uninstall project-progress@claude-progress-pane
     claude plugin marketplace remove claude-progress-pane
 
-`progress.md`, its archives and `CLAUDE_CODE_ENABLE_TODO_TOOLS` stay.
+`progress.md`, its archives and journals, and `CLAUDE_CODE_ENABLE_TODO_TOOLS`
+stay.
 
 ## Develop
 
@@ -135,17 +163,20 @@ draw no pane; under Remote Control it shows only in the local terminal.
     claude plugin test .
     tsc -p .
 
-- `hooks/parse.ts` reads the file; `hooks/blocks.ts` writes a session's block
-  and archives old ones; `hooks/mirror.ts` mirrors the Task calls and words
-  the compaction note; `hooks/view.ts` decides what the pane shows. All pure
-  and unit-tested.
+- `hooks/parse.ts` reads the file; `hooks/blocks.ts` writes a session's block,
+  a quick-added task, and archives old ones; `hooks/mirror.ts` mirrors the
+  Task calls, words the compaction note and finds what to journal or notify;
+  `hooks/view.ts` decides what the pane and the status line show;
+  `hooks/github.ts` reads `gh pr view`; `hooks/quick.ts` reads a quick add;
+  `hooks/journal.ts` writes the journal and the report. All pure and
+  unit-tested.
 - `hooks/pane.tsx` draws the pane from the view and a set of actions; it never
   touches the engine.
 - `hooks/rule.ts` is the rule the mod adds to the system prompt;
   `scripts/claude-md-rule.md` is the same rule for `-KeepRule`. Change both.
 - `hooks/register.tsx` wires them to the engine: the Task-call hooks, turn
   start and end, compaction, the system prompt, session end, the pane, the
-  command and the 2s poll.
+  command, the 2s poll and the PR check.
 
 To release: raise `version` in `.claude-plugin/plugin.json` (installed copies
 only update when it changes), add a `CHANGELOG.md` entry, check, push, then

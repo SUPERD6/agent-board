@@ -1,0 +1,103 @@
+import type { ProgressMirror, ProgressProject } from '../types'
+import { countSteps, currentStepIndex, isTaskComplete } from './parse'
+
+// A line per finished step, one file a month beside progress.md, so "what did I do this
+// week" has an answer after the blocks themselves are archived.
+//   - 2026-10-16 14:32 · persona_framework · 重做進度面板 · 寫測試
+
+export type JournalEntry = { at: string; project: string; task: string; step: string }
+
+const pad = (value: number): string => String(value).padStart(2, '0')
+
+// Local time: the journal is read by a person, in their own day.
+export const localDay = (now: number): string => {
+  const date = new Date(now)
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+}
+
+const localStamp = (now: number): string => {
+  const date = new Date(now)
+  return `${localDay(now)} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+export const journalPath = (progressPath: string, now: number): string =>
+  `${progressPath.replace(/\.md$/i, '')}-journal-${localDay(now).slice(0, 7)}.md`
+
+// The month before, so a week that spans two months reads both files.
+export const previousMonth = (now: number): number => {
+  const date = new Date(now)
+  return new Date(date.getFullYear(), date.getMonth(), 0, 12).getTime()
+}
+
+// ` · ` separates the fields, so a field never holds one.
+const field = (text: string): string => text.replace(/\s+/g, ' ').replace(/\s·\s/g, '・').trim() || '（未命名）'
+
+export const journalLine = (entry: Omit<JournalEntry, 'at'>, now: number): string =>
+  `- ${localStamp(now)} · ${field(entry.project)} · ${field(entry.task)} · ${field(entry.step)}`
+
+export const appendJournal = (text: string, lines: readonly string[]): string =>
+  lines.length === 0 ? text : `${text.trim() === '' ? '# 工作日誌\n' : text.replace(/\s*$/, '\n')}${lines.join('\n')}\n`
+
+const LINE = /^- (\d{4}-\d{2}-\d{2}) \d{2}:\d{2} · (.+?) · (.+?) · (.+)$/
+
+export const parseJournal = (text: string): JournalEntry[] =>
+  text.split(/\r?\n/).flatMap(line => {
+    const match = LINE.exec(line)
+    if (match === null) return []
+    const [, at = '', project = '', task = '', step = ''] = match
+    return [{ at, project, task, step }]
+  })
+
+// What finished in the last `days` days, what is open, and what waits on you: plain text a
+// person pastes into a weekly report, a standup or a message to an advisor.
+export const progressReport = (
+  entries: readonly JournalEntry[],
+  projects: readonly ProgressProject[],
+  mine: ProgressMirror | null,
+  now: number,
+  days: number,
+): string => {
+  const from = localDay(now - (days - 1) * 24 * 60 * 60 * 1000)
+  const to = localDay(now)
+  const heading = days === 1 ? `今天的進度（${to.slice(5)}）` : `最近 ${days} 天的進度（${from.slice(5)} – ${to.slice(5)}）`
+
+  const done = new Map<string, string[]>()
+  for (const entry of entries) {
+    if (entry.at < from || entry.at > to) continue
+    const key = `${entry.project} · ${entry.task}`
+    const steps = done.get(key) ?? []
+    if (!steps.includes(entry.step)) steps.push(entry.step)
+    done.set(key, steps)
+  }
+
+  const open: string[] = []
+  const waiting: string[] = []
+  if (mine !== null && mine.tasks.some(task => task.status !== 'completed')) {
+    const left = mine.tasks.filter(task => task.status !== 'completed')
+    const finished = mine.tasks.length - left.length
+    open.push(`- ${mine.project} · ${mine.title || left[0]?.subject || ''}：下一步 ${left[0]?.subject ?? ''}（${finished}/${mine.tasks.length}）`)
+    for (const task of left) if (task.waiting === 'you') waiting.push(`- ${mine.project} · ${task.subject}`)
+  }
+  const ownId = mine === null ? '' : mine.sessionId.slice(0, 8)
+  for (const project of projects) {
+    for (const task of project.tasks) {
+      if (task.auto?.session === ownId || task.auto?.state === 'done' || isTaskComplete(task)) continue
+      const { done: finished, total } = countSteps(task)
+      const next = task.steps[currentStepIndex(task)]?.text ?? ''
+      open.push(`- ${project.name} · ${task.title}${next === '' ? '' : `：下一步 ${next}`}（${finished}/${total}）`)
+      for (const step of task.steps) if (step.status === 'waiting') waiting.push(`- ${project.name} · ${step.text}`)
+    }
+  }
+
+  const finishedLines = [...done].map(([key, steps]) => `- ${key}：${steps.join('、')}`)
+  const sections = [
+    heading,
+    '',
+    '完成',
+    ...(finishedLines.length === 0 ? ['- （這段時間沒有完成的步驟紀錄）'] : finishedLines),
+    ...(open.length === 0 ? [] : ['', '進行中', ...open]),
+    ...(waiting.length === 0 ? [] : ['', '等我處理', ...waiting]),
+  ]
+
+  return sections.join('\n')
+}

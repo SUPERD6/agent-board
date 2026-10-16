@@ -18,10 +18,12 @@ export type TaskUpdateInput = {
 
 export type TodoInput = { content: string; status: Status; activeForm: string }
 
-export const emptyMirror = (sessionId: string, project: string, now: number): ProgressMirror => ({
+export const emptyMirror = (sessionId: string, project: string, now: number, cwd = ''): ProgressMirror => ({
   sessionId,
   project,
+  cwd,
   branch: '',
+  pr: null,
   title: '',
   isTitleFinal: false,
   firstPrompt: '',
@@ -138,6 +140,30 @@ export const fromTaskList = (mirror: ProgressMirror, listed: readonly ListedTask
 
 export const isAllDone = (mirror: ProgressMirror): boolean =>
   mirror.tasks.length > 0 && mirror.tasks.every(task => task.status === 'completed')
+
+// Steps that finished between two states of the mirror, for the journal. Matched by
+// subject, since TodoWrite numbers its list afresh on every call.
+export const completedSince = (before: ProgressMirror, after: ProgressMirror): ProgressMirrorTask[] =>
+  after.tasks.filter(
+    task => task.status === 'completed' && !before.tasks.some(old => old.status === 'completed' && old.subject === task.subject),
+  )
+
+// What deserves a desktop notification between two states of the mirror: a step that now
+// needs the person, and the whole list finishing.
+export const noticesOf = (before: ProgressMirror, after: ProgressMirror): string[] => {
+  const needs = after.tasks.filter(
+    task =>
+      task.status !== 'completed' &&
+      task.waiting === 'you' &&
+      !before.tasks.some(old => old.id === task.id && old.status !== 'completed' && old.waiting === 'you'),
+  )
+  const title = after.title || fallbackTitle(after)
+
+  return [
+    ...needs.map(task => `需要你：${task.subject}`),
+    ...(isAllDone(after) && !isAllDone(before) ? [`做完了：${title}（${after.tasks.length}/${after.tasks.length}）`] : []),
+  ]
+}
 
 export const stateOf = (mirror: ProgressMirror, isTurnRunning: boolean): ProgressSessionState => {
   if (isAllDone(mirror)) return 'done'

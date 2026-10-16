@@ -3,13 +3,15 @@ import type {
   ButtonProps,
   ElementConstructor,
   InputProps,
+  LinkProps,
   RenderElement,
+  RenderSurface,
   TextProps,
 } from 'claude-code'
 
 import type { ProgressAnswer, ProgressStepStatus } from '../types'
 import { progressBar } from './view'
-import type { StepRef, TaskRow, Tone, View, ViewStep } from './view'
+import type { PrView, StepRef, TaskRow, Tone, View, ViewStep } from './view'
 
 // The pane's drawing, from the view and a set of actions; it never touches the engine,
 // so every press goes through an action register.tsx wires up.
@@ -19,6 +21,7 @@ export type PaneUi = {
   Text: ElementConstructor<TextProps>
   Button: ElementConstructor<ButtonProps>
   Input: ElementConstructor<InputProps> | null
+  Link: ElementConstructor<LinkProps> | null
 }
 
 export type PaneActions = {
@@ -28,8 +31,12 @@ export type PaneActions = {
   takeOver: (row: TaskRow) => void
   handOver: (row: TaskRow) => void
   tick: (ref: StepRef) => void
+  // A question for the side model, or a line starting with + to add a task.
   ask: (question: string) => void
   clearAnswer: () => void
+  copyResume: (row: TaskRow, surface: RenderSurface) => void
+  report: (surface: RenderSurface) => void
+  toggleNotify: () => void
 }
 
 export type PaneModel = {
@@ -39,6 +46,7 @@ export type PaneModel = {
   path: string
   width: number
   hasTaskTools: boolean
+  isNotifyOn: boolean
 }
 
 const GLYPH: Record<ProgressStepStatus, string> = {
@@ -67,7 +75,7 @@ const isQuietStep = (status: ProgressStepStatus): boolean =>
   status === 'done' || status === 'todo' || status === 'cancelled'
 
 export const drawPane = (ui: PaneUi, model: PaneModel, actions: PaneActions): RenderElement => {
-  const { Box, Text, Button, Input } = ui
+  const { Box, Text, Button, Input, Link } = ui
   const { view } = model
 
   const spacer = () => <Box flexGrow={1} />
@@ -105,14 +113,38 @@ export const drawPane = (ui: PaneUi, model: PaneModel, actions: PaneActions): Re
     )
   }
 
-  // What a row offers once opened: take it over here, tick its step, or hand it to Claude.
+  const prLine = (pr: PrView) => (
+    <Box flexDirection="row">
+      {Link !== null ? (
+        <Link href={pr.url} label={pr.text} />
+      ) : (
+        <Text color={COLOR[pr.tone]} dimColor={pr.tone === 'quiet'} wrap="truncate-end">
+          {pr.text}
+        </Text>
+      )}
+      {Link !== null && pr.tone !== 'quiet' && <Text color={COLOR[pr.tone]}> ●</Text>}
+    </Box>
+  )
+
+  // What a row offers once opened: take it over here, reopen the session that left it, tick
+  // its step, or hand it to Claude.
   const rowActions = (row: TaskRow) => {
-    if (row.auto === 'ended' && row.isHere) {
+    if (row.auto === 'ended') {
+      const resume = row.resume
+      if (!row.isHere && resume === null) return <Text dimColor>{`到 ${row.project} 的對話接著做。`}</Text>
+
       return (
-        <Box flexDirection="row" marginTop={1}>
-          <Button key={`${row.key}::take`} variant="primary" onPress={() => actions.takeOver(row)}>
-            接手做完
-          </Button>
+        <Box flexDirection="row" marginTop={1} gap={1}>
+          {row.isHere && (
+            <Button key={`${row.key}::take`} variant="primary" onPress={() => actions.takeOver(row)}>
+              接手做完
+            </Button>
+          )}
+          {resume !== null && (
+            <Button key={`${row.key}::resume`} onPress={press => actions.copyResume(row, press.surface)}>
+              複製續接指令
+            </Button>
+          )}
         </Box>
       )
     }
@@ -155,7 +187,7 @@ export const drawPane = (ui: PaneUi, model: PaneModel, actions: PaneActions): Re
         </Box>
         <Box paddingLeft={2} flexDirection="row">
           <Text color={COLOR[row.tone]} dimColor={row.tone === 'quiet'} wrap="truncate-end">
-            {[row.due === null ? '' : `${row.due.date} · ${row.project}`, row.status, row.when]
+            {[row.due === null ? '' : `${row.due.date} · ${row.project}`, row.status, row.pr, row.when]
               .filter(part => part !== '')
               .join(' · ')}
           </Text>
@@ -206,10 +238,12 @@ export const drawPane = (ui: PaneUi, model: PaneModel, actions: PaneActions): Re
         <Box flexDirection="column" marginTop={1}>
           <Text>目前沒有進行中的工作。</Text>
           <Text dimColor wrap="wrap">
-            Claude 用 Task 清單開工後，這裡會自動出現。
+            Claude 用 Task 清單開工後，這裡會自動出現；也可以在下面打「+ 專案：要做的事」自己加。
           </Text>
         </Box>
       )}
+
+      {current === null && view.pr !== null && <Box marginTop={1}>{prLine(view.pr)}</Box>}
 
       {current !== null && (
         <Box
@@ -233,6 +267,7 @@ export const drawPane = (ui: PaneUi, model: PaneModel, actions: PaneActions): Re
           <Text color={COLOR[current.tone]} dimColor={current.tone === 'quiet'} wrap="wrap">
             {current.status}
           </Text>
+          {view.pr !== null && prLine(view.pr)}
           {bar(current.done, current.total)}
           {current.steps.map(stepRow)}
           {current.state === 'waiting' && (
@@ -293,7 +328,7 @@ export const drawPane = (ui: PaneUi, model: PaneModel, actions: PaneActions): Re
 
       {Input !== null && (
         <Box flexDirection="column" marginTop={1}>
-          <Input key="ask" placeholder="問一句，不會打斷 Claude" submitLabel="問" onSubmit={actions.ask} />
+          <Input key="ask" placeholder="問一句；+ 開頭就新增一件事" submitLabel="送出" onSubmit={actions.ask} />
         </Box>
       )}
       {model.answer !== null && (
@@ -303,18 +338,27 @@ export const drawPane = (ui: PaneUi, model: PaneModel, actions: PaneActions): Re
           </Text>
           <Text wrap="wrap">{model.answer.isAsking ? '想一下…' : model.answer.text}</Text>
           {!model.answer.isAsking && (
-            <Button key="clear-answer" plain dimColor onPress={actions.clearAnswer}>
-              清掉
-            </Button>
+            <Box flexDirection="row" gap={1}>
+              {model.answer.copied === true && <Text color="cyan">已複製到剪貼簿</Text>}
+              <Button key="clear-answer" plain dimColor onPress={actions.clearAnswer}>
+                清掉
+              </Button>
+            </Box>
           )}
         </Box>
       )}
 
-      <Box marginTop={1}>
-        <Text dimColor wrap="truncate-start">
-          {model.path}
-        </Text>
+      <Box flexDirection="row" marginTop={1} gap={1}>
+        <Button key="report" plain dimColor onPress={press => actions.report(press.surface)}>
+          週報
+        </Button>
+        <Button key="notify" plain dimColor onPress={actions.toggleNotify}>
+          {model.isNotifyOn ? '通知：開' : '通知：關'}
+        </Button>
       </Box>
+      <Text dimColor wrap="truncate-start">
+        {model.path}
+      </Text>
     </Box>
   )
 }
