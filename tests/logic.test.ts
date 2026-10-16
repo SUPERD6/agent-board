@@ -71,7 +71,7 @@ test('the block lands under its project, is replaced in place, and comes out cle
   const manual = '# 專案進度\n\n## 求職\n### Google\n- [ ] 投遞\n\n## persona_framework\n### 手寫的\n- [ ] 一\n'
   const once = upsertAutoBlock(manual, sampleMirror())
   expect(once.startsWith(manual.replace(/\n$/, ''))).toBe(true)
-  expect(once).toContain('<!-- auto session=2be48af2 state=working')
+  expect(once).toContain('<!-- auto session=2be48af2 agent=claude state=working')
   expect(once).toContain('- [~] 寫 Mod')
 
   const twice = upsertAutoBlock(once, { ...sampleMirror(), state: 'waiting' })
@@ -168,9 +168,12 @@ test('the view sorts work into this session, waiting on you, due soon, other and
   const view = buildView(parseProgress(others), ['persona_framework'], sampleMirror(), NOW)
   expect(view.current?.title).toBe('進度面板')
   expect(view.current?.status).toBe('正在做：寫 Mod 中')
-  expect(view.waiting.map(w => w.text)).toEqual(['修 CI · 等你回覆', '推薦信 — 等教授回覆'])
+  expect(view.waiting.map(w => [w.task, w.text, w.note])).toEqual([
+    ['修 CI', '等你回覆', ''],
+    ['Google 暑期實習', '推薦信', '等教授回覆'],
+  ])
   expect(view.due.map(d => [d.title, d.due?.left, d.due?.tone, d.status])).toEqual([
-    ['Google 暑期實習', '還有 2 天', 'alert', '等你：推薦信 — 等教授回覆'],
+    ['Google 暑期實習', '還有 2 天', 'alert', '等你：推薦信'],
   ])
   // Listed under 快到期, so not again under 其他進行中.
   expect(view.active.map(a => [a.project, a.status])).toEqual([['FLOODABM', '對話已結束，可接手']])
@@ -180,9 +183,11 @@ test('the view sorts work into this session, waiting on you, due soon, other and
 test('long lists fold finished steps and the far end', () => {
   const steps = Array.from({ length: 12 }, (_, i) => ({
     text: `步驟 ${i + 1}`,
+    note: '',
     status: i < 4 ? ('done' as const) : ('todo' as const),
     depth: 0,
     isCurrent: i === 4,
+    number: i + 1,
   }))
   expect(foldSteps(steps).map(s => s.text)).toEqual([
     '已完成 4 步',
@@ -285,7 +290,7 @@ test('an end marker closes only its own block, and an unclosed block stops befor
   const mirror = { ...sampleMirror(), sessionId: 'aaaaaaaa-1', project: 'alpha' }
   const out = upsertAutoBlock(lines.join('\n') + '\n', mirror)
   expect(out).toContain('### 手寫的\n- [ ] 別蓋掉我')
-  expect(out.match(/session=aaaaaaaa state=/g)).toHaveLength(1)
+  expect(out.match(/session=aaaaaaaa agent=claude state=/g)).toHaveLength(1)
 })
 
 test("the person's own store settings are never aged out", () => {
