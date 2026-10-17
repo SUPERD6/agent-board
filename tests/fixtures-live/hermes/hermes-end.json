@@ -1,0 +1,12 @@
+{
+  "hook_event_name": "on_session_finalize",
+  "tool_name": null,
+  "tool_input": null,
+  "session_id": "20261017_043749_5a5bfb",
+  "cwd": "/home/me/agent-board-live/api-gateway",
+  "extra": {
+    "platform": "cli",
+    "reason": "shutdown",
+    "telemetry_schema_version": "hermes.observer.v1"
+  }
+}
