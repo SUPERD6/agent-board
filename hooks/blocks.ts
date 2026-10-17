@@ -75,6 +75,16 @@ const markerOf = (mirror: ProgressMirror): string => {
   return `<!-- auto ${attrs.filter(attr => attr !== '').join(' ')} -->`
 }
 
+// A task's step line after its mark: what the block holds, and what a reader of the file gets
+// back (trimmed). The pane keys a question on it too, so its key is the one every other reader
+// of the block works out.
+export const stepWords = (task: ProgressMirrorTask): string => {
+  const note = task.blocked !== null && task.blocked !== '' ? task.blocked : task.status === 'completed' ? '' : (task.why ?? '')
+  const reason = note === '' ? '' : ` — ${oneLine(note)}`
+
+  return `${oneLine(task.subject)}${reason}`
+}
+
 export const renderAutoBlock = (mirror: ProgressMirror, s: Strings = ZH_TW): string[] => {
   const id = shortId(mirror.sessionId)
   const pr = mirror.pr ?? null
@@ -89,10 +99,8 @@ export const renderAutoBlock = (mirror: ProgressMirror, s: Strings = ZH_TW): str
     ...mirror.tasks.map(asked => {
       // A step the person answered is written as Claude's to do again, not as waiting on them.
       const task = isAnswered(mirror, asked) ? { ...asked, waiting: null, why: s.answeredNote } : asked
-      const note = task.blocked !== null && task.blocked !== '' ? task.blocked : task.status === 'completed' ? '' : (task.why ?? '')
-      const reason = note === '' ? '' : ` — ${oneLine(note)}`
 
-      return `- [${markOf(task)}] ${oneLine(task.subject)}${reason}`
+      return `- [${markOf(task)}] ${stepWords(task)}`
     }),
     `<!-- /auto session=${id} -->`,
   ]

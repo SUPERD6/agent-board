@@ -75,6 +75,8 @@ export type ServeAsk = {
   command: string | null
   link: string | null
   canTick: boolean
+  // Another session's question can be marked answered: kept off the board until it changes.
+  canHide: boolean
   send: SendMode
   // The session a reply goes to: the page sends it back with the reply, so a line that now
   // belongs to another session is refused.
@@ -104,6 +106,10 @@ export type ServeRow = {
   canArchive: boolean
   resume: string | null
   handoff: string
+  // Its session still asks the person something (not marked answered): the card opens by itself.
+  isAsking: boolean
+  // That question, as a reply from the page names it; '' when none.
+  question: string
   send: SendMode
   session: string
   where: string
@@ -113,11 +119,15 @@ export type ServeRow = {
   hasCopyBox: boolean
 }
 
+// A question marked answered, listed so it can be shown again.
+export type ServeHidden = { key: string; project: string; agent: string; task: string; text: string }
+
 export type ServeTurn = { key: string; project: string; agent: string; text: string; isQuestion: boolean; info: string }
 
 export type ServeModel = {
   counts: { waiting: number; active: number; due: number; today: number }
   asks: ServeAsk[]
+  hidden: ServeHidden[]
   groups: Array<{ project: string; rows: ServeRow[] }>
   turns: ServeTurn[]
   // Finished in the last day, until it goes to the archive.
@@ -164,6 +174,7 @@ export const serveModel = (view: View, pending: readonly PendingTurn[], s: Strin
         command: ask.command,
         link: ask.link,
         canTick: ask.step !== null,
+        canHide: ask.hideKey !== '',
         send,
         session: ask.target?.session ?? '',
         where: send === 'send' ? (ask.target?.dir ?? '') : '',
@@ -197,6 +208,8 @@ export const serveModel = (view: View, pending: readonly PendingTurn[], s: Strin
         // The command to resume a session names its folder, and the account with it: the computer's only.
         resume: isLan ? null : row.resume,
         handoff: row.handoff,
+        isAsking: row.question !== null,
+        question: row.question ?? '',
         send,
         session: row.target?.session ?? '',
         where: send === 'send' ? (row.target?.dir ?? '') : '',
@@ -222,6 +235,7 @@ export const serveModel = (view: View, pending: readonly PendingTurn[], s: Strin
   return {
     counts: { ...view.overview, waiting: view.overview.waiting + pending.filter(turn => turn.isQuestion).length },
     asks,
+    hidden: view.hidden.map(item => ({ key: `hidden:${item.hideKey}`, project: item.project, agent: item.agent, task: item.task, text: item.text })),
     groups: [...groups].map(([project, rows]) => ({ project, rows })),
     turns,
     recent: view.recent.map(item => ({ project: item.project, title: item.title, when: item.when })),
@@ -234,6 +248,8 @@ export type ServeRequest = { key: string; type: string; text: string; session: s
 export type ServeAction =
   | { type: 'tick'; ref: StepRef }
   | { type: 'archive'; ref: TaskRef; title: string }
+  | { type: 'hide'; key: string; text: string }
+  | { type: 'unhide'; key: string | null }
   | { type: 'send'; target: AgentTarget; text: string; title: string }
   | { type: 'refuse'; note: string }
 
@@ -253,6 +269,8 @@ export const replyText = (raw: string): string =>
 // From the local network (`isLan`) a reply to an agent is refused: it would run a program on
 // the computer, and the network's page is plain HTTP that others on the network could read.
 export const serveAction = (items: readonly BoardItem[], request: ServeRequest, s: Strings = ZH_TW, isLan = false): ServeAction => {
+  // A hidden question is off the board: it is named by the key it was hidden under.
+  if (request.type === 'unhide') return request.key.startsWith('hidden:') ? { type: 'unhide', key: request.key.slice('hidden:'.length) } : { type: 'refuse', note: '' }
   const item = items.find(one => one.key === request.key)
   if (item === undefined) return { type: 'refuse', note: s.boardLineChanged }
   if (request.type === 'tick') {
@@ -261,6 +279,8 @@ export const serveAction = (items: readonly BoardItem[], request: ServeRequest, 
     if (ref !== null && item.type === 'row' && request.text !== ref.step) return { type: 'refuse', note: s.boardLineChanged }
     return ref === null ? { type: 'refuse', note: s.boardTickGone } : { type: 'tick', ref }
   }
+  // Marked answered sends nothing: only the hidden list is written.
+  if (request.type === 'hide') return item.type === 'ask' && item.ask.hideKey !== '' ? { type: 'hide', key: item.ask.hideKey, text: item.ask.text } : { type: 'refuse', note: '' }
   if (request.type === 'archive') {
     return item.type === 'row' && item.row.archive !== null ? { type: 'archive', ref: item.row.archive, title: item.row.title } : { type: 'refuse', note: s.archiveGone }
   }
@@ -279,8 +299,8 @@ export const serveAction = (items: readonly BoardItem[], request: ServeRequest, 
   if (request.session !== target.session) return { type: 'refuse', note: s.boardLineChanged }
   // An answer goes with the question it answers, the way the pane words one for Claude, and
   // only while that question is still the one asked: a task keeps its key while its question
-  // is answered, reworded or replaced by another.
-  const question = item.type === 'ask' ? item.ask.text : item.row.steps.find(step => step.status === 'waiting')?.text
+  // is answered, reworded, replaced by another or marked answered here.
+  const question = item.type === 'ask' ? item.ask.text : (item.row.question ?? undefined)
   if ((request.asked ?? '') !== (question ?? '')) return { type: 'refuse', note: s.boardLineChanged }
   if (text === '') return { type: 'refuse', note: '' }
 
@@ -366,6 +386,9 @@ const PAGE_WORDS = [
   'serveCopyResume',
   'serveCopyCommand',
   'serveOpenLink',
+  'answeredHide',
+  'showAgain',
+  'hiddenCount',
   'serveReplyPlaceholder',
   'serveMessagePlaceholder',
   'serveSend',
@@ -604,6 +627,7 @@ const PAGE_SCRIPT = String.raw`
       actions.appendChild(node);
     });
     if (ask.command) actions.appendChild(button(w('serveCopyCommand'), function () { copy(ask.command); }));
+    if (ask.canHide) actions.appendChild(button(w('answeredHide'), function () { act(ask.key, 'hide'); }));
     if (ask.link && /^https:\/\//i.test(ask.link)) {
       var link = el('a', 'btn', w('serveOpenLink'));
       link.href = ask.link;
@@ -618,9 +642,9 @@ const PAGE_SCRIPT = String.raw`
   }
   function rowCard(row) {
     var card = el('details', 'card row');
-    var isWaiting = row.steps.some(function (step) { return step.status === 'waiting'; });
+    var isWaiting = row.isAsking;
     // A reply goes with the question it was written under, and only while it is still asked.
-    var asked = (row.steps.filter(function (step) { return step.status === 'waiting'; })[0] || { text: '' }).text;
+    var asked = row.question;
     card.open = row.key in opened ? opened[row.key] : row.send === 'send' || isWaiting;
     card.addEventListener('toggle', function () { opened[row.key] = card.open; });
     var summary = el('summary');
@@ -668,6 +692,16 @@ const PAGE_SCRIPT = String.raw`
     add(board, el('h2', 'n-waiting', '● ' + w('sectionWaiting')));
     if (model.asks.length === 0) add(board, el('div', 'n-today', w('nothingForYou')));
     model.asks.forEach(function (ask) { board.appendChild(askCard(ask)); });
+    if (model.hidden.length) {
+      var shelf = el('details', 'card');
+      shelf.open = opened['hidden:'] === true;
+      shelf.addEventListener('toggle', function () { opened['hidden:'] = shelf.open; });
+      add(shelf, add(el('summary'), el('span', 'quiet', w('hiddenCount', model.hidden.length))));
+      model.hidden.forEach(function (one) {
+        add(shelf, add(el('div'), el('div', 'where', [one.project, one.agent].filter(Boolean).join(' · ') + (one.task ? ' › ' + one.task : '')), el('div', 'q', one.text), add(el('div', 'actions'), button(w('showAgain'), function () { act(one.key, 'unhide'); }))));
+      });
+      board.appendChild(shelf);
+    }
     model.groups.forEach(function (group) {
       add(board, el('h2', 'where', '▸ ' + group.project));
       group.rows.forEach(function (row) { board.appendChild(rowCard(row)); });
@@ -687,7 +721,7 @@ const PAGE_SCRIPT = String.raw`
         call('/api/tidy', {}).then(function (data) { say(data.note || '', data.ok ? 'done' : 'alert'); refresh(); }, function () { say(w('serveOffline'), 'alert'); });
       }))));
     }
-    if (model.groups.length === 0 && model.asks.length === 0 && model.turns.length === 0 && model.recent.length === 0) add(board, el('div', 'quiet', w('empty')));
+    if (model.groups.length === 0 && model.asks.length === 0 && model.hidden.length === 0 && model.turns.length === 0 && model.recent.length === 0) add(board, el('div', 'quiet', w('empty')));
     board.querySelectorAll('textarea[data-key]').forEach(function (box) {
       var key = box.getAttribute('data-key');
       if (key in kept) box.value = kept[key];
