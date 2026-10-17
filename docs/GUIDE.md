@@ -193,6 +193,8 @@ Progress shows only while some Claude Code session is open. Turns that arrive wh
 
 **An agent on another machine** (a cloud VM, a chat assistant) can report too: it writes its block as a fragment, and a merge step on this machine puts it into `progress.md`; see [Remote reporters](REMOTE_REPORTERS.md).
 
+**dot, and explicit reports from Codex:** the opt-in [local exchange](LOCAL-EXCHANGE.md) writes the same kind of fragment, merged by the same step, and keeps a local message queue with receipts.
+
 ## How it keeps itself tidy
 
 | What | When |

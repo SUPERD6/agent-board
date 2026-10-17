@@ -202,6 +202,8 @@ hook 运行的是 `/progress connect` 写好的 `~/.claude/progress-report.sh`�
 
 **在别的机器上的 agent**（云端 VM、聊天助手）也能汇报：它把自己那块写成片段，由这台电脑上的合并步骤放进 `progress.md`，见 [Remote reporters](REMOTE_REPORTERS.md)。
 
+**dot，以及 Codex 的明确汇报**：自行选用的[本地交换](LOCAL-EXCHANGE.md)写的也是同一种片段，用同一个合并步骤放进去，并在本地保留一个带回执的消息队列。
+
 ## 它怎么保持整齐
 
 | 项目 | 时机 |
