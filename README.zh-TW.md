@@ -7,7 +7,7 @@
 
 [English](README.md) · 繁體中文 · [简体中文](README.zh-CN.md)
 
-給同時開好幾個 AI coding agent 的人用。哪個 agent 在等你，一看就知道，不會再讓它們乾等。
+**Agent Board** 給同時開好幾個 AI coding agent 的人用。哪個 agent 在等你，一看就知道，不會再讓它們乾等。
 
 ## 為什麼需要它
 
@@ -20,8 +20,8 @@
 ## 安裝
 
 ```
-claude plugin marketplace add WenyuChiou/claude-progress-pane
-claude plugin install project-progress@claude-progress-pane
+claude plugin marketplace add WenyuChiou/agent-board
+claude plugin install agent-board@agent-board
 claude -p "/progress connect"
 ```
 
@@ -30,10 +30,10 @@ claude -p "/progress connect"
 **或者讓 agent 幫你裝。** 把下面這段貼給 Codex、Gemini CLI、Cursor、Grok、Muse，或任何能執行指令的 agent：
 
 ```text
-幫我在這台電腦裝 Claude Code 的 claude-progress-pane 外掛，並把這台電腦上的 coding agent 接上它。
+幫我在這台電腦裝 Claude Code 的 Agent Board 外掛，並把這台電腦上的 coding agent 接上它。
 依序執行這三行，任何一行失敗就停下來告訴我：
-claude plugin marketplace add WenyuChiou/claude-progress-pane
-claude plugin install project-progress@claude-progress-pane
+claude plugin marketplace add WenyuChiou/agent-board
+claude plugin install agent-board@agent-board
 claude -p "/progress connect"
 最後把最後一行印出的內容給我看，並告訴我要重開哪些 agent。
 ```

@@ -15,8 +15,8 @@ import { parseProgress } from '../../hooks/parse'
 import { STRINGS } from '../../hooks/strings'
 import { buildView } from '../../hooks/view'
 import { NOW, SAMPLES, SESSION, MIN } from './samples'
-import { CELL, LINE, MONO, gridSvg, keyBox, layout, rowOf } from './terminal'
-import type { Node, Theme } from './terminal'
+import { CELL, LINE, MONO, gridSvg, keyBox, layout, rowOf, toNode } from './terminal'
+import type { Theme } from './terminal'
 
 // The JSX in pane.tsx compiles to h(type, props, ...children).
 ;(globalThis as Record<string, unknown>).h = (type: string, props: Record<string, unknown> | null, ...children: unknown[]) => ({
@@ -50,12 +50,12 @@ const WORDS: Record<Lang, {
   tagline: [string, string]
   features: Array<[string, keyof Palette, string]>
   agents: string
-  flow: { sources: Array<[string, string]>; outputs: Array<[string, string]>; into: [string, string, string]; file: string }
+  flow: { heads: [string, string, string]; sources: Array<[string, string]>; outputs: Array<[string, string]>; into: [string, string, string]; file: string }
   window: string
 }> = {
   en: {
     kicker: 'CLAUDE CODE PLUGIN  ·  MIT',
-    tagline: ['A progress dashboard for coding agents.', 'What needs you first, every project at a glance.'],
+    tagline: ['One pane for every AI coding agent.', 'Whatever is waiting on you comes first.'],
     features: [
       ['●', 'waiting', 'One question at a time, with a button per answer'],
       ['▸', 'accent', 'Every agent reports through its own hooks'],
@@ -64,25 +64,26 @@ const WORDS: Record<Lang, {
     ],
     agents: 'English  ·  繁體中文  ·  简体中文',
     flow: {
+      heads: ['Who reports', 'One file', 'Where you see it'],
       sources: [
-        ['Claude Code sessions', 'Every turn, with or without a Task list'],
-        ['Other agents', 'Codex, Gemini, Cursor, Grok and more'],
-        ['You', 'Tasks kept by hand, + quick add'],
+        ['Claude Code', 'Reports every turn by itself'],
+        ['Other agents', 'Codex, Gemini, Cursor…'],
+        ['You', 'Add a task by hand'],
       ],
-      into: ['automatically', 'their hooks', 'type or edit'],
-      file: 'one Markdown file, one block per session',
+      into: ['on its own', 'through hooks', 'type it in'],
+      file: 'One Markdown file, one block per session',
       outputs: [
-        ['The pane', 'Needs you first, in Claude Code'],
-        ['progress.html', 'Browser and phone, refreshes itself'],
-        ['Archive and journal', 'Monthly files, weekly report'],
-        ['Status line, notifications', 'When the pane is closed'],
+        ['The pane', 'What needs you comes first'],
+        ['progress.html', 'Any browser, even your phone'],
+        ['Archive & report', 'Monthly files, weekly report'],
+        ['Status line & alerts', 'Even with the pane closed'],
       ],
     },
     window: 'claude  —  acme-web',
   },
   'zh-TW': {
     kicker: 'CLAUDE CODE 外掛  ·  MIT',
-    tagline: ['給 coding agent 用的進度看板。', '需要你的事放最前面，每個專案一眼看完。'],
+    tagline: ['所有 AI coding agent，一個面板看完。', '等你的事，永遠排第一個。'],
     features: [
       ['●', 'waiting', '一次一個問題，每個答案一個按鈕'],
       ['▸', 'accent', '各家 agent 用自己的 hook 回報，不用記得'],
@@ -91,25 +92,26 @@ const WORDS: Record<Lang, {
     ],
     agents: 'English  ·  繁體中文  ·  简体中文',
     flow: {
+      heads: ['誰在回報', '寫進同一個檔', '在哪裡看'],
       sources: [
-        ['Claude Code 對話', '每回合自動整理，有沒有 Task 清單都行'],
-        ['其他 agent', 'Codex、Gemini、Cursor、Grok 等'],
-        ['你', '手記的事、用 + 快速新增'],
+        ['Claude Code', '每回合自動回報'],
+        ['其他 agent', 'Codex、Gemini、Cursor…'],
+        ['你', '自己加一件事'],
       ],
-      into: ['自動', '各自的 hook', '打字或編輯'],
+      into: ['自動', '透過 hook', '自己打'],
       file: '一個 Markdown 檔，每個對話一塊',
       outputs: [
-        ['面板', '在 Claude Code 裡，需要你的放最前'],
-        ['progress.html', '瀏覽器和手機，自己更新'],
-        ['封存與日誌', '每月檔案、週報'],
-        ['狀態列、通知', '面板關著時也知道'],
+        ['面板', '等你的事排最前面'],
+        ['progress.html', '瀏覽器、手機都能看'],
+        ['封存與週報', '每月存檔，每週報告'],
+        ['狀態列與通知', '面板關著也知道'],
       ],
     },
     window: 'claude  —  acme-web',
   },
   'zh-CN': {
     kicker: 'CLAUDE CODE 插件  ·  MIT',
-    tagline: ['给 coding agent 用的进度看板。', '需要你的事放最前面，每个项目一眼看完。'],
+    tagline: ['所有 AI coding agent，一个面板看完。', '等你的事，永远排第一个。'],
     features: [
       ['●', 'waiting', '一次一个问题，每个答案一个按钮'],
       ['▸', 'accent', '各家 agent 用自己的 hook 汇报，不用记得'],
@@ -118,18 +120,19 @@ const WORDS: Record<Lang, {
     ],
     agents: 'English  ·  繁體中文  ·  简体中文',
     flow: {
+      heads: ['谁在汇报', '写进同一个文件', '在哪里看'],
       sources: [
-        ['Claude Code 对话', '每回合自动整理，有没有 Task 清单都行'],
-        ['其他 agent', 'Codex、Gemini、Cursor、Grok 等'],
-        ['你', '手记的事、用 + 快速添加'],
+        ['Claude Code', '每回合自动汇报'],
+        ['其他 agent', 'Codex、Gemini、Cursor…'],
+        ['你', '自己加一件事'],
       ],
-      into: ['自动', '各自的 hook', '打字或编辑'],
+      into: ['自动', '通过 hook', '自己打'],
       file: '一个 Markdown 文件，每个对话一块',
       outputs: [
-        ['面板', '在 Claude Code 里，需要你的放最前'],
-        ['progress.html', '浏览器和手机，自己刷新'],
-        ['归档与日志', '每月文件、周报'],
-        ['状态栏、通知', '面板关着时也知道'],
+        ['面板', '等你的事排最前面'],
+        ['progress.html', '浏览器、手机都能看'],
+        ['归档与周报', '每月存档，每周报告'],
+        ['状态栏与通知', '面板关着也知道'],
       ],
     },
     window: 'claude  —  acme-web',
@@ -189,9 +192,9 @@ const paneGrid = (lang: Lang, mode: Mode, frame: Frame) => {
     { Box: 'Box', Text: 'Text', Button: 'Button', Input: 'Input', Link: 'Link' } as never,
     { view, expanded: frame.expanded ?? '', opened: frame.opened, answer, path: sample.path, width: 26, hasTaskTools: true, isNotifyOn: true, isLegendOpen: false, palette: t.palette, s } as never,
     {} as never,
-  ) as unknown as Node
+  )
   const theme: Theme = { ground: t.ground, ink: t.ink, edge: t.edge, muted: t.palette.muted, accent: t.palette.accent, frame: t.palette.frame }
-  return { grid: layout(tree, WIDTH, theme), theme, firstOption: option[0] ?? '' }
+  return { grid: layout(toNode(tree) ?? '', WIDTH, theme), theme, firstOption: option[0] ?? '' }
 }
 
 // A terminal window around a grid: a title bar, then the cells.
@@ -227,13 +230,13 @@ const hero = (lang: Lang, mode: Mode): string => {
         `<text x="104" y="${y}" font-family="${SANS}" font-size="${isCjk ? 20 : 19}" fill="${page.ink}">${esc(text)}</text>`
     })
     .join('\n')
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-label="claude-progress-pane: ${esc(w.tagline.join(' '))}">
-<title>claude-progress-pane</title>
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-label="Agent Board: ${esc(w.tagline.join(' '))}">
+<title>Agent Board</title>
 <defs><clipPath id="edge"><rect width="1280" height="640" rx="20"/></clipPath></defs>
 <g clip-path="url(#edge)">
 <rect width="1280" height="640" fill="${page.ground}"/>
 <text x="72" y="128" font-family="${SANS}" font-size="15" font-weight="600" letter-spacing="3" fill="${page.muted}">${esc(w.kicker)}</text>
-<text x="70" y="196" font-family="${SANS}" font-size="50" font-weight="700" fill="${page.ink}">claude-progress-pane</text>
+<text x="70" y="196" font-family="${SANS}" font-size="50" font-weight="700" fill="${page.ink}">Agent Board</text>
 <text x="72" y="256" font-family="${SANS}" font-size="${isCjk ? 25 : 24}" fill="${page.ink}">${esc(w.tagline[0])}</text>
 <text x="72" y="294" font-family="${SANS}" font-size="${isCjk ? 25 : 24}" fill="${page.muted}">${esc(w.tagline[1])}</text>
 ${features}
@@ -244,49 +247,68 @@ ${terminal(mode, w.window, body, rows + 6, 1280 - windowWidth - 64, 64)}
 `
 }
 
-// How it works: who writes progress.md, and what reads it.
+// How it works: who writes progress.md, and what reads it. Three numbered columns, big
+// type and few words, so it reads at the width GitHub shows it.
 const flow = (lang: Lang, mode: Mode): string => {
   const w = WORDS[lang].flow
   const page = PAGE[mode]
   const pal = TERMINAL[mode].palette
-  const card = (x: number, y: number, cw: number, ch: number, title: string, sub: string, dot: string) =>
-    `<rect x="${x}" y="${y}" width="${cw}" height="${ch}" rx="12" fill="${page.card}" stroke="${page.line}"/>
-<circle cx="${x + 22}" cy="${y + 30}" r="5" fill="${dot}"/>
-<text x="${x + 38}" y="${y + 36}" font-family="${SANS}" font-size="18" font-weight="600" fill="${page.ink}">${esc(title)}</text>
-<text x="${x + 38}" y="${y + 62}" font-family="${SANS}" font-size="14" fill="${page.muted}">${esc(sub)}</text>`
+  const W = 1280
+  const H = 620
+  const card = (x: number, y: number, cw: number, ch: number, title: string, sub: string, dot: string, big: number) =>
+    `<rect x="${x}" y="${y}" width="${cw}" height="${ch}" rx="14" fill="${page.card}" stroke="${page.line}" stroke-width="1.4"/>
+<circle cx="${x + 28}" cy="${y + ch / 2 - 15}" r="7" fill="${dot}"/>
+<text x="${x + 48}" y="${y + ch / 2 - 6}" font-size="${big}" font-weight="700" fill="${page.ink}">${esc(title)}</text>
+<text x="${x + 48}" y="${y + ch / 2 + 26}" font-size="19" fill="${page.muted}">${esc(sub)}</text>`
   const dots = [pal.accent, pal.running, pal.waiting]
   const outDots = [pal.accent, pal.project, pal.done, pal.soon]
-  const left = w.sources.map(([title, sub], i) => card(40, 78 + i * 140, 330, 88, title, sub, dots[i] ?? pal.accent)).join('\n')
-  const right = w.outputs.map(([title, sub], i) => card(910, 52 + i * 112, 330, 88, title, sub, outDots[i] ?? pal.accent)).join('\n')
-  const doc = { x: 500, y: 110, w: 280, h: 330 }
-  const text = FILE_LINES[lang]
+  const top = 120
+  const left = { x: 40, w: 316, h: 116, gap: 152 }
+  const right = { x: 904, w: 336, h: 94, gap: 112 }
+  const doc = { x: 508, y: top, w: 316, h: 430 }
+  const sources = w.sources.map(([title, sub], i) => card(left.x, top + i * left.gap, left.w, left.h, title, sub, dots[i] ?? pal.accent, 28)).join('\n')
+  const outputs = w.outputs.map(([title, sub], i) => card(right.x, top + i * right.gap, right.w, right.h, title, sub, outDots[i] ?? pal.accent, 24)).join('\n')
   const colors = [pal.project, page.muted, page.ink, pal.done, pal.accent, pal.waiting, page.ink, pal.project, page.muted, pal.waiting, page.ink, pal.project, pal.soon]
-  const lines: Array<[string, string]> = text.map((one, i) => [one, colors[i] ?? page.ink])
-  const fileText = lines
-    .map(([text, color], i) => (text === '' ? '' : `<text x="${doc.x + 22}" y="${doc.y + 72 + i * 19}" fill="${color}">${esc(text)}</text>`))
+  const fileText = FILE_LINES[lang]
+    .map((line, i) => (line === '' ? '' : `<text x="${doc.x + 24}" y="${doc.y + 84 + i * 25}" fill="${colors[i] ?? page.ink}">${esc(line)}</text>`))
     .join('\n')
   const arrow = (x1: number, y1: number, x2: number, y2: number) => {
     const mid = (x1 + x2) / 2
-    return `<path d="M${x1} ${y1} C${mid} ${y1} ${mid} ${y2} ${x2 - 6} ${y2}" fill="none" stroke="${pal.frame}" stroke-width="1.6" marker-end="url(#head)"/>`
+    return `<path d="M${x1} ${y1} C${mid} ${y1} ${mid} ${y2} ${x2 - 8} ${y2}" fill="none" stroke="${pal.accent}" stroke-opacity="0.55" stroke-width="2.6" marker-end="url(#head)"/>`
   }
-  const ins = w.sources.map((_, i) => arrow(370, 122 + i * 140, doc.x, doc.y + 90 + i * 70)).join('\n')
+  const ins = w.sources.map((_, i) => arrow(left.x + left.w, top + i * left.gap + left.h / 2, doc.x, doc.y + 110 + i * 110)).join('\n')
   const labels = w.into
-    .map((text, i) => `<text x="382" y="${112 + i * 140}" font-family="${SANS}" font-size="13" fill="${page.muted}">${esc(text)}</text>`)
+    // Above the arrow, except the last, whose arrow climbs through that spot.
+    .map((text, i) => `<text x="${left.x + left.w + 14}" y="${top + i * left.gap + left.h / 2 + (i === w.into.length - 1 ? 30 : -14)}" font-size="17" font-weight="600" fill="${page.muted}">${esc(text)}</text>`)
     .join('\n')
-  const outs = w.outputs.map((_, i) => arrow(doc.x + doc.w, doc.y + 70 + i * 62, 910, 96 + i * 112)).join('\n')
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="520" viewBox="0 0 1280 520" role="img" aria-label="progress.md: ${esc(w.file)}">
+  const outs = w.outputs.map((_, i) => arrow(doc.x + doc.w, doc.y + 90 + i * 84, right.x, top + i * right.gap + right.h / 2)).join('\n')
+  // The column heads, numbered in reading order, over the middle of each column.
+  const heads = w.heads
+    .map((text, i) => {
+      const cx = [left.x + left.w / 2, doc.x + doc.w / 2, right.x + right.w / 2][i] ?? 0
+      // Roughly how wide the heading sets, so the number and the words centre as one.
+      const textW = [...text].reduce((sum, ch) => sum + (/[\u2E80-\uFFFF]/.test(ch) ? 24 : 13.5), 0)
+      const x0 = cx - (32 + 12 + textW) / 2
+      return `<circle cx="${x0 + 16}" cy="68" r="16" fill="${pal.accent}"/><text x="${x0 + 16}" y="75" text-anchor="middle" font-size="19" font-weight="700" fill="${page.card}">${i + 1}</text>` +
+        `<text x="${x0 + 44}" y="76" font-size="24" font-weight="700" fill="${page.ink}">${esc(text)}</text>`
+    })
+    .join('\n')
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="progress.md: ${esc(w.file)}">
 <title>progress.md</title>
-<defs><marker id="head" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="${pal.frame}"/></marker></defs>
-<rect width="1280" height="520" rx="20" fill="${page.ground}"/>
-${left}
+<defs><marker id="head" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="${pal.accent}"/></marker></defs>
+<rect width="${W}" height="${H}" rx="20" fill="${page.ground}"/>
+<g font-family="${SANS}">
+${heads}
+${sources}
 ${ins}
 ${labels}
-<rect x="${doc.x}" y="${doc.y}" width="${doc.w}" height="${doc.h}" rx="14" fill="${page.card}" stroke="${pal.accent}" stroke-width="2"/>
-<text x="${doc.x + 22}" y="${doc.y + 36}" font-family="${MONO}" font-size="17" font-weight="700" fill="${page.ink}">progress.md</text>
-<g font-family="${MONO}" font-size="13">${fileText}</g>
-<text x="${doc.x + doc.w / 2}" y="${doc.y + doc.h + 34}" text-anchor="middle" font-family="${SANS}" font-size="14" fill="${page.muted}">${esc(w.file)}</text>
+<rect x="${doc.x}" y="${doc.y}" width="${doc.w}" height="${doc.h}" rx="16" fill="${page.card}" stroke="${pal.accent}" stroke-width="2.6"/>
+<text x="${doc.x + 24}" y="${doc.y + 44}" font-family="${MONO}" font-size="22" font-weight="700" fill="${page.ink}">progress.md</text>
+<g font-family="${MONO}" font-size="16">${fileText}</g>
+<text x="${doc.x + doc.w / 2}" y="${doc.y + doc.h + 40}" text-anchor="middle" font-size="19" fill="${page.muted}">${esc(w.file)}</text>
 ${outs}
-${right}
+${outputs}
+</g>
 </svg>
 `
 }
@@ -323,7 +345,7 @@ const TOUR: Record<Lang, TourWords> = {
     waiting: ['One has been waiting', 'on you for 20 minutes.'],
     waitingSub: ["And you didn't notice."],
     answer: ['Not anymore.', 'Whatever needs you', 'shows up first.'],
-    answerSub: 'A plugin for Claude Code',
+    answerSub: 'Agent Board, a plugin for Claude Code',
     press: ['Answer right here.', 'No window hunting.'],
     pressSub: ['One click and the agent', 'gets back to work.'],
     hooks: ['Your other agents', 'report in on their own.'],
@@ -346,7 +368,7 @@ const TOUR: Record<Lang, TourWords> = {
     waiting: ['有一個已經', '等你 20 分鐘了。'],
     waitingSub: ['你完全沒發現。'],
     answer: ['現在不會了。', '誰在等你，', '一眼就看到。'],
-    answerSub: 'Claude Code 外掛',
+    answerSub: 'Agent Board，Claude Code 外掛',
     press: ['直接在這裡回，', '不用到處找視窗。'],
     pressSub: ['按一下，agent 就繼續做。'],
     hooks: ['其他 agent', '也會自己回報。'],
@@ -369,7 +391,7 @@ const TOUR: Record<Lang, TourWords> = {
     waiting: ['有一个已经', '等你 20 分钟了。'],
     waitingSub: ['你完全没发现。'],
     answer: ['现在不会了。', '谁在等你，', '一眼就看到。'],
-    answerSub: 'Claude Code 插件',
+    answerSub: 'Agent Board，Claude Code 插件',
     press: ['直接在这里回，', '不用到处找窗口。'],
     pressSub: ['点一下，agent 就接着干活。'],
     hooks: ['其他 agent', '也会自己汇报。'],
@@ -400,6 +422,15 @@ const HOOKED = ['Claude Code', 'Codex', 'Gemini CLI', 'Cursor', 'OpenCode', 'Gro
 
 const ENDED_TITLE: Record<Lang, string> = { en: 'Upgrade to React 19', 'zh-TW': '升級到 React 19', 'zh-CN': '升级到 React 19' }
 
+// Lines of at most `max` characters, broken between words; text with no spaces stays whole.
+const wrapWords = (text: string, max: number): string[] =>
+  text.split(' ').reduce<string[]>((lines, word) => {
+    const last = lines[lines.length - 1]
+    if (last !== undefined && last.length + 1 + word.length <= max) lines[lines.length - 1] = `${last} ${word}`
+    else lines.push(word)
+    return lines
+  }, [])
+
 const tour = (lang: Lang, mode: Mode): string => {
   const W = 1200
   const H = 675
@@ -414,7 +445,10 @@ const tour = (lang: Lang, mode: Mode): string => {
   const LOOP = clock
   // Within the press moment: the button lights up, then the pane after the answer.
   const answered = at.press[0] + 3
-  const FADE = 0.45
+  // A moment comes in over IN seconds and leaves over OUT, so the next one starts on a clear
+  // stage rather than on top of the last.
+  const IN = 0.7
+  const OUT = 0.4
   const w = TOUR[lang]
   const s = STRINGS[lang]
   const page = PAGE[mode]
@@ -423,16 +457,30 @@ const tour = (lang: Lang, mode: Mode): string => {
   const other: Mode = mode === 'light' ? 'dark' : 'light'
   const isCjk = lang !== 'en'
   const keyframes: string[] = []
-  // Visible from `start` to `end` seconds, fading in and out.
-  const timed = (start: number, end: number): string => {
+  // Visible from `start` to `end` seconds. `rise` slides up into place and on out the top,
+  // `zoom` grows into place, `fade` only fades, `swap` stays until the frame drawn over it
+  // has come in (for what changes inside the pane window, so it is never empty).
+  // Each step eases on its own, since the loop as a whole runs linear.
+  const MOTION = {
+    rise: { from: 'translate: 0 28px', on: 'translate: 0 0', to: 'translate: 0 -18px' },
+    zoom: { from: 'scale: 0.94', on: 'scale: 1', to: 'scale: 1.03' },
+    fade: { from: '', on: '', to: '' },
+    swap: { from: '', on: '', to: '' },
+  }
+  const EASE_IN = 'animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1)'
+  const EASE_OUT = 'animation-timing-function: cubic-bezier(0.7, 0, 0.84, 0)'
+  const timed = (start: number, end: number, motion: keyof typeof MOTION = 'rise'): string => {
     const name = `k${keyframes.length}`
     const p = (sec: number): string => `${Math.max(0, Math.min(100, (sec / LOOP) * 100)).toFixed(2)}%`
+    const m = MOTION[motion]
+    const [from, to] = motion === 'swap' ? [end + IN, end + IN + 0.05] : [end - OUT, end]
+    const leave = `${p(from)} { opacity: 1; ${m.on}; ${EASE_OUT} } ${p(to)}, 100% { opacity: 0; ${m.to} }`
     keyframes.push(
       start <= 0
-        ? `@keyframes ${name} { 0%, ${p(end - FADE)} { opacity: 1 } ${p(end)}, 100% { opacity: 0 } }`
-        : `@keyframes ${name} { 0%, ${p(start)} { opacity: 0 } ${p(start + FADE)}, ${p(end - FADE)} { opacity: 1 } ${p(end)}, 100% { opacity: 0 } }`,
+        ? `@keyframes ${name} { 0% { opacity: 1; ${m.on} } ${leave} }`
+        : `@keyframes ${name} { 0%, ${p(start)} { opacity: 0; ${m.from}; ${EASE_IN} } ${p(start + IN)} { opacity: 1; ${m.on} } ${leave} }`,
     )
-    return `sc" style="animation-name:${name}`
+    return `sc ${motion}" style="animation-name:${name}`
   }
 
   // Left column: the headline of each moment.
@@ -441,17 +489,19 @@ const tour = (lang: Lang, mode: Mode): string => {
     const top = 230 - (lines.length - 2) * 26
     const big = lines.map((line, i) => `<text x="64" y="${top + i * 56}" font-size="${size}" font-weight="700" fill="${page.ink}">${esc(line)}</text>`).join('')
     const small = sub
-      .map((line, i) => `<text x="64" y="${top + lines.length * 56 + 18 + i * 30}" font-size="21" fill="${page.muted}">${esc(line)}</text>`)
+      .map((line, i) => `<text x="64" y="${top + lines.length * 56 + 22 + i * 34}" font-size="25" fill="${page.muted}">${esc(line)}</text>`)
       .join('')
-    return `<g class="${timed(start, end)}"${still ? ' data-still="1"' : ''}>${big}${small}</g>`
+    // The line under the headline follows it in a beat later.
+    const after = small === '' ? '' : `<g class="${timed(start + 0.25, end)}"${still ? ' data-still="1"' : ''}>${small}</g>`
+    return `<g class="${timed(start, end)}"${still ? ' data-still="1"' : ''}>${big}</g>${after}`
   }
 
   // The pane: a terminal window at the right, scaled up a little; the body switches with the
   // moment, scrolled to the part it is about.
-  const VIS = 18
-  const SCALE = 1.12
+  const VIS = 15
+  const SCALE = 1.3
   const winX = W - windowWidth * SCALE - 56
-  const winY = 92
+  const winY = 82
   const bodyH = PAD + VIS * LINE + PAD
   const frame1 = paneGrid(lang, mode, { opened: [], isAnswered: false })
   const frame2 = paneGrid(lang, mode, { opened: ['waiting'], isAnswered: false })
@@ -459,21 +509,23 @@ const tour = (lang: Lang, mode: Mode): string => {
   const endedKey = `acme-web::${ENDED_TITLE[lang]}`
   const frameH = paneGrid(lang, mode, { opened: ['others'], isAnswered: false, expanded: endedKey })
   const frameDark = paneGrid(lang, other, { opened: [], isAnswered: false })
+  // Each frame has its own ground, so the one coming in covers the one going out.
   const body = (grid: typeof frame1, offset: number, start: number, end: number, still = false): string =>
-    `<g class="${timed(start, end)}"${still ? ' data-still="1"' : ''}>${gridSvg(grid.grid.slice(offset, offset + VIS + 1), PAD, BAR + PAD, grid.theme)}</g>`
+    `<g class="${timed(start, end, 'swap')}"${still ? ' data-still="1"' : ''}><rect x="0" y="${BAR}" width="${windowWidth}" height="${bodyH}" fill="${grid.theme.ground}"/>${gridSvg(grid.grid.slice(offset, offset + VIS + 1), PAD, BAR + PAD, grid.theme)}</g>`
   const ring = (row: number, col: number, span: number, rows: number, start: number, end: number): string =>
-    `<rect class="${timed(start, end)}" x="${PAD + col * CELL - 6}" y="${BAR + PAD + row * LINE - 4}" width="${span * CELL + 12}" height="${rows * LINE + 8}" rx="7" fill="none" stroke="${pal.accent}" stroke-width="2.4"/>`
+    `<rect class="${timed(start, end, 'fade')}" x="${PAD + col * CELL - 6}" y="${BAR + PAD + row * LINE - 4}" width="${span * CELL + 12}" height="${rows * LINE + 8}" rx="7" fill="none" stroke="${pal.accent}" stroke-width="2.4"/>`
   const windowFrame = (m: Mode, inner: string, cls: string, still = false): string => {
     const t = TERMINAL[m]
     const h = BAR + bodyH
-    return `<g class="${cls}"${still ? ' data-still="1"' : ''} transform="translate(${winX.toFixed(1)} ${winY}) scale(${SCALE})">
+    // The class sits on an outer group: its CSS motion would replace a transform on the same element.
+    return `<g class="${cls}"${still ? ' data-still="1"' : ''}><g transform="translate(${winX.toFixed(1)} ${winY}) scale(${SCALE})">
 <rect width="${windowWidth}" height="${h}" rx="12" fill="${t.ground}" stroke="${t.edge}"/>
 <path d="M12 0.5h${windowWidth - 24}a11.5 11.5 0 0 1 11.5 11.5v${BAR - 12}h-${windowWidth - 1}v-${BAR - 12}a11.5 11.5 0 0 1 11.5-11.5z" fill="${t.bar}"/>
 <line x1="0.5" y1="${BAR}" x2="${windowWidth - 0.5}" y2="${BAR}" stroke="${t.edge}"/>
 <g fill="${t.palette.frame}"><circle cx="20" cy="17" r="5"/><circle cx="38" cy="17" r="5"/><circle cx="56" cy="17" r="5"/></g>
 <text x="${windowWidth / 2}" y="22" text-anchor="middle" font-family="${MONO}" font-size="12" fill="${t.palette.muted}">${esc(WORDS[lang].window)}</text>
 <g clip-path="url(#body)" font-family="${MONO}" font-size="14" style="white-space:pre" xml:space="preserve">${inner}</g>
-</g>`
+</g></g>`
   }
 
   const focusTop = Math.max(0, rowOf(frame1.grid, s.mostNeeded))
@@ -488,7 +540,7 @@ const tour = (lang: Lang, mode: Mode): string => {
   while (handoffRow >= 0 && handoffRows < 4 && !/^\s*\d+ /.test((frameH.grid[handoffRow + handoffRows] ?? []).map(cell => cell.ch).join(''))) handoffRows++
   // What the press did, as a band along the bottom of the window.
   const bandY = BAR + PAD + (VIS - 2) * LINE - 4
-  const toast = `<g class="${timed(answered + 0.1, at.press[1])}"><rect x="0.5" y="${bandY}" width="${windowWidth - 1}" height="${BAR + bodyH - bandY - 0.5}" fill="${term.ground}"/><line x1="0.5" y1="${bandY}" x2="${windowWidth - 0.5}" y2="${bandY}" stroke="${pal.done}" stroke-width="1.6"/><text x="${PAD}" y="${bandY + 30}" font-weight="700" fill="${pal.done}">✓ ${esc(s.answered(frame1.firstOption))}</text></g>`
+  const toast = `<g class="${timed(answered + 0.1, at.press[1], 'fade')}"><rect x="0.5" y="${bandY}" width="${windowWidth - 1}" height="${BAR + bodyH - bandY - 0.5}" fill="${term.ground}"/><line x1="0.5" y1="${bandY}" x2="${windowWidth - 0.5}" y2="${bandY}" stroke="${pal.done}" stroke-width="1.6"/><text x="${PAD}" y="${bandY + 30}" font-weight="700" fill="${pal.done}">✓ ${esc(s.answered(frame1.firstOption))}</text></g>`
   const inner = [
     body(frame1, 0, at.answer[0], answered, true),
     focusTop >= 0 && more !== null ? ring(focusTop, 0, WIDTH, more.row - focusTop - 1, at.answer[0] + 0.6, at.answer[1]) : '',
@@ -505,16 +557,16 @@ const tour = (lang: Lang, mode: Mode): string => {
 
   // five agents, each in its own window; two of them are waiting on you.
   const cards = AGENTS.map(([name, project], i) => {
-    const y = 108 + i * 90
-    const x = winX + 24
+    const y = 112 + i * 96
+    const x = winX + 40
     const isWaiting = i === 1
     return `<g class="${timed(0.3 + i * 0.35, at.waiting[1])}">
-<rect x="${x}" y="${y}" width="420" height="70" rx="12" fill="${page.card}" stroke="${page.line}"/>
+<rect x="${x}" y="${y}" width="480" height="78" rx="12" fill="${page.card}" stroke="${page.line}"/>
 <g fill="${pal.frame}"><circle cx="${x + 18}" cy="${y + 18}" r="4"/><circle cx="${x + 32}" cy="${y + 18}" r="4"/><circle cx="${x + 46}" cy="${y + 18}" r="4"/></g>
-<text x="${x + 64}" y="${y + 23}" font-family="${MONO}" font-size="15" font-weight="700" fill="${page.ink}">${esc(name)}</text>
-<text x="${x + 64 + (name.length + 1) * 9.2}" y="${y + 23}" font-family="${MONO}" font-size="14" fill="${pal.project}">${esc(project)}</text>
-<text x="${x + 18}" y="${y + 52}" font-family="${MONO}" font-size="14" fill="${pal.accent}">▸ ${esc(w.working)}</text>
-${isWaiting ? `<g class="${timed(at.waiting[0] + 0.4, at.waiting[1])}"><text class="blink" x="${x + 404}" y="${y + 52}" text-anchor="end" font-family="${SANS}" font-size="15" font-weight="700" fill="${pal.waiting}">${esc(w.waitsOnYou)}</text></g>` : ''}
+<text x="${x + 64}" y="${y + 25}" font-family="${MONO}" font-size="18" font-weight="700" fill="${page.ink}">${esc(name)}</text>
+<text x="${x + 64 + (name.length + 1) * 10.9}" y="${y + 25}" font-family="${MONO}" font-size="17" fill="${pal.project}">${esc(project)}</text>
+<text x="${x + 18}" y="${y + 58}" font-family="${MONO}" font-size="17" fill="${pal.accent}">▸ ${esc(w.working)}</text>
+${isWaiting ? `<g class="${timed(at.waiting[0] + 0.4, at.waiting[1], 'zoom')}"><text class="blink" x="${x + 462}" y="${y + 58}" text-anchor="end" font-family="${SANS}" font-size="19" font-weight="700" fill="${pal.waiting}">${esc(w.waitsOnYou)}</text></g>` : ''}
 </g>`
   }).join('\n')
 
@@ -522,46 +574,50 @@ ${isWaiting ? `<g class="${timed(at.waiting[0] + 0.4, at.waiting[1])}"><text cla
   const chips = HOOKED.map((name, i) => {
     const col = i % 2
     const row = Math.floor(i / 2)
-    const x = 64 + col * 230
-    const y = 418 + row * 44
-    return `<g class="${timed(at.hooks[0] + 0.3 + i * 0.18, at.hooks[1])}"><rect x="${x}" y="${y}" width="214" height="34" rx="17" fill="${page.card}" stroke="${page.line}"/><text x="${x + 16}" y="${y + 23}" font-size="16" fill="${pal.done}">✓</text><text x="${x + 38}" y="${y + 23}" font-size="16" fill="${page.ink}">${esc(name)}</text></g>`
+    const x = 64 + col * 248
+    const y = 396 + row * 48
+    return `<g class="${timed(at.hooks[0] + 0.5 + i * 0.15, at.hooks[1], 'zoom')}"><rect x="${x}" y="${y}" width="232" height="40" rx="20" fill="${page.card}" stroke="${page.line}"/><text x="${x + 18}" y="${y + 27}" font-size="20" fill="${pal.done}">✓</text><text x="${x + 44}" y="${y + 27}" font-size="20" fill="${page.ink}">${esc(name)}</text></g>`
   }).join('\n')
 
   // nothing lost.
   const lost = `<g class="${timed(...at.lost)}">${w.lost
     .map((line, i) => `<text x="64" y="${200 + i * 56}" font-size="${isCjk ? 40 : 42}" font-weight="700" fill="${page.ink}">${esc(line)}</text>`)
-    .join('')}${w.lostLines
-    .map((line, i) => `<text x="64" y="${330 + i * 46}" font-size="21" fill="${pal.done}">✓</text><text x="96" y="${330 + i * 46}" font-size="21" fill="${page.ink}">${esc(line)}</text>`)
-    .join('')}</g>`
+    .join('')}</g>${w.lostLines
+    .map((line, i) => `<g class="${timed(at.lost[0] + 0.4 + i * 0.2, at.lost[1])}"><text x="64" y="${336 + i * 52}" font-size="24" fill="${pal.done}">✓</text><text x="100" y="${336 + i * 52}" font-size="24" fill="${page.ink}">${esc(line)}</text></g>`)
+    .join('')}`
 
   // where it runs.
   const surfaces = `<g class="${timed(at.runs[0] + 0.3, at.runs[1])}">${w.surfaces
     .map((name, i) => {
-      const x = 64 + (i % 2) * 250
-      const y = 368 + Math.floor(i / 2) * 56
-      return `<rect x="${x}" y="${y}" width="234" height="42" rx="10" fill="${page.card}" stroke="${page.line}"/><text x="${x + 117}" y="${y + 27}" text-anchor="middle" font-size="18" fill="${page.ink}">${esc(name)}</text>`
+      const x = 64 + (i % 2) * 248
+      const y = 352 + Math.floor(i / 2) * 64
+      return `<rect x="${x}" y="${y}" width="232" height="50" rx="10" fill="${page.card}" stroke="${page.line}"/><text x="${x + 116}" y="${y + 32}" text-anchor="middle" font-size="21" fill="${page.ink}">${esc(name)}</text>`
     })
-    .join('')}<text x="64" y="512" font-size="16" fill="${page.muted}">${esc(w.systems)}</text></g>`
+    .join('')}<text x="64" y="512" font-size="19" fill="${page.muted}">${esc(w.systems)}</text></g>`
 
   // the colours, light and dark, with their names; the pane turns to the other set.
   const roles = ['accent', 'done', 'waiting', 'running', 'soon', 'alert'] as const
   const swatches = `<g class="${timed(at.colours[0] + 0.2, at.colours[1])}">${roles
     .map((role, i) => {
-      const x = 64 + (i % 3) * 186
-      const y = 352 + Math.floor(i / 3) * 94
+      const x = 64 + (i % 3) * 172
+      const y = 350 + Math.floor(i / 3) * 100
       const [lightName, darkName] = w.names[i] ?? ['', '']
       return `<circle cx="${x + 14}" cy="${y}" r="14" fill="${LIGHT[role]}"/><circle cx="${x + 44}" cy="${y}" r="14" fill="${DARK[role]}" stroke="${page.line}"/>` +
-        `<text x="${x}" y="${y + 36}" font-size="14" fill="${page.ink}">${esc(lightName)}</text><text x="${x}" y="${y + 56}" font-size="14" fill="${page.muted}">${esc(darkName)}</text>`
+        `<text x="${x}" y="${y + 40}" font-size="17" fill="${page.ink}">${esc(lightName)}</text><text x="${x}" y="${y + 63}" font-size="17" fill="${page.muted}">${esc(darkName)}</text>`
     })
-    .join('')}<text x="64" y="${352 + 2 * 94 - 4}" font-size="16" fill="${page.muted}">${esc(w.coloursSub)}</text></g>`
+    .join('')}${wrapWords(w.coloursSub, 40)
+    .map((line, i) => `<text x="64" y="${350 + 2 * 100 + 4 + i * 26}" font-size="19" fill="${page.muted}">${esc(line)}</text>`)
+    .join('')}</g>`
 
   // the end card.
-  const command = 'claude plugin install project-progress@claude-progress-pane'
-  const endCard = `<g class="${timed(at.end[0], LOOP + 0.2)}">
-<text x="${W / 2}" y="268" text-anchor="middle" font-size="54" font-weight="700" fill="${page.ink}">claude-progress-pane</text>
-<text x="${W / 2}" y="318" text-anchor="middle" font-size="24" fill="${page.muted}">${esc(w.end)}</text>
-<rect x="${W / 2 - 330}" y="356" width="660" height="52" rx="10" fill="${page.card}" stroke="${pal.accent}" stroke-width="1.6"/>
-<text x="${W / 2}" y="389" text-anchor="middle" font-family="${MONO}" font-size="18" fill="${page.ink}">${esc(command)}</text>
+  const command = 'claude plugin install agent-board@agent-board'
+  const endCard = `<g class="${timed(at.end[0], LOOP + 0.2, 'zoom')}">
+<text x="${W / 2}" y="262" text-anchor="middle" font-size="64" font-weight="700" fill="${page.ink}">Agent Board</text>
+<text x="${W / 2}" y="318" text-anchor="middle" font-size="28" fill="${page.muted}">${esc(w.end)}</text>
+</g>
+<g class="${timed(at.end[0] + 0.35, LOOP + 0.2)}">
+<rect x="${W / 2 - 330}" y="358" width="660" height="60" rx="12" fill="${page.card}" stroke="${pal.accent}" stroke-width="1.8"/>
+<text x="${W / 2}" y="396" text-anchor="middle" font-family="${MONO}" font-size="21" fill="${page.ink}">${esc(command)}</text>
 </g>`
 
   // The timeline along the bottom: the three parts, and how far the tour has come.
@@ -574,7 +630,7 @@ ${isWaiting ? `<g class="${timed(at.waiting[0] + 0.4, at.waiting[1])}"><text cla
   const timeline = `<g>
 <rect x="${track.x}" y="${track.y}" width="${track.w}" height="4" rx="2" fill="${page.line}"/>
 <rect class="bar" x="${track.x}" y="${track.y}" width="${track.w}" height="4" rx="2" fill="${pal.accent}"/>
-${marks.map(([at, label]) => `<text x="${track.x + (at / LOOP) * track.w}" y="${track.y - 12}" font-size="14" fill="${page.muted}">${esc(label)}</text>`).join('')}
+${marks.map(([at, label]) => `<text x="${track.x + (at / LOOP) * track.w}" y="${track.y - 12}" font-size="17" fill="${page.muted}">${esc(label)}</text>`).join('')}
 </g>`
 
   const scenes = [
@@ -590,31 +646,32 @@ ${marks.map(([at, label]) => `<text x="${track.x + (at / LOOP) * track.w}" y="${
     surfaces,
     head(w.colours, [], ...at.colours),
     swatches,
-    windowFrame(mode, inner, `win ${timed(at.answer[0], at.runs[1] + 0.2)}`, true),
-    windowFrame(other, darkInner, `win ${timed(at.colours[0], at.colours[1] + 0.2)}`),
+    windowFrame(mode, inner, `win ${timed(at.answer[0], at.runs[1] + 0.2, 'zoom')}`, true),
+    windowFrame(other, darkInner, `win ${timed(at.colours[0], at.colours[1] + 0.2, 'zoom')}`),
     endCard,
   ]
   const label = [w.why, w.answer, w.hooks, w.runs, w.colours].map(lines => lines.join(' ')).join(' / ')
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(label)}">
-<title>claude-progress-pane: ${esc(w.end)}</title>
+<title>Agent Board: ${esc(w.end)}</title>
 <defs><clipPath id="body"><rect x="0" y="${BAR}" width="${windowWidth}" height="${bodyH}"/></clipPath></defs>
 <style>
 .sc { opacity: 0; animation-duration: ${LOOP}s; animation-iteration-count: infinite; animation-timing-function: linear; }
+.zoom { transform-box: fill-box; transform-origin: center; }
 .bar { transform-box: fill-box; transform-origin: 0 50%; animation: grow ${LOOP}s linear infinite; }
 .blink { animation: blink 0.9s steps(2, jump-none) infinite; }
 @keyframes grow { from { transform: scaleX(0) } to { transform: scaleX(1) } }
 @keyframes blink { from { opacity: 1 } to { opacity: 0.25 } }
 ${keyframes.join('\n')}
 @media (prefers-reduced-motion: reduce) {
-  .sc, .bar, .blink { animation: none; }
+  .sc, .bar, .blink { animation: none; translate: none; scale: none; }
   .sc { opacity: 0; }
   [data-still] { opacity: 1; }
   .bar { transform: none; }
 }
 </style>
 <rect width="${W}" height="${H}" rx="18" fill="${page.ground}"/>
-<text x="64" y="70" font-family="${SANS}" font-size="15" font-weight="600" letter-spacing="2.5" fill="${page.muted}">CLAUDE-PROGRESS-PANE</text>
+<text x="64" y="66" font-family="${SANS}" font-size="18" font-weight="600" letter-spacing="3" fill="${page.muted}">AGENT BOARD</text>
 <g font-family="${SANS}">
 ${scenes.join('\n')}
 ${timeline}

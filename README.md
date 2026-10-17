@@ -7,7 +7,7 @@
 
 English · [繁體中文](README.zh-TW.md) · [简体中文](README.zh-CN.md)
 
-For anyone running more than one AI coding agent. It tells you which one is waiting on you, so none of them sits there doing nothing.
+**Agent Board** is for anyone running more than one AI coding agent. It tells you which one is waiting on you, so none of them sits there doing nothing.
 
 ## Why you'd want it
 
@@ -20,8 +20,8 @@ You've got Claude Code on one project, Codex on another, maybe Gemini on a third
 ## Install
 
 ```
-claude plugin marketplace add WenyuChiou/claude-progress-pane
-claude plugin install project-progress@claude-progress-pane
+claude plugin marketplace add WenyuChiou/agent-board
+claude plugin install agent-board@agent-board
 claude -p "/progress connect"
 ```
 
@@ -30,10 +30,10 @@ The last line connects the other agents on your machine. Restart them afterwards
 **Or let your agent do it.** Paste this into Codex, Gemini CLI, Cursor, Grok, Muse, or any agent that can run commands:
 
 ```text
-Install the claude-progress-pane plugin for Claude Code and connect this machine's coding agents to it.
+Install the Agent Board plugin for Claude Code and connect this machine's coding agents to it.
 Run these three commands in order, and stop and tell me if one fails:
-claude plugin marketplace add WenyuChiou/claude-progress-pane
-claude plugin install project-progress@claude-progress-pane
+claude plugin marketplace add WenyuChiou/agent-board
+claude plugin install agent-board@agent-board
 claude -p "/progress connect"
 Then show me what the last command printed and tell me which agents to restart.
 ```

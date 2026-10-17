@@ -1,7 +1,45 @@
 # Changelog
 
-## Unreleased
+## 0.10.0 — 2026-10-17
 
+- **New name: Agent Board.** The pane follows Claude Code, Codex, Gemini CLI, Cursor,
+  OpenCode, Grok Build and Muse Code, so a name starting with "claude" said too
+  little. The new one says what it is: one board for all your agents.
+  - The plugin is `agent-board`, from the `agent-board` marketplace, in the
+    `WenyuChiou/agent-board` repository:
+    `claude plugin install agent-board@agent-board`.
+  - The tour, the social preview, the READMEs, the guides and the page title of
+    `progress.html` carry the new name, and the plugin has a description that
+    says what it is for.
+  - The tour reads better at README size: the pane window is larger, every
+    line of small text is bigger, and each moment eases in and out (headlines
+    rise into place, the pane's frames dissolve into each other, the end card
+    grows in) instead of a flat fade.
+  - The "How it works" picture is redrawn: three numbered columns (who
+    reports, the one file, where you see it), type about half again as large,
+    and shorter words.
+  - `/progress connect` writes Grok Build's and OpenCode's hook files as
+    `agent-board.json` and `agent-board.js`, and takes away the `progress-pane` ones it
+    wrote before, so no turn is reported twice. The section between
+    `claude-progress-pane` markers in an agent's instructions is still found
+    and removed.
+  - The setup scripts uninstall `project-progress@claude-progress-pane` and
+    remove its marketplace before they install `agent-board@agent-board`. An auto-update
+    turned off under the old name stays off, and an agent section or a
+    CLAUDE.md block under the old markers is replaced rather than doubled.
+  - Unchanged: the `/progress` command, `~/.claude/progress.md` and its format,
+    `CLAUDE_PROGRESS_FILE`, and the reporter script `progress-report.sh`.
+
+  Tests: `/progress connect hooks the installed agents into the pane once,
+  keeps their own hooks, and takes ours back out` (now with an old Grok file),
+  `each agent’s config gets the hook in the shape it reads, and nothing else of
+  the person’s changes`, and the four "old name" installer checks in
+  `tests/setup.check.sh` and `tests/setup.check.ps1`.
+
+  BREAKING CHANGE: an install under the old name does not update to this one by
+  itself. Run the setup script once, or the five commands in the guide
+  (Update and uninstall → Coming from the old name). The pane's language and
+  notification choices, kept per plugin, go back to their defaults.
 - **Codex, tested for real.** Codex CLI 0.163.0 ran one turn of `codex exec`
   against a stand-in model server. `/progress connect` had installed the hooks,
   and Codex ran its Stop and SessionEnd hooks. The reporter saved both payloads,
