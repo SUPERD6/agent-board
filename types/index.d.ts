@@ -81,6 +81,9 @@ export type ProgressMirrorTask = {
 
 export type ProgressMirror = {
   sessionId: string
+  // Which agent's session this is: claude for the session the mod runs in; another agent's
+  // when the mod writes that agent's block from what its hook reported.
+  agent: string
   project: string
   // The folder the session runs in; empty in a mirror stored before 0.5.0.
   cwd: string
@@ -94,6 +97,19 @@ export type ProgressMirror = {
   state: ProgressSessionState
   tasks: ProgressMirrorTask[]
   updated: number
+  // Where the steps come from: Claude's Task list, or each turn summed up when the session
+  // has none (`turns`). A Task call replaces the summed-up steps.
+  source: 'tasks' | 'turns'
+  // A task the mod marked waiting because the turn ended on a question; cleared when the
+  // person answers (the next turn starts).
+  autoAsk: string | null
+  // One line for whoever takes over, written at the last compaction.
+  handoff: string
+  // How many steps the list had when the title and background were last written.
+  namedSteps: number
+  // For another agent's session: the last reply summed up, so the same turn reported twice
+  // (two hooks of one turn, or Grok running Cursor's hooks too) counts once.
+  lastAnswer: string
 }
 
 // What the pane shows under its input box: a side question's answer, what a quick add

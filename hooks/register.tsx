@@ -33,9 +33,11 @@ import {
   applyTodoWrite,
   cleanContext,
   cleanTitle,
+  clip,
   completedSince,
   emptyMirror,
   fallbackTitle,
+  isAllDone,
   fromTaskList,
   isStaleStoreKey,
   noticesOf,
@@ -53,6 +55,11 @@ import { isQuickAdd, parseQuickAdd, quickAddWords } from './quick'
 import type { Lang, Strings } from './i18n'
 import { RULE_ID, RULES } from './rule'
 import { langOf, resolveLang, STRINGS } from './strings'
+import { answerTurns, applyDigest, clearAsked, cleanHandoff, isWork, lastQuestion, markAsked, needsRefresh, parseDigest, turnTools } from './digest'
+import type { Digest } from './digest'
+import { agentHooks, DELETE, reporterPs1, reporterSh, withoutSection } from './connect'
+import { isInboxFile, readTurn, transcriptTail } from './inbox'
+import type { AgentTurn } from './inbox'
 import { keepRecent, remindersOf } from './remind'
 import { buildView, statusLine } from './view'
 import type { StepRef, TaskRef, TaskRow } from './view'
@@ -60,6 +67,8 @@ import type { StepRef, TaskRef, TaskRow } from './view'
 const PANE = 'project-progress'
 const POLL_MS = 2000
 const TICK_MS = 30 * 1000
+// How often the inbox of other agents' turns is looked at: a stat, and a read when it changed.
+const INBOX_MS = 5 * 1000
 // How often a pull request whose checks are still running is looked at again.
 const PR_MS = 2 * 60 * 1000
 // How often a session looks for work old enough to archive, besides at its start.
@@ -108,6 +117,10 @@ let lastDashboard = ''
 // Set once the questions and due dates already on file at the start are counted as told.
 let isReminderSeeded = false
 let isReminding = false
+// What the person said this turn, for summing the turn up when it ends.
+let turnPrompt = ''
+let isDraining = false
+let inboxSeen = -1
 let dashboardAt = 0
 
 // CLAUDE_PROGRESS_FILE wins; then CLAUDE_CONFIG_DIR, where Claude Code keeps its own files
@@ -128,6 +141,13 @@ const progressPath = async ($: EngineInterface): Promise<string> => {
 // One archive file per month (progress-archive-2026-10.md), so none grows past what one
 // read can hold.
 const archivePath = (path: string, now: number): string => `${path.replace(/\.md$/i, '')}-archive-${localDay(now).slice(0, 7)}.md`
+
+// Where other agents' hooks leave their turns: a folder beside progress.md.
+const inboxPath = (path: string): string => {
+  const sep = path.includes('\\') ? '\\' : '/'
+
+  return `${path.replace(/[\\/][^\\/]*$/, '')}${sep}progress-inbox`
+}
 
 // Re-reads the file only when its mtime or size moved, so the 2s timer is a stat.
 const poll = async ($: EngineInterface): Promise<void> => {
@@ -437,8 +457,8 @@ const refreshPr = async ($: EngineInterface): Promise<void> => {
 
 const nameTask = async ($: EngineInterface): Promise<void> => {
   const mirror = await read($, mine)
-  if (mirror === null || mirror.isTitleFinal || mirror.tasks.length === 0) return
-  await saveMine($, one => ({ ...one, isTitleFinal: true, title: one.title || fallbackTitle(one) }))
+  if (mirror === null || mirror.isTitleFinal || mirror.tasks.length === 0 || mirror.source === 'turns') return
+  await saveMine($, one => ({ ...one, isTitleFinal: true, title: one.title || fallbackTitle(one), namedSteps: one.tasks.length }))
   const steps = mirror.tasks.map(task => `- ${task.subject}`).join('\n')
   const asked = await $.model
     .complete({
@@ -453,6 +473,228 @@ const nameTask = async ($: EngineInterface): Promise<void> => {
   const context = cleanContext(lines[1] ?? '')
   if (title === '' && context === '') return
   await saveMine($, one => ({ ...one, title: title || one.title, context: context || one.context }))
+  await queueWrite($)
+}
+
+// The list grew well past what the title and background were written for: the model looks
+// again, and keeps both when the goal is the same.
+const refreshName = async ($: EngineInterface): Promise<void> => {
+  const mirror = await read($, mine)
+  if (mirror === null || !needsRefresh(mirror)) return
+  await saveMine($, one => ({ ...one, namedSteps: one.tasks.length }), true)
+  const s = await wordsOf($)
+  const steps = mirror.tasks.map(task => `- ${task.subject}`).join('\n')
+  const asked = await $.model
+    .complete({
+      model: 'haiku',
+      maxTokens: 120,
+      effort: 'low',
+      prompt: s.refreshPrompt(mirror.firstPrompt.slice(0, 1200), steps, mirror.title || fallbackTitle(mirror), mirror.context),
+    })
+    .catch(() => undefined)
+  const lines = asked?.isAnswered === true ? asked.text.split(/\r?\n/).filter(line => line.trim() !== '') : []
+  const title = cleanTitle(lines[0] ?? '')
+  const context = cleanContext(lines[1] ?? '')
+  if (title === '' && context === '') return
+  await saveMine($, one => ({ ...one, title: title || one.title, context: context || one.context }), true)
+  await queueWrite($)
+}
+
+// A turn summed up into a session's steps: what it finished, what comes next and what it
+// ended up asking. Without the model's answer, the question the reply ends on is still
+// caught. null when the turn gave nothing to track and the session is not tracked yet.
+const summarize = async ($: EngineInterface, mirror: ProgressMirror, prompt: string, answer: string): Promise<ProgressMirror | null> => {
+  const s = await wordsOf($)
+  const steps = mirror.tasks.map(task => `- [${task.status === 'completed' ? 'x' : ' '}] ${task.subject}`).join('\n')
+  const asked = await $.model
+    .complete({
+      model: 'haiku',
+      maxTokens: 300,
+      effort: 'low',
+      prompt: s.digestPrompt(
+        mirror.firstPrompt.slice(0, 1200),
+        prompt.slice(0, 1200),
+        answer.slice(-3000),
+        mirror.title,
+        mirror.context,
+        steps,
+      ),
+    })
+    .catch(() => undefined)
+  const question = lastQuestion(answer)
+  const parsed = asked?.isAnswered === true ? parseDigest(asked.text) : null
+  const empty: Digest = { title: '', context: '', done: '', next: '', ask: '', why: '' }
+  const digest: Digest = { ...empty, ...parsed }
+  if (digest.ask === '' && question !== null) {
+    digest.ask = clip(question, 48)
+    digest.why = question
+  }
+  if (digest.done === '' && digest.next === '' && digest.ask === '' && mirror.source !== 'turns') return null
+
+  return applyDigest(mirror, digest, await $.clock.now())
+}
+
+// A turn of this session, which keeps no Task list.
+const digestTurn = async ($: EngineInterface, prompt: string, answer: string): Promise<void> => {
+  const mirror = await read($, mine)
+  if (mirror === null || (mirror.source === 'tasks' && mirror.tasks.length > 0)) return
+  const summed = await summarize($, mirror, prompt, answer)
+  if (summed === null) return
+  await saveMine($, () => summed)
+  await settle($)
+}
+
+// Another agent's turns, from its hook, written into its own block. Its mirror lives in
+// the store, so whichever open session reads the next turn carries on from it.
+const takeAgentTurns = async ($: EngineInterface, turns: readonly AgentTurn[]): Promise<void> => {
+  const last = turns.at(-1)
+  if (last === undefined) return
+  const at = await $.clock.now()
+  const stored = (await $.store.get(`agent:${last.id}`)) as Partial<ProgressMirror> | undefined
+  const fresh = emptyMirror(last.id, last.project || (await wordsOf($)).uncategorized, at, last.cwd, last.agent)
+  let mirror: ProgressMirror = { ...fresh, ...stored, firstPrompt: stored?.firstPrompt || turns.find(one => one.prompt !== '')?.prompt || '' }
+  for (const turn of turns) {
+    if (turn.event !== 'turn') continue
+    let { prompt, answer } = turn
+    if (answer === '' && turn.transcript !== '') {
+      const log = await $.fs.read(turn.transcript).catch(() => '')
+      const tail = transcriptTail(typeof log === 'string' ? log : '')
+      answer = tail.answer
+      prompt = prompt || tail.prompt
+    }
+    if (answer === '' || answer.trim() === mirror.lastAnswer) continue
+    mirror = answerTurns(mirror)
+    mirror = { ...((await summarize($, mirror, prompt, answer)) ?? mirror), lastAnswer: answer.trim() }
+  }
+  if (mirror.tasks.length === 0) return
+  const state = isAllDone(mirror) ? 'done' : last.event === 'end' ? 'ended' : 'waiting'
+  mirror = { ...mirror, state, updated: at }
+  await $.store.set(`agent:${last.id}`, mirror)
+  const s = await wordsOf($)
+  const written = mirror
+  await enqueue(async () => {
+    const path = await progressPath($)
+    const before = await readText($, path)
+    const after = upsertAutoBlock(before, written, s)
+    if (after !== before) await $.fs.write(path, after)
+    await poll($)
+  })
+}
+
+// `/progress connect`: the reporter script beside progress.md, and a hook for it in every
+// agent installed here. Its AGENTS.md-style section goes, so its work does not show twice.
+// `remove` takes all of it back out. Files that are not JSON are named and left alone.
+const connectAgents = async ($: EngineInterface, remove: boolean): Promise<string> => {
+  const s = await wordsOf($)
+  const path = await progressPath($)
+  const isWindows = path.includes('\\')
+  const sep = isWindows ? '\\' : '/'
+  const home = ((await $.env.get('USERPROFILE')) ?? (await $.env.get('HOME')) ?? '').replace(/[\\/]+$/, '')
+  const codexHome = ((await $.env.get('CODEX_HOME')) ?? '').replace(/[\\/]+$/, '') || [home, '.codex'].join(sep)
+  const grokHome = ((await $.env.get('GROK_HOME')) ?? '').replace(/[\\/]+$/, '') || [home, '.grok'].join(sep)
+  const script = `${path.replace(/[\\/][^\\/]*$/, '')}${sep}progress-report.${isWindows ? 'ps1' : 'sh'}`
+  if (!remove) await $.fs.write(script, isWindows ? reporterPs1(inboxPath(path)) : reporterSh(inboxPath(path)))
+  const done: string[] = []
+  const skipped: string[] = []
+  for (const hook of agentHooks({ home, sep, isWindows, script, inbox: inboxPath(path), codexHome, grokHome })) {
+    if (!(await $.fs.exists(hook.dir))) continue
+    const before = await readText($, hook.file).catch(() => null)
+    if (before === null) {
+      skipped.push(s.connectSkipped(hook.label, hook.file))
+      continue
+    }
+    if (remove && before.trim() === '') continue
+    const after = hook.edit(before, remove)
+    if (after === null) {
+      if (!remove) skipped.push(s.connectSkipped(hook.label, hook.file))
+      continue
+    }
+    if (after === DELETE) {
+      const argv = isWindows ? ['powershell', '-NoProfile', '-Command', `Remove-Item -Force -LiteralPath '${hook.file.replace(/'/g, "''")}'`] : ['rm', '-f', hook.file]
+      await $.process.run(argv, { timeoutMs: 10000 }).catch(() => undefined)
+    } else if (after !== before) {
+      await $.fs.write(hook.file, after)
+    }
+    if (remove && after === before) continue
+    done.push(hook.label)
+    if (!remove) await dropSection($, hook.agent, home, codexHome, sep)
+  }
+  const lines = remove
+    ? [done.length === 0 ? s.connectNothingRemoved : s.connectRemoved(done.join(s.listSep))]
+    : [done.length === 0 ? s.connectNone : s.connectDone(done.join(s.listSep)), ...(done.includes('Codex') ? [s.connectCodexTrust] : [])]
+
+  return [...lines, ...skipped].join('\n')
+}
+
+// The instruction files setup --agents writes the section into, per agent.
+const dropSection = async ($: EngineInterface, agent: string, home: string, codexHome: string, sep: string): Promise<void> => {
+  const files: Record<string, string[]> = {
+    codex: [[codexHome, 'AGENTS.md'].join(sep), [codexHome, 'AGENTS.override.md'].join(sep)],
+    gemini: [[home, '.gemini', 'GEMINI.md'].join(sep)],
+    opencode: [[home, '.config', 'opencode', 'AGENTS.md'].join(sep)],
+  }
+  for (const file of files[agent] ?? []) {
+    const text = await readText($, file).catch(() => '')
+    const after = withoutSection(text)
+    if (after !== text) await $.fs.write(file, after)
+  }
+}
+
+// New files in the inbox, each taken by one open session: it stamps the file in the store,
+// looks again, and reads it only if its stamp stayed. The reporter script clears old files.
+const drainInbox = async ($: EngineInterface): Promise<void> => {
+  if (isDraining) return
+  isDraining = true
+  try {
+    const dir = inboxPath(await progressPath($))
+    // A file landing in the folder moves its modified time; nothing to read until it does.
+    // On a file system that keeps whole seconds, a file can land in the same second as the
+    // last listing: the folder is listed again while its time is that fresh.
+    const stat = await $.fs.stat(dir).catch(() => undefined)
+    if (stat === undefined) return
+    if (stat.mtimeMs === inboxSeen && (await $.clock.now()) - stat.mtimeMs > 2000) return
+    inboxSeen = stat.mtimeMs
+    const entries = await $.fs.list(dir).catch(() => [])
+    const stored = await $.store.get('inboxDone')
+    const done = stored !== null && typeof stored === 'object' ? (stored as Record<string, string>) : {}
+    const fresh = entries
+      .filter(entry => entry.kind === 'file' && isInboxFile(entry.name) && done[entry.name] === undefined)
+      .map(entry => entry.name)
+      .sort()
+      .slice(0, 20)
+    if (fresh.length === 0) return
+    const at = await $.clock.now()
+    const stamp = `${(await read($, mine))?.sessionId.slice(0, 8) ?? '-'}:${at}`
+    const kept = Object.fromEntries(Object.entries(done).filter(([, value]) => at - Number(value.split(':')[1] ?? 0) < 3 * DAY))
+    await $.store.set('inboxDone', { ...kept, ...Object.fromEntries(fresh.map(name => [name, stamp])) })
+    const check = (await $.store.get('inboxDone')) as Record<string, string> | undefined
+    const taken = fresh.filter(name => check?.[name] === stamp)
+    const sep = dir.includes('\\') ? '\\' : '/'
+    const turns: AgentTurn[] = []
+    for (const name of taken) {
+      const body = await $.fs.read(`${dir}${sep}${name}`).catch(() => '')
+      const turn = readTurn(name, typeof body === 'string' ? body : '')
+      if (turn !== null) turns.push(turn)
+    }
+    const bySession = new Map<string, AgentTurn[]>()
+    for (const turn of turns) bySession.set(turn.id, [...(bySession.get(turn.id) ?? []), turn])
+    for (const group of bySession.values()) await takeAgentTurns($, group)
+  } finally {
+    isDraining = false
+  }
+}
+
+// A compaction's summary made into one line for whoever takes over, kept in the block.
+const writeHandoff = async ($: EngineInterface, summary: string): Promise<void> => {
+  const mirror = await read($, mine)
+  if (mirror === null || mirror.tasks.length === 0 || summary.trim() === '') return
+  const s = await wordsOf($)
+  const asked = await $.model
+    .complete({ model: 'haiku', maxTokens: 160, effort: 'low', prompt: s.handoffPrompt(mirror.title || fallbackTitle(mirror), summary.slice(0, 6000)) })
+    .catch(() => undefined)
+  const line = asked?.isAnswered === true ? cleanHandoff(asked.text) : ''
+  if (line === '') return
+  await saveMine($, one => ({ ...one, handoff: line }), true)
   await queueWrite($)
 }
 
@@ -586,6 +828,7 @@ const takeOverPrompt = (row: TaskRow, s: Strings): string =>
   [
     s.takeOverHead(row.title, row.project, row.done, row.total),
     row.context === '' ? '' : s.resumeContext(row.context),
+    row.handoff === '' ? '' : s.takeOverHandoff(row.handoff),
     row.left.length === 0 ? '' : s.takeOverLeft(row.left.join(s.stepSep)),
     s.takeOverTail,
   ]
@@ -720,6 +963,9 @@ export const register: Register = (on, options) => {
     $.clock.every(POLL_MS, () => {
       poll($).catch(() => undefined)
     })
+    $.clock.every(INBOX_MS, () => {
+      drainInbox($).catch(() => undefined)
+    })
     $.clock.every(TICK_MS, () => {
       $.clock
         .now()
@@ -795,6 +1041,8 @@ export const register: Register = (on, options) => {
 
       return { text: s.synced }
     }
+    const connect = /^(?:connect|接上|连接|連接)\s*(remove|off|拿掉|去掉|移除)?$/i.exec(arg)
+    if (connect !== null) return { text: await connectAgents($, connect[1] !== undefined) }
     const add = /^(?:加|新增|add|[+＋])\s*(.*)$/is.exec(arg)
     if (add !== null) return { text: await quickAdd($, add[1] ?? '') }
     if (/^(週報|周报|今天|report|weekly|today)$/i.test(arg)) {
@@ -827,9 +1075,14 @@ export const register: Register = (on, options) => {
   on('turn.start', async ($, e, next) => {
     if (e.agentId !== undefined) return next(e)
     isTurnRunning = true
+    turnPrompt = e.text.trim()
     const mirror = await read($, mine)
     if (mirror !== null && mirror.firstPrompt === '' && e.text.trim() !== '') {
       await saveMine($, one => ({ ...one, firstPrompt: e.text.trim() }))
+    }
+    // The person is answering: what waited on them from the last turn's question is settled.
+    if (mirror !== null && (mirror.autoAsk !== null || mirror.source === 'turns')) {
+      await saveMine($, one => answerTurns(clearAsked(one)), true)
     }
     if (mirror !== null && mirror.tasks.length > 0) {
       await settle($)
@@ -848,13 +1101,31 @@ export const register: Register = (on, options) => {
     if (e.agentId !== undefined) return next(e)
     isTurnRunning = false
     const mirror = await read($, mine)
+    const question = e.isAborted ? null : lastQuestion(e.answer)
     if (mirror !== null && mirror.tasks.length > 0) {
       const branch = await branchName($)
       await saveMine($, one => ({ ...one, branch }))
+      // A turn that ended on a question waits on the person even if Claude did not mark it.
+      if (question !== null && mirror.source === 'tasks') await saveMine($, one => markAsked(one, question))
       await settle($)
       if (!mirror.isTitleFinal) {
         $.clock.after(1, () => {
           nameTask($).catch(() => undefined)
+        })
+      } else if (needsRefresh(mirror)) {
+        $.clock.after(1, () => {
+          refreshName($).catch(() => undefined)
+        })
+      }
+    }
+    // No Task list: a turn that changed something, or any turn once the session is tracked,
+    // is summed up into steps.
+    if (mirror !== null && !e.isAborted && (mirror.tasks.length === 0 || mirror.source === 'turns')) {
+      const messages = await $.session.messages().catch(() => [])
+      if (mirror.source === 'turns' || isWork(turnTools(messages))) {
+        const prompt = turnPrompt
+        $.clock.after(1, () => {
+          digestTurn($, prompt, e.answer).catch(() => undefined)
         })
       }
     }
@@ -931,6 +1202,11 @@ export const register: Register = (on, options) => {
     const keep = (await wordsOf($)).compactKeep
     const out = await next({ ...e, instructions: [e.instructions, keep].filter(Boolean).join('\n') })
     if (out.skip !== undefined || e.trigger === 'precompute') return out
+    // The summary leads what the compaction keeps; a line of it goes into the block.
+    const summary = out.messages[0]?.text ?? ''
+    $.clock.after(1, () => {
+      writeHandoff($, summary).catch(() => undefined)
+    })
 
     return { ...out, messages: [...out.messages, { role: 'user' as const, text: note, toolUses: [] }] }
   })

@@ -20,8 +20,9 @@ export type TaskUpdateInput = {
 
 export type TodoInput = { content: string; status: Status; activeForm: string }
 
-export const emptyMirror = (sessionId: string, project: string, now: number, cwd = ''): ProgressMirror => ({
+export const emptyMirror = (sessionId: string, project: string, now: number, cwd = '', agent = 'claude'): ProgressMirror => ({
   sessionId,
+  agent,
   project,
   cwd,
   branch: '',
@@ -33,6 +34,11 @@ export const emptyMirror = (sessionId: string, project: string, now: number, cwd
   state: 'working',
   tasks: [],
   updated: now,
+  source: 'tasks',
+  autoAsk: null,
+  handoff: '',
+  namedSteps: 0,
+  lastAnswer: '',
 })
 
 const WAITING_YOU = new Set(['you', 'user', 'me', 'human', 'person', '使用者', '用户', '我'])
@@ -131,9 +137,11 @@ export const applyTaskCreate = (
     },
     input.metadata,
   )
-  const tasks = [...mirror.tasks.filter(one => one.id !== id), task]
+  // Steps summed up from turns give way to the real list the moment Claude starts one.
+  const kept = mirror.source === 'turns' ? [] : mirror.tasks
+  const tasks = [...kept.filter(one => one.id !== id), task]
 
-  return { ...mirror, tasks, updated: now }
+  return { ...mirror, tasks, source: 'tasks', autoAsk: mirror.source === 'turns' ? null : mirror.autoAsk, updated: now }
 }
 
 export const applyTaskUpdate = (mirror: ProgressMirror, input: TaskUpdateInput, now: number): ProgressMirror => {
@@ -161,6 +169,8 @@ export const applyTaskUpdate = (mirror: ProgressMirror, input: TaskUpdateInput, 
 
 export const applyTodoWrite = (mirror: ProgressMirror, todos: readonly TodoInput[], now: number): ProgressMirror => ({
   ...mirror,
+  source: 'tasks',
+  autoAsk: null,
   tasks: todos.map((todo, index) => ({
     id: String(index + 1),
     subject: todo.content,
@@ -178,8 +188,12 @@ export const applyTodoWrite = (mirror: ProgressMirror, todos: readonly TodoInput
 export type ListedTask = { id: string; subject: string; status: Status; blockedBy: readonly string[] }
 
 // TaskList after a reload or a resume: keeps what the mirror knew of each task.
-export const fromTaskList = (mirror: ProgressMirror, listed: readonly ListedTask[], now: number): ProgressMirror => ({
+export const fromTaskList = (mirror: ProgressMirror, listed: readonly ListedTask[], now: number): ProgressMirror =>
+  mirror.source === 'turns' && listed.length === 0 ? mirror : readList(mirror, listed, now)
+
+const readList = (mirror: ProgressMirror, listed: readonly ListedTask[], now: number): ProgressMirror => ({
   ...mirror,
+  source: 'tasks',
   tasks: listed.map(item => {
     const known = mirror.tasks.find(task => task.id === item.id)
 
@@ -315,7 +329,7 @@ export const resumeNote = (mirror: ProgressMirror, s: Strings = ZH_TW): string |
 // Only the mod's own per-session records age out of the store; a setting the person made
 // (closing the pane by hand) stays until they change it.
 export const isStaleStoreKey = (key: string, value: unknown, now: number, maxAge: number): boolean => {
-  if (!key.startsWith('mirror:') && !key.startsWith('hinted:') && !key.startsWith('done:')) return false
+  if (!['mirror:', 'hinted:', 'done:', 'agent:'].some(prefix => key.startsWith(prefix))) return false
   const stamp = typeof value === 'number' ? value : ((value as { updated?: number } | undefined)?.updated ?? 0)
 
   return now - stamp > maxAge

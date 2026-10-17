@@ -87,6 +87,7 @@ export const ZH_CN: Strings = {
   stateEnded: '对话已结束，可接手',
   fileTitle: '# 项目进度',
   contextNote: (text: string): string => `> 背景：${text}`,
+  handoffNote: (text: string): string => `> 交接：${text}`,
   dueNote: (date: string): string => `> 截止 ${date}`,
   archiveTitle: '# 进度归档',
   journalTitle: '# 工作日志',
@@ -116,6 +117,23 @@ export const ZH_CN: Strings = {
     '回两行，用简体中文，不要引号：\n' +
     '第一行：这件工作的名称，4 到 14 个字，像待办清单的标题：白话、具体、说出要做成什么，不要标点。\n' +
     '第二行：一句 40 字以内的背景，给一个没看过这段对话的人看：为什么要做、做完会怎样。',
+  digestPrompt: (goal: string, prompt: string, answer: string, title: string, context: string, steps: string): string =>
+    `用户一开始的需求：\n${goal}\n\n这一回合用户说：\n${prompt}\n\nAI 这一回合最后的回复：\n${answer}\n\n` +
+    `当前的名称：${title || '-'}\n当前的背景：${context || '-'}\n当前的步骤：\n${steps || '-'}\n\n` +
+    '只回下面五行，用简体中文，不要引号，没有就写 -：\n' +
+    'TITLE: 这件工作的名称，4 到 14 个字，白话具体；目标没变就照抄当前的名称\n' +
+    'CONTEXT: 一句 40 字以内的背景，为什么做、做完会怎样；目标没变就照抄\n' +
+    'DONE: 这一回合做完的事，20 字以内；只是回答问题就写 -\n' +
+    'NEXT: 接下来要做的一步，20 字以内；都做完了就写 -\n' +
+    'ASK: AI 最后在等用户回答或动手的事，写成「短标题 — 原本的问题」；没有就写 -',
+  refreshPrompt: (request: string, steps: string, title: string, context: string): string =>
+    `用户的需求：\n${request}\n\n步骤：\n${steps}\n\n当前的名称：${title}\n当前的背景：${context || '-'}\n\n` +
+    '回两行，用简体中文，不要引号。目标没变就照抄当前的两行：\n' +
+    '第一行：这件工作的名称，4 到 14 个字，白话、具体、说出要做成什么，不要标点。\n' +
+    '第二行：一句 40 字以内的背景：为什么要做、做完会怎样。',
+  handoffPrompt: (title: string, summary: string): string =>
+    `下面是一段 AI 写代码对话压缩后的摘要，工作是「${title}」：\n\n${summary}\n\n` +
+    '写一行交接给接手的人，用简体中文，60 字以内，依次说：做完什么、卡在哪（没有就略过）、下一步。不要引号。',
   asideSuffix: '（侧边面板的问题：用简体中文、三句以内回答，不要改动任何文件。）',
   asideNotStarted: '这个对话还没开始，先跟 Claude 说一句话再问。',
   asideFailed: '没问到，再试一次。',
@@ -137,6 +155,7 @@ export const ZH_CN: Strings = {
   takeOverHead: (title: string, project: string, done: number, total: number): string =>
     `接手“${title}”（${project}，之前的对话没做完，完成 ${done}/${total}）。`,
   takeOverLeft: (list: string): string => `剩下：${list}`,
+  takeOverHandoff: (text: string): string => `交接：${text}`,
   takeOverTail: '先用 TaskCreate 重建剩下的步骤，再从第一个没做完的开始。',
   handOverHead: (title: string, project: string): string => `帮我处理“${title}”（${project}）。`,
   handOverContext: (text: string): string => `背景：${text}。`,
@@ -146,8 +165,8 @@ export const ZH_CN: Strings = {
   stepSep: '；',
 
   // /progress
-  commandDescription: '进度面板：打开；open 打开网页版、整理、同步、加 …、周报、今天、通知 开/关、lang en|zh-TW|zh-CN',
-  commandHint: '[open|整理|同步|加 …|周报|今天|通知 开/关|lang …]',
+  commandDescription: '进度面板：打开；open 打开网页版、connect 接上其他 agent、整理、同步、加 …、周报、今天、通知 开/关、lang en|zh-TW|zh-CN',
+  commandHint: '[open|connect|整理|同步|加 …|周报|今天|通知 开/关|lang …]',
   tidyUnreadable: '读不到进度文件或归档文件，没有动任何文件。',
   tidyNothing: '没有要归档的。',
   tidyMoved: (n: number): string => `归档了 ${n} 个完成的任务。`,
@@ -157,6 +176,12 @@ export const ZH_CN: Strings = {
   notifyOff: '桌面通知已关闭。',
   paneOpened: (path: string): string => `进度面板已打开：${path}`,
   paneNotOpened: (reason: string): string => `进度面板打不开：${reason}`,
+  connectDone: (list: string): string => `已接上：${list}。重启它们之后，每回合结束都会自动汇报到面板。`,
+  connectNone: '没找到可以接的 agent（Codex、Gemini CLI、Cursor、OpenCode、Grok Build、Muse Code）。',
+  connectCodexTrust: 'Codex 第一次要在它的 /hooks 里批准这个 hook 才会运行。',
+  connectSkipped: (name: string, path: string): string => `${name} 的配置文件读不懂，没有动它：${path}`,
+  connectRemoved: (list: string): string => `已去掉：${list}。`,
+  connectNothingRemoved: '没有接上过任何 agent。',
   langSet: '面板改用简体中文。',
   langUnknown: '支持的语言：en、zh-TW、zh-CN、auto。',
 
@@ -183,6 +208,7 @@ export const ZH_CN: Strings = {
   readyAnswer: '好了，可以继续',
   replyPlaceholder: '回复 Claude…',
   contextLine: (text: string): string => `背景：${text}`,
+  handoffLine: (text: string): string => `交接：${text}`,
   continueElsewhere: (project: string): string => `到 ${project} 的对话接着做。`,
   heldElsewhere: '另一个对话正在做。',
   takeOver: '接手做完',

@@ -31,6 +31,10 @@ type World = {
   ran?: string[][]
   // What the model answers when asked to name the task.
   named?: string
+  // What the model answers to a prompt, when the answer depends on what was asked.
+  reply?: (prompt: string) => string | undefined
+  // The transcript $.session.messages() returns.
+  messages?: Array<{ role: 'user' | 'assistant'; text: string; toolUses: Array<{ tool_use_id: string; tool: string; input: Record<string, unknown> }> }>
   // Answers `gh`; other commands (git) answer the branch.
   gh?: () => { exitCode: number; stdout: string; stderr: string }
 }
@@ -70,21 +74,31 @@ const engineBeneath = (on: On, world: World): MockClock => {
     world.ran?.push([...e.argv])
     return { value: { ...ran, isStdoutTruncated: false, isStderrTruncated: false } }
   })
-  on('model.complete', () => ({
+  on('session.messages', () => ({ value: world.messages ?? [] }))
+  on('model.complete', ($, e) => ({
     value: {
       isAnswered: true as const,
-      text: world.named ?? '「重做進度面板」',
+      text: world.reply?.(typeof e.prompt === 'string' ? e.prompt : '') ?? world.named ?? '「重做進度面板」',
       usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
     },
   }))
   on('fs.stat', ($, e) => {
     world.stats?.push(e.path)
     const text = world.files.get(posix(e.path))
+    const isDir = [...world.files.keys()].some(path => path.startsWith(`${posix(e.path)}/`))
+    if (text === undefined && isDir) return { value: { kind: 'dir' as const, size: 0, mtimeMs: world.mtime, isLink: false } }
     return text === undefined
       ? { deny: 'ENOENT' }
       : { value: { kind: 'file' as const, size: text.length, mtimeMs: world.mtime, isLink: false } }
   })
-  on('fs.exists', ($, e) => ({ value: world.files.has(posix(e.path)) }))
+  on('fs.exists', ($, e) => ({ value: world.files.has(posix(e.path)) || [...world.files.keys()].some(path => path.startsWith(`${posix(e.path)}/`)) }))
+  on('fs.list', ($, e) => {
+    const dir = `${posix(e.path ?? '').replace(/\/$/, '')}/`
+    const names = [...world.files.keys()].filter(path => path.startsWith(dir) && !path.slice(dir.length).includes('/'))
+    return {
+      value: names.map(path => ({ name: path.slice(dir.length), kind: 'file' as const, size: (world.files.get(path) ?? '').length, mtimeMs: world.mtime, isLink: false })),
+    }
+  })
   on('fs.read', ($, e) => {
     const path = posix(e.path)
     const text = world.files.get(path)
@@ -982,4 +996,195 @@ test('the first run ever says nothing about what is already in the file', async 
   await $.session.start({ cwd: '/work/persona_framework', surface: 'desktop', isInteractive: true })
   await clock.advance(60 * 1000)
   expect(seen.notified).toEqual([])
+})
+
+
+const EDITED = [
+  { role: 'user' as const, text: '幫我把限流加到 API', toolUses: [] },
+  { role: 'assistant' as const, text: '', toolUses: [{ tool_use_id: 'u1', tool: 'Edit', input: {} }] },
+]
+
+const DIGEST = (prompt: string): string | undefined =>
+  prompt.includes('TITLE:')
+    ? 'TITLE: 幫 API 加上限流\nCONTEXT: 公開端點被刷爆，要擋掉濫用\nDONE: 加好限流中介層\nNEXT: 寫限流測試\nASK: 每把金鑰的上限 — 一分鐘 100 還是 300？'
+    : undefined
+
+test('without a Task list, a turn that changed something is summed up into steps and its question', async ($, on) => {
+  const world: World = { files: new Map(), mtime: 1, hasTasks: false, messages: EDITED, reply: DIGEST }
+  const clock = engineBeneath(on, world)
+  const seen = outside(on)
+  await start($, '幫我把限流加到 API')
+  await $.turn.complete({ answer: '加好了。每把金鑰一分鐘要 100 還是 300？', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  await clock.advance(10)
+
+  const written = world.files.get(FILE) ?? ''
+  expect(written).toContain('source=turns')
+  expect(written).toContain('### 幫 API 加上限流\n> 等你回覆')
+  expect(written).toContain('> 背景：公開端點被刷爆，要擋掉濫用\n- [x] 加好限流中介層\n- [?] 每把金鑰的上限 — 一分鐘 100 還是 300？\n- [ ] 寫限流測試\n')
+  expect(seen.notified).toContain('需要你：每把金鑰的上限')
+
+  // The person answers: the question counts as settled; the next turn adds what it did.
+  world.reply = (prompt: string) => (prompt.includes('TITLE:') ? 'TITLE: 幫 API 加上限流\nCONTEXT: -\nDONE: 寫好限流測試\nNEXT: -\nASK: -' : undefined)
+  await $.turn.start({ text: '100', turnId: 't2' })
+  await $.turn.complete({ answer: '測試寫好了，都過了。', durationMs: 1, isAborted: false, turnId: 't2', reason: 'answer' })
+  await clock.advance(10)
+  const after = world.files.get(FILE) ?? ''
+  expect(after).toContain('state=done')
+  expect(after).toContain('- [x] 加好限流中介層\n- [x] 每把金鑰的上限\n- [x] 寫好限流測試\n')
+
+  // Claude starting a real list replaces the summed-up steps.
+  await $.turn.start({ text: '再加上 IP 限流', turnId: 't3' })
+  await $.tool.call({ tool: 'TaskCreate', subject: '加 IP 限流', description: '' })
+  const listed = world.files.get(FILE) ?? ''
+  expect(listed).not.toContain('source=turns')
+  expect(listed).toContain('- [ ] 加 IP 限流\n<!-- /auto')
+  expect(listed).not.toContain('加好限流中介層')
+})
+
+test('a turn that only answered a question leaves no block behind', async ($, on) => {
+  const world: World = { files: new Map(), mtime: 1, hasTasks: false, reply: DIGEST, messages: [{ role: 'user', text: '這段程式在做什麼？', toolUses: [] }] }
+  const clock = engineBeneath(on, world)
+  await start($, '這段程式在做什麼？')
+  await $.turn.complete({ answer: '它在解析設定檔。還有別的嗎？', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  await clock.advance(10)
+  expect(world.files.get(FILE) ?? '').not.toContain('<!-- auto')
+})
+
+test('a turn that ends on a question waits on you even when Claude did not mark it, until you answer', async ($, on) => {
+  const world: World = { files: new Map(), mtime: 1, hasTasks: true }
+  const clock = engineBeneath(on, world)
+  const seen = outside(on)
+  await start($, '幫我重做進度面板')
+  await $.tool.call({ tool: 'TaskCreate', subject: '讀 API', description: '' })
+  await $.tool.call({ tool: 'TaskCreate', subject: '選配色', description: '' })
+  await $.tool.call({ tool: 'TaskUpdate', taskId: '1', status: 'completed' })
+  await $.tool.call({ tool: 'TaskUpdate', taskId: '2', status: 'in_progress' })
+  await $.turn.complete({ answer: '我準備了兩組。\n\n要用和色還是 Nord？', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  await clock.advance(10)
+  expect(world.files.get(FILE) ?? '').toContain('- [?] 選配色 — 要用和色還是 Nord？')
+  expect(seen.notified).toContain('需要你：選配色')
+
+  await $.turn.start({ text: '和色', turnId: 't2' })
+  await clock.advance(10)
+  expect(world.files.get(FILE) ?? '').toContain('- [~] 選配色\n')
+})
+
+test('a compaction leaves a handoff line in the block', async ($, on) => {
+  const world: World = {
+    files: new Map(),
+    mtime: 1,
+    hasTasks: true,
+    reply: (prompt: string) => (prompt.includes('交接') ? '交接：讀完 API；卡在授權；下一步寫 Mod' : undefined),
+  }
+  const clock = engineBeneath(on, world)
+  on('session.compact', () => ({ messages: [{ role: 'user' as const, text: '摘要：讀完 API，授權那段還沒解', toolUses: [] }] }))
+  await start($, '幫我重做進度面板')
+  await $.tool.call({ tool: 'TaskCreate', subject: '讀 API', description: '' })
+  await $.tool.call({ tool: 'TaskCreate', subject: '寫 Mod', description: '' })
+  await $.session.compact({ trigger: 'auto', messages: [{ role: 'user', text: '幫我重做進度面板', toolUses: [] }] })
+  await clock.advance(10)
+  expect(world.files.get(FILE) ?? '').toContain('> 交接：讀完 API；卡在授權；下一步寫 Mod\n')
+})
+
+test('a stopped session’s handoff line shows on its row and goes with 接手做完', async ($, on) => {
+  const file = JOBS.replace('### 修 CI\n', '### 修 CI\n> 交接：log 看完了；卡在 flaky 測試；下一步重跑三次\n')
+  const world: World = { files: new Map([[FILE, file]]), mtime: 1, hasTasks: true }
+  engineBeneath(on, world)
+  const submitted: string[] = []
+  on('prompt.submit', ($, e) => {
+    submitted.push(e.text)
+    return { text: e.text }
+  })
+  await $.session.start({ cwd: '/work/persona_framework', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop', props: PROPS })
+  await ui.press({ key: 'section::others' })
+  await ui.press({ key: 'persona_framework::修 CI' })
+  expect(await ui.find({ type: 'Text', text: '交接：log 看完了；卡在 flaky 測試；下一步重跑三次' })).toBeDefined()
+  await ui.press({ key: 'persona_framework::修 CI::take' })
+  expect(submitted.at(-1)).toContain('交接：log 看完了；卡在 flaky 測試；下一步重跑三次')
+  await ui.unmount()
+})
+
+
+const INBOX = '/home/me/.claude/progress-inbox'
+
+test('another agent’s turn, left in the inbox by its hook, becomes its block once, read by one session', async ($, on) => {
+  const payload = JSON.stringify({
+    type: 'agent-turn-complete',
+    'thread-id': '0199a7c3-codex-thread',
+    cwd: '/work/api-gateway',
+    'input-messages': ['幫我把公開端點加上限流'],
+    'last-assistant-message': '中介層加好了。每把金鑰一分鐘要 100 還是 300？',
+  })
+  const world: World = {
+    files: new Map([
+      [FILE, '# 專案進度\n'],
+      [`${INBOX}/codex-turn-1760000000-42.json`, payload],
+    ]),
+    mtime: 1,
+    hasTasks: true,
+    reply: DIGEST,
+  }
+  const clock = engineBeneath(on, world)
+  const seen = outside(on)
+  await $.session.start({ cwd: '/work/persona_framework', surface: 'desktop', isInteractive: true })
+  await clock.advance(5000)
+
+  const text = world.files.get(FILE) ?? ''
+  expect(text).toContain('## api-gateway\n\n<!-- auto session=')
+  expect(text).toContain('agent=codex state=waiting')
+  expect(text).toContain('- [?] 每把金鑰的上限 — 一分鐘 100 還是 300？')
+  expect(seen.notified.some(line => line.includes('codex 在問：每把金鑰的上限'))).toBe(true)
+
+  // Read once: the same file does not add the step again.
+  world.mtime += 1
+  await clock.advance(5000)
+  expect((world.files.get(FILE) ?? '').match(/加好限流中介層/g)).toHaveLength(1)
+
+  // The session ends: its block says so.
+  world.files.set(`${INBOX}/codex-end-1760000100-43.json`, JSON.stringify({ session_id: '0199a7c3-codex-thread', cwd: '/work/api-gateway' }))
+  world.mtime += 1
+  await clock.advance(5000)
+  expect(world.files.get(FILE) ?? '').toContain('agent=codex state=ended')
+})
+
+
+test('/progress connect hooks the installed agents into the pane once, keeps their own hooks, and takes ours back out', async ($, on) => {
+  const section = '<!-- claude-progress-pane:start -->\n## Report your progress\n<!-- claude-progress-pane:end -->\n'
+  const world: World = {
+    files: new Map([
+      ['/home/me/.codex/config.toml', 'model = "gpt-6"\n'],
+      ['/home/me/.codex/AGENTS.md', `# Mine\n\nUse tabs.\n\n${section}`],
+      ['/home/me/.cursor/hooks.json', JSON.stringify({ version: 1, hooks: { stop: [{ command: 'say done' }] } })],
+      ['/home/me/.gemini/settings.json', '{ // my comment\n "theme": "dark" }'],
+    ]),
+    mtime: 1,
+    hasTasks: true,
+    ran: [],
+  }
+  engineBeneath(on, world)
+  await $.session.start({ cwd: '/work/persona_framework', surface: 'terminal', isInteractive: true })
+
+  const first = await $.command.run({ ...TIDY, args: 'connect' })
+  expect(first.text).toContain('已接上：Codex、Cursor。')
+  expect(first.text).toContain('Codex 第一次要在它的 /hooks 裡核准這個 hook 才會跑。')
+  expect(first.text).toContain('Gemini CLI 的設定檔讀不懂，沒有動它：/home/me/.gemini/settings.json')
+  expect(world.files.get('/home/me/.claude/progress-report.sh')).toContain("dir='/home/me/.claude/progress-inbox'")
+  const codex = JSON.parse(world.files.get('/home/me/.codex/hooks.json') ?? '{}')
+  expect(codex.hooks.Stop[0].hooks[0]).toEqual({ type: 'command', command: "sh '/home/me/.claude/progress-report.sh' codex turn", timeout: 10 })
+  expect(codex.hooks.SessionEnd[0].hooks[0].command).toBe("sh '/home/me/.claude/progress-report.sh' codex end")
+  expect(world.files.get('/home/me/.codex/AGENTS.md')).toBe('# Mine\n\nUse tabs.\n')
+  expect(world.files.get('/home/me/.gemini/settings.json')).toBe('{ // my comment\n "theme": "dark" }')
+
+  // Again: nothing doubles.
+  await $.command.run({ ...TIDY, args: 'connect' })
+  const cursor = JSON.parse(world.files.get('/home/me/.cursor/hooks.json') ?? '{}')
+  expect(cursor.hooks.stop).toEqual([{ command: 'say done' }, { command: "sh '/home/me/.claude/progress-report.sh' cursor turn" }])
+  expect(cursor.hooks.afterAgentResponse).toHaveLength(1)
+  expect(cursor.hooks.sessionEnd).toEqual([{ command: "sh '/home/me/.claude/progress-report.sh' cursor end" }])
+
+  const removed = await $.command.run({ ...TIDY, args: 'connect remove' })
+  expect(removed.text).toContain('已拿掉：Codex、Cursor。')
+  expect(JSON.parse(world.files.get('/home/me/.cursor/hooks.json') ?? '{}').hooks).toEqual({ stop: [{ command: 'say done' }] })
+  expect(JSON.parse(world.files.get('/home/me/.codex/hooks.json') ?? '{}').hooks).toEqual({})
 })
