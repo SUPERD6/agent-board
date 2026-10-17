@@ -260,6 +260,7 @@ const BOARD_PLAIN = new Set(Object.values(STRINGS).flatMap(s => [s.nothingForYou
 const isBoardLine = (line: string): boolean => /^(?:\s|[●▸⚑◐] |$)/.test(line) || BOARD_PLAIN.has(line.trim())
 const BOARD_LEAD = 40
 const BOARD_ASIDE = 160
+const BOARD_LINK = /https?:\/\/(?:127\.0\.0\.1|localhost):\d{1,5}\/\?t=[\w-]{1,64}/
 // A CJK character says about as much as two Latin ones.
 const weight = (text: string): number => [...text.trim()].reduce((sum, char) => sum + (/[ᄀ-ᅟ⺀-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦]/.test(char) ? 2 : 1), 0)
 
@@ -279,7 +280,9 @@ const isLeadIn = (text: string): boolean => {
 }
 
 export const isBoardAnswer = (answer: string): boolean => {
-  const lines = answer.replace(/\r\n/g, '\n').split('\n')
+  // The line with the board page's address (`--serve`) goes with the board, after it or inside
+  // the code block the board is shown in.
+  const lines = answer.replace(/\r\n/g, '\n').split('\n').filter(line => !BOARD_LINK.test(line))
   const at = lines.findIndex(line => line.length <= COUNTS_MAX && BOARD_COUNTS.test(line))
   if (at < 0) return false
   let end = at + 1
