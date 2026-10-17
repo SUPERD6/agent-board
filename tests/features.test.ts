@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 
 import type { ProgressMirror, ProgressPr } from '../types'
 import { askOf } from '../hooks/ask'
-import { boardText, fit, peekInbox } from '../hooks/board'
+import { boardItems, boardKey, boardScreen, boardText, emptyBoardState, fit, peekInbox, pinned } from '../hooks/board'
 import { addManualTask, isArchivable, manualTaskCount, renderAutoBlock, setManualStep, takeArchivable, takeManualDone, takeTask, upsertAutoBlock } from '../hooks/blocks'
 import { agentHooks, boardCommands, boardScript, DELETE, isWindowsHost, openclawPlugin, openclawPrinted, openclawSavedBy, openclawTooOld, readConfig, reportCommand, reporterPs1, withFlatHook, withGroupedHook, withHermesHooks, withoutHermesHooks, withoutOurHooks, withoutSection } from '../hooks/connect'
 import { dashboardHtml } from '../hooks/dashboard'
@@ -1090,6 +1090,11 @@ test('a turn that only showed the board is not work, in any language or agent', 
   for (const prompt of ['$agent-board', '/agent-board', ' /board', STRINGS.en.boardSkillPrompt(run), ZH_TW.boardSkillPrompt(run), STRINGS['zh-CN'].boardSkillPrompt(run), '<skill>\n<name>agent-board</name>\n</skill>', `${STRINGS.en.boardCommandPrompt}\n\nProgress`, `${ZH_TW.boardCommandPrompt}\n\n進度`]) {
     expect(isBoardTurn(turn(prompt)!)).toBe(true)
   }
+  // Asked in the person's own words, it is known by the board it shows back.
+  const shown = readTurn('hermes-turn-1-1.json', JSON.stringify({ session_id: 'h', cwd: '/w/app', prompt: '看一下 agent-board', last_assistant_message: '```\n進度  ● 1 等你  ▸ 0 進行中  ⚑ 0 快到期  ✓ 0 今天完成\n```\n現在最需要你的是…' }))
+  expect(isBoardTurn(shown!)).toBe(true)
+  const english = readTurn('hermes-turn-1-2.json', JSON.stringify({ session_id: 'h', cwd: '/w/app', prompt: 'show me the board', last_assistant_message: 'Progress  ● 0 waiting  ▸ 3 in progress  ⚑ 0 due soon  ✓ 0 done today' }))
+  expect(isBoardTurn(english!)).toBe(true)
   // Work on the board itself, or that only starts like a command, is work.
   for (const prompt of ['Fix the board layout on mobile', '/boarding-pass', '/board the plane and pack', '$agent-board-v2 setup', 'Fix the bug in scripts/board-cli.ts so agent-board.mjs prints colours']) {
     expect(isBoardTurn(turn(prompt)!)).toBe(false)
@@ -1203,4 +1208,96 @@ test('Hermes hooks of ours that Hermes rewrote in block style are left as they a
 test('a comment after an empty Hermes hooks: {} stays when ours go in under it', () => {
   const turn = "sh '/h/.claude/progress-report.sh' hermes turn || true"
   expect(withHermesHooks('hooks: {} # my note\n', [['post_llm_call', turn]])).toContain('hooks: # my note\n  post_llm_call:\n')
+})
+
+const WORK_FILE = `${BOARD_FILE}
+## Job search
+### Fabrikam fellowship
+- [x] Draft the statement
+- [ ] Ask two referees
+
+## docs-site
+<!-- auto session=b2c3d4e5 agent=gemini state=ended updated=2026-10-16T10:00:00Z -->
+### Fix the broken links
+- [ ] Fix them
+<!-- /auto session=b2c3d4e5 -->
+`
+
+test('on the board you work in, each line offers what the pane offers: answers to copy, a step to tick, a block to archive', () => {
+  const now = Date.parse('2026-10-17T08:45:00Z')
+  const view = buildView(parseProgress(WORK_FILE), [], null, now, 0, {}, STRINGS.en)
+  const items = boardItems(view, [])
+  const kinds = items.map(item => (item.type === 'row' ? `row:${item.row.title}` : item.type))
+  expect(kinds[0]).toBe('ask')
+  const job = kinds.indexOf('row:Fabrikam fellowship')
+  const docs = kinds.indexOf('row:Fix the broken links')
+  // Another agent's question: its answers are copied, to paste into that agent.
+  expect(boardKey(emptyBoardState, '2', items, STRINGS.en).action).toEqual({ type: 'copy', text: '300 a minute' })
+  expect(boardKey(emptyBoardState, 'x', items, STRINGS.en).action).toBeNull()
+  // A hand-kept task: x ticks its next step, the exact line it showed.
+  const onJob = { ...emptyBoardState, selected: job }
+  expect(boardKey(onJob, 'x', items, STRINGS.en).action).toMatchObject({ type: 'tick', ref: { project: 'Job search', title: 'Fabrikam fellowship', step: 'Ask two referees' } })
+  // A stopped session's block can be archived; a live one cannot.
+  expect(boardKey({ ...emptyBoardState, selected: docs }, 'a', items, STRINGS.en).action).toMatchObject({ type: 'archive', title: 'Fix the broken links' })
+  const live = kinds.indexOf('row:Dark mode for the settings page')
+  expect(boardKey({ ...emptyBoardState, selected: live }, 'a', items, STRINGS.en).action).toBeNull()
+  // Arrows move and stop at the ends; Enter opens and closes the line.
+  expect(boardKey(emptyBoardState, 'up', items, STRINGS.en).state.selected).toBe(0)
+  expect(boardKey({ ...emptyBoardState, selected: items.length - 1 }, 'down', items, STRINGS.en).state.selected).toBe(items.length - 1)
+  const opened = boardKey(onJob, 'enter', items, STRINGS.en).state
+  expect(opened.open).toBe(items[job]?.key)
+  expect(boardKey(opened, 'enter', items, STRINGS.en).state.open).toBeNull()
+  expect(boardKey(onJob, 'q', items, STRINGS.en).action).toEqual({ type: 'quit' })
+})
+
+test('the board you work in marks the chosen line and lists only the keys that do something on it', () => {
+  const now = Date.parse('2026-10-17T08:45:00Z')
+  const view = buildView(parseProgress(WORK_FILE), [], null, now, 0, {}, STRINGS.en)
+  const items = boardItems(view, [])
+  const job = items.findIndex(item => item.type === 'row' && item.row.title === 'Fabrikam fellowship')
+  const onAsk = boardScreen(view, [], emptyBoardState, STRINGS.en, { width: 100, isColor: false })
+  expect(onAsk).toContain('› [Choose] Per-key limit')
+  expect(onAsk).toContain('    2 300 a minute')
+  expect(onAsk).toContain('1–2 copy answer · ↑↓ select')
+  const onJob = boardScreen(view, [], { selected: job, key: null, open: items[job]?.key ?? null, note: 'Copied: 300' }, STRINGS.en, { width: 100, isColor: false })
+  expect(onJob).toContain('› Fabrikam fellowship')
+  expect(onJob).toContain('    ✓ 1 Draft the statement')
+  expect(onJob).toContain('x done · a archive · ↑↓ select')
+  expect(onJob.trimEnd().endsWith('Copied: 300')).toBe(true)
+})
+
+test('the chosen line stays chosen when a line above it comes or goes', () => {
+  const now = Date.parse('2026-10-17T08:45:00Z')
+  const before = boardItems(buildView(parseProgress(WORK_FILE), [], null, now, 0, {}, STRINGS.en), [])
+  const docs = before.findIndex(item => item.type === 'row' && item.row.title === 'Fix the broken links')
+  let state = emptyBoardState
+  for (let index = 0; index < docs; index += 1) state = boardKey(state, 'down', before, STRINGS.en).state
+  // The question at the top is answered elsewhere and leaves the board.
+  const after = boardItems(buildView(parseProgress(WORK_FILE.replace('- [?] Per-key limit — 100 or 300 a minute?', '- [x] Per-key limit 300')), [], null, now, 0, {}, STRINGS.en), [])
+  expect(boardKey(state, 'a', after, STRINGS.en).action).toMatchObject({ type: 'archive', title: 'Fix the broken links' })
+})
+
+test('a key does nothing to a line that took the chosen one’s place before the screen showed it', () => {
+  const now = Date.parse('2026-10-17T08:45:00Z')
+  const before = boardItems(buildView(parseProgress(WORK_FILE), [], null, now, 0, {}, STRINGS.en), [])
+  const docs = before.findIndex(item => item.type === 'row' && item.row.title === 'Fix the broken links')
+  let state = pinned(emptyBoardState, before)
+  for (let index = 0; index < docs; index += 1) state = pinned(boardKey(state, 'down', before, STRINGS.en).state, before)
+  // Another session archives the block under the cursor; another line now sits where it was.
+  const after = boardItems(buildView(parseProgress(WORK_FILE.replace('Fix the broken links', 'Wire the money')), [], null, now, 0, {}, STRINGS.en), [])
+  const pressed = boardKey(pinned(state, after), 'a', after, STRINGS.en)
+  expect(pressed.action).toBeNull()
+  expect(pressed.state.note).toBe(STRINGS.en.boardLineChanged)
+  // Once the screen shows the new line, the same key acts on it.
+  expect(boardKey(pressed.state, 'a', after, STRINGS.en).action).toMatchObject({ type: 'archive', title: 'Wire the money' })
+})
+
+test('escape sequences from another agent’s text never reach the terminal or the clipboard', () => {
+  expect(fit('Pay \u001b[2J\u001b[Hnow\u0007', 40)).toBe('Pay [2J[Hnow')
+  const file = WORK_FILE.replace('100 or 300 a minute?', '100 or 300 a minute? `rm -rf /tmp/x\u001b[2J`')
+  const items = boardItems(buildView(parseProgress(file), [], null, Date.parse('2026-10-17T08:45:00Z'), 0, {}, STRINGS.en), [])
+  const screen = boardScreen(buildView(parseProgress(file), [], null, Date.parse('2026-10-17T08:45:00Z'), 0, {}, STRINGS.en), [], emptyBoardState, STRINGS.en)
+  expect(screen.includes('\u001b')).toBe(false)
+  const copied = boardKey(pinned(emptyBoardState, items), 'c', items, STRINGS.en).action
+  if (copied?.type === 'copy') expect(copied.text.includes('\u001b')).toBe(false)
 })

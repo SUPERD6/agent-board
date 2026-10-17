@@ -1,5 +1,64 @@
 # Changelog
 
+## 0.18.0 — 2026-10-17
+
+- **Work in the board from any agent, as in the pane.** `node
+  ~/.claude/agent-board.mjs --watch` in a terminal now takes keys: ↑↓ and
+  Enter pick and open a line, `x` ticks the next step of a hand-kept task
+  (into the work log too), `a` archives a hand-kept task or a stopped session’s block,
+  `1`–`9` or `y`/`n` copy the answer to another agent's question to paste
+  there, `c` copies a command, `o` opens the browser view, `q` quits. The
+  choice stays on its line when lines above it come or go. Writes go through a
+  temporary file, are read back and are made again if another session wrote
+  meanwhile; they reuse the pane's own `setManualStep` and `takeTask`. Run for
+  real in tmux beside Codex 0.163.0: a tick, an archive, and a Codex answer
+  reaching the board through Codex's hook. `--keys "down x"` plays keys
+  without a terminal, for tests. Tests: "on the board you work in, each line
+  offers what the pane offers: answers to copy, a step to tick, a block to
+  archive", "the board you work in marks the chosen line and lists only the
+  keys that do something on it", "the chosen line stays chosen when a line
+  above it comes or goes", "keys played on the board tick a hand-kept step,
+  archive a stopped block, and leave a line in the journal"
+  (`tests/board.test.mjs`).
+- **Its writes hold up when another session writes at the same moment**
+  (found in review, each one reproduced first):
+  - **An archive is no longer lost.** The block goes into the archive file
+    before it leaves `progress.md`, as in the pane. A retry after another
+    session's write no longer drops it with "Could not find that task".
+  - **A tick made on a retry is reported and journaled.** Before, it showed
+    as "not there".
+  - **Each board uses a temp file of its own.** Two boards at once no
+    longer write over each other's temp file. A failed rename (on Windows,
+    a file another program holds open) is tried again.
+  - **A key never acts on a line the screen has not shown yet.** If another
+    session replaced the chosen line, the key only moves the choice there
+    and says so.
+  - **Escape sequences in another agent's text are dropped.** They no longer
+    reach the terminal or the copied answer.
+  - **The board is easier to live with.** Copying counts as done when the
+    terminal took it (OSC 52, over SSH too). A clipboard tool gets 2
+    seconds. The cursor comes back however the board ends. Keys that arrive
+    together (a held arrow) are all read, each on the line the one before
+    left chosen, and the rest wait after a tick or an archive. Alt with a
+    letter does nothing. A tick is journaled once, even on a retry.
+
+  Tests: "another session writing while the board ticks or archives loses
+  neither the tick nor the archived block", "a key does nothing to a line
+  that took the chosen one’s place before the screen showed it", "escape
+  sequences from another agent’s text never reach the terminal or the
+  clipboard".
+- **The board command in Hermes Agent and OpenClaw, tested live**: Hermes
+  0.19.0 loaded the agent-board skill with `skill_view` and ran it with
+  `terminal`; OpenClaw 2026.10.4 read it from `~/.agents/skills` and ran it
+  with `exec`. The README table marks both ✅.
+- **README badges name what was tested.** The CI badge gives way to the
+  version, the Claude Code it needs (2.1.287 or newer) and one badge per
+  agent tested live, with the version tested: green where the table says ✅,
+  yellow-green where it works only in part. The table now says that the board
+  inside an agent is text to read, and acting on it is done in the terminal
+  board. Above the table, "At a glance" sorts the agents into works fully,
+  works in part (with the limit) and not working yet.
+
 ## 0.17.2 — 2026-10-17
 
 - **A reply full of board marks no longer holds up the inbox.** 0.17.1 looks

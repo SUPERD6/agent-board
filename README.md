@@ -8,10 +8,18 @@ A Claude Code plugin that also follows Codex, Gemini CLI, OpenCode, Grok Build, 
 </p>
 
 <p align="center">
-<a href="https://github.com/WenyuChiou/agent-board/actions/workflows/test.yml"><img alt="Tests" src="https://github.com/WenyuChiou/agent-board/actions/workflows/test.yml/badge.svg"></a>
-<a href="CHANGELOG.md"><img alt="Version 0.17.2" src="https://img.shields.io/badge/version-0.17.2-blue"></a>
+<a href="CHANGELOG.md"><img alt="Version 0.18.0" src="https://img.shields.io/badge/version-0.18.0-blue"></a>
+<a href="#quick-start"><img alt="Needs Claude Code 2.1.287 or newer" src="https://img.shields.io/badge/Claude%20Code-%E2%89%A5%202.1.287-d97757"></a>
 <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-green"></a>
 <img alt="macOS, Linux, Windows" src="https://img.shields.io/badge/macOS%20%C2%B7%20Linux%20%C2%B7%20Windows-lightgrey">
+</p>
+<p align="center">
+<a href="#supported-agents"><img alt="Tested live with Codex 0.163.0" src="https://img.shields.io/badge/Codex-0.163.0-brightgreen"></a>
+<a href="#supported-agents"><img alt="Tested live with Gemini CLI 0.64.0" src="https://img.shields.io/badge/Gemini%20CLI-0.64.0-brightgreen"></a>
+<a href="#supported-agents"><img alt="Tested live with OpenCode 1.19.3" src="https://img.shields.io/badge/OpenCode-1.19.3-brightgreen"></a>
+<a href="#supported-agents"><img alt="Tested live with Grok Build 1.0.62" src="https://img.shields.io/badge/Grok%20Build-1.0.62-yellowgreen"></a>
+<a href="#supported-agents"><img alt="Tested live with Hermes Agent 0.19.0" src="https://img.shields.io/badge/Hermes%20Agent-0.19.0-yellowgreen"></a>
+<a href="#supported-agents"><img alt="Tested live with OpenClaw 2026.10.4" src="https://img.shields.io/badge/OpenClaw-2026.10.4-yellowgreen"></a>
 </p>
 
 <p align="center">English · <a href="README.zh-TW.md">繁體中文</a> · <a href="README.zh-CN.md">简体中文</a></p>
@@ -20,7 +28,25 @@ You have Claude Code on one project, Codex on another, Gemini on a third. Twenty
 
 ## Supported agents
 
-✅ works, tested live · ⚠️ works, with the limit in the last column · ❔ written from the agent's docs, not tested yet · ❌ does not work
+### At a glance
+
+**Works fully**: its turns show up on the board by themselves, and the board opens inside it; both tested live.
+- **Claude Code** 2.1.302 (the pane)
+- **Codex** 0.163.0 (`$agent-board`)
+- **Gemini CLI** 0.64.0 (`/board`)
+- **OpenCode** 1.19.3 (`/board`)
+
+**Works in part**: the limit follows each name.
+- **Grok Build** 1.0.62: turns tested; the board command inside it (`/agent-board`) not tested yet
+- **Hermes Agent** 0.19.0: both work; a one-off `hermes -q` question shows as stopped, not waiting
+- **OpenClaw** 2026.10.4: both work; needs 2026.4.24 or newer, and warns about the plugin's origin
+- **dot**, **Muse** on the web, **any other agent**: no hook, so you paste a prompt and merge what it writes; no board inside it
+
+**Not working yet**: **Cursor** (its hook was blocked on Windows; macOS and Linux not tested), **Muse Code** CLI (not tested), **Antigravity** (no turn-end hook).
+
+The table below has the details per capability.
+
+✅ works, tested live · ⚠️ works, with the limit in the last column · ❔ written from the agent's docs, not tested yet · ❌ does not work · the agent badges at the top: green works fully, yellow-green works in part
 
 | | Agent | Its turns on the board | The board inside it | Tested on | What to know |
 |:-:|---|:-:|:-:|---|---|
@@ -29,15 +55,15 @@ You have Claude Code on one project, Codex on another, Gemini on a third. Twenty
 | <img src="docs/images/agents/gemini-cli.svg" width="24" alt=""> | **Gemini CLI** | ✅ | ✅ `/board` | 0.64.0 | Gemini asks once before `/board` runs its command |
 | <img src="docs/images/agents/opencode.svg" width="24" alt=""> | **OpenCode** | ✅ | ✅ `/board` | 1.19.3 |  |
 | <img src="docs/images/agents/grok-build.svg" width="24" alt=""> | **Grok Build** | ✅ | ❔ `/agent-board` | 1.0.62 |  |
-| <img src="docs/images/agents/hermes-agent.svg" width="24" alt=""> | **Hermes Agent** | ⚠️ | ❔ `/agent-board` | 0.19.0, 0.16.0 (Windows) | Answer `y` once. A one-off `hermes -q` question shows as stopped, not waiting |
-| <img src="docs/images/agents/openclaw.svg" width="24" alt=""> | **OpenClaw** | ⚠️ | ❔ `/agent-board` | 2026.10.4 | Needs 2026.4.24 or newer; an older one is left out, and connect says so |
+| <img src="docs/images/agents/hermes-agent.svg" width="24" alt=""> | **Hermes Agent** | ⚠️ | ✅ `/agent-board` | 0.19.0, 0.16.0 (Windows) | Answer `y` once. A one-off `hermes -q` question shows as stopped, not waiting |
+| <img src="docs/images/agents/openclaw.svg" width="24" alt=""> | **OpenClaw** | ⚠️ | ✅ `/agent-board` | 2026.10.4 | Needs 2026.4.24 or newer; an older one is left out, and connect says so. It warns it "can't verify where this plugin came from" and loads it anyway |
 | <img src="docs/images/agents/cursor.svg" width="24" alt=""> | **Cursor** | ❌ | ❔ `/agent-board` | cursor-agent 2026.10.16 (Windows) | Not seen working: on Windows, Cursor runs every hook through bash, and another tool's PowerShell hook blocked the turn. macOS and Linux not tested |
 | <img src="docs/images/agents/muse-code.svg" width="24" alt=""> | **Muse Code** | ❔ | ❔ |  | The hook is written from its docs; Muse was tried only on the web (next rows) |
 |  | **Antigravity** | ❌ | ❔ `/agent-board` |  | No turn-end hook yet, so it can only show the board |
 |  | **dot**, **Muse** on the web | ⚠️ | ❌ | web, Oct 2026 | No hook: paste [one prompt](docs/REMOTE_REPORTERS.md#chat-relay-a-prompt-to-paste) into the chat, then merge each block it writes |
 |  | **Any other agent** (Aider, Copilot, Windsurf…) | ⚠️ | ❌ |  | Paste one section of [AGENTS.md](AGENTS.md) into its instructions; it writes its own block |
 
-The board inside another agent shows everything; answering its questions happens in that agent (the pane gives you the words or command to paste). "Tested on" is the version that ran a real turn whose hook fired and whose block the pane drew; those payloads are kept as tests. Here is the board reading them:
+The board inside another agent shows everything, as printed text to read: nothing in it can be clicked. To tick, archive or copy an answer, run the [board you work in](#the-board-in-every-agent) in a terminal beside it. Answering a question happens in the agent that asked it (the pane gives you the words or command to paste). "Tested on" is the version that ran a real turn whose hook fired and whose block the pane drew; those payloads are kept as tests. Here is the board reading them:
 
 <img alt="The board listing the question each of six agents asked in its live run: Codex, Gemini CLI, OpenClaw, OpenCode, Grok Build, Hermes Agent" src="docs/images/live/hooks-en.png" width="620">
 
@@ -91,6 +117,11 @@ Connecting also gives each agent a way to show the board, so whichever one you a
 | Codex | `$agent-board` |
 | Cursor, Grok Build, OpenClaw, Hermes Agent, Antigravity | `/agent-board` |
 | Any terminal, next to any agent | `node ~/.claude/agent-board.mjs --watch` (`--html` opens it in the browser) |
+
+**Work in it, as in the pane.** In a terminal beside the agent (a split pane), `node ~/.claude/agent-board.mjs --watch` is the board you can act on: ↑↓ picks a line, Enter opens it, `x` ticks the next step of your own task, `a` archives one of your own tasks or a stopped session’s block (finished work leaves the board by itself), `1`–`9` (or `y`/`n`) copies the answer to another agent's question so you paste it there, `c` copies a command, `o` opens the browser view, `q` quits. Ticks go into the work log. It writes `progress.md` the careful way the pane does: through a temporary file, read back, and made again if another session wrote meanwhile; it never touches another session's block, except to archive one that has stopped.
+
+<img alt="Codex on the left; on the right the board, where x just ticked a step and the line under the keys says so" src="docs/images/live/work-zh-TW.png" width="100%">
+
 
 <table><tr>
 <td><img alt="Codex CLI 0.163.0: typing $agent-board runs the board script and shows the board" src="docs/images/live/codex-en.png"></td>

@@ -8,10 +8,18 @@ Claude Code 插件，也跟得上 Codex、Gemini CLI、OpenCode、Grok Build、H
 </p>
 
 <p align="center">
-<a href="https://github.com/WenyuChiou/agent-board/actions/workflows/test.yml"><img alt="测试" src="https://github.com/WenyuChiou/agent-board/actions/workflows/test.yml/badge.svg"></a>
-<a href="CHANGELOG.md"><img alt="版本 0.17.2" src="https://img.shields.io/badge/version-0.17.2-blue"></a>
+<a href="CHANGELOG.md"><img alt="版本 0.18.0" src="https://img.shields.io/badge/version-0.18.0-blue"></a>
+<img alt="需要 Claude Code 2.1.287 以上" src="https://img.shields.io/badge/Claude%20Code-%E2%89%A5%202.1.287-d97757">
 <a href="LICENSE"><img alt="MIT 许可" src="https://img.shields.io/badge/license-MIT-green"></a>
 <img alt="macOS、Linux、Windows" src="https://img.shields.io/badge/macOS%20%C2%B7%20Linux%20%C2%B7%20Windows-lightgrey">
+</p>
+<p align="center">
+<a href="#支持的-agent"><img alt="实测过 Codex 0.163.0" src="https://img.shields.io/badge/Codex-0.163.0-brightgreen"></a>
+<a href="#支持的-agent"><img alt="实测过 Gemini CLI 0.64.0" src="https://img.shields.io/badge/Gemini%20CLI-0.64.0-brightgreen"></a>
+<a href="#支持的-agent"><img alt="实测过 OpenCode 1.19.3" src="https://img.shields.io/badge/OpenCode-1.19.3-brightgreen"></a>
+<a href="#支持的-agent"><img alt="实测过 Grok Build 1.0.62" src="https://img.shields.io/badge/Grok%20Build-1.0.62-yellowgreen"></a>
+<a href="#支持的-agent"><img alt="实测过 Hermes Agent 0.19.0" src="https://img.shields.io/badge/Hermes%20Agent-0.19.0-yellowgreen"></a>
+<a href="#支持的-agent"><img alt="实测过 OpenClaw 2026.10.4" src="https://img.shields.io/badge/OpenClaw-2026.10.4-yellowgreen"></a>
 </p>
 
 <p align="center"><a href="README.md">English</a> · <a href="README.zh-TW.md">繁體中文</a> · 简体中文</p>
@@ -20,7 +28,25 @@ Claude Code 插件，也跟得上 Codex、Gemini CLI、OpenCode、Grok Build、H
 
 ## 支持的 agent
 
-✅ 可以用，实测过 · ⚠️ 可以用，但有最后一栏写的限制 · ❔ 按 agent 文档写的，还没实测 · ❌ 不能用
+### 一眼看懂
+
+**完全可用**：回合会自己上看板，在它里面也叫得出看板，两者都实测过。
+- **Claude Code** 2.1.302（面板）
+- **Codex** 0.163.0（`$agent-board`）
+- **Gemini CLI** 0.64.0（`/board`）
+- **OpenCode** 1.19.3（`/board`）
+
+**部分可用**：缺什么写在后面。
+- **Grok Build** 1.0.62：回合实测过；在它里面叫看板（`/agent-board`）还没实测
+- **Hermes Agent** 0.19.0：两者都能用；`hermes -q` 单次提问会显示成已停，不是等你
+- **OpenClaw** 2026.10.4：两者都能用；需要 2026.4.24 以上，会警告无法确认 plugin 来源
+- **dot**、网页版 **Muse**、**其他 agent**：没有 hook，要贴一段提示、再合并它写的区块；在它里面看不到看板
+
+**还不能用**：**Cursor**（Windows 上 hook 被挡；macOS、Linux 没测）、**Muse Code** CLI（没实测）、**Antigravity**（没有回合结束的 hook）。
+
+下表按能力逐项列出细节。
+
+✅ 可以用，实测过 · ⚠️ 可以用，但有最后一栏写的限制 · ❔ 按 agent 文档写的，还没实测 · ❌ 不能用。顶端的 agent 徽章：绿色是完全可用，黄绿色是部分可用。
 
 | | Agent | 回合会出现在看板 | 在它里面看看板 | 实测版本 | 要知道的事 |
 |:-:|---|:-:|:-:|---|---|
@@ -29,15 +55,15 @@ Claude Code 插件，也跟得上 Codex、Gemini CLI、OpenCode、Grok Build、H
 | <img src="docs/images/agents/gemini-cli.svg" width="24" alt=""> | **Gemini CLI** | ✅ | ✅ `/board` | 0.64.0 | 第一次 `/board` 会问一次要不要让命令运行 |
 | <img src="docs/images/agents/opencode.svg" width="24" alt=""> | **OpenCode** | ✅ | ✅ `/board` | 1.19.3 |  |
 | <img src="docs/images/agents/grok-build.svg" width="24" alt=""> | **Grok Build** | ✅ | ❔ `/agent-board` | 1.0.62 |  |
-| <img src="docs/images/agents/hermes-agent.svg" width="24" alt=""> | **Hermes Agent** | ⚠️ | ❔ `/agent-board` | 0.19.0、0.16.0（Windows） | 回答一次 `y`。单次运行的 `hermes -q` 问的问题会显示成已停，不是等你 |
-| <img src="docs/images/agents/openclaw.svg" width="24" alt=""> | **OpenClaw** | ⚠️ | ❔ `/agent-board` | 2026.10.4 | 要 2026.4.24 以上；太旧的不会接，并会告诉你 |
+| <img src="docs/images/agents/hermes-agent.svg" width="24" alt=""> | **Hermes Agent** | ⚠️ | ✅ `/agent-board` | 0.19.0、0.16.0（Windows） | 回答一次 `y`。单次运行的 `hermes -q` 问的问题会显示成已停，不是等你 |
+| <img src="docs/images/agents/openclaw.svg" width="24" alt=""> | **OpenClaw** | ⚠️ | ✅ `/agent-board` | 2026.10.4 | 要 2026.4.24 以上；太旧的不会接，并会告诉你。它会警告“无法确认这个插件的来源”，但照样加载 |
 | <img src="docs/images/agents/cursor.svg" width="24" alt=""> | **Cursor** | ❌ | ❔ `/agent-board` | cursor-agent 2026.10.16（Windows） | 还没看到它成功：Windows 上 Cursor 用 bash 运行所有 hook，其他工具的 PowerShell hook 挡住了回合。macOS、Linux 没测 |
 | <img src="docs/images/agents/muse-code.svg" width="24" alt=""> | **Muse Code** | ❔ | ❔ |  | hook 按它的文档写；Muse 只测过网页版（下一行） |
 |  | **Antigravity** | ❌ | ❔ `/agent-board` |  | 还没有回合结束的 hook，只能看看板 |
 |  | **dot**、网页版 **Muse** | ⚠️ | ❌ | 网页版，2026 年 10 月 | 没有 hook：把[一段提示](docs/REMOTE_REPORTERS.md#chat-relay-a-prompt-to-paste)贴进聊天，再把它写的每一块合并进来 |
 |  | **其他 agent**（Aider、Copilot、Windsurf…） | ⚠️ | ❌ |  | 把 [AGENTS.md](AGENTS.md) 的一段贴进它的说明文件，它会自己写一块 |
 
-在其他 agent 里看看板，看得到全部；回答它的问题则在那个 agent 里（面板会给你要贴过去的那句话或命令）。“实测版本”是真的跑过一个回合、hook 有触发、面板画出正确区块的版本，那些真实数据都留在测试里。下面是看板读它们的样子：
+在其他 agent 里看看板，看得到全部，但那是打印出来的文字，不能点。要勾步骤、归档或复制回答，在旁边的终端开[可以操作的看板](#每个-agent-里都看得到看板)。回答问题则在问的那个 agent 里（面板会给你要贴过去的那句话或命令）。“实测版本”是真的跑过一个回合、hook 有触发、面板画出正确区块的版本，那些真实数据都留在测试里。下面是看板读它们的样子：
 
 <img alt="看板列出 6 家 agent 实测时各自问的问题：Codex、Gemini CLI、OpenClaw、OpenCode、Grok Build、Hermes Agent" src="docs/images/live/hooks-zh-TW.png" width="620">
 
@@ -91,6 +117,11 @@ claude -p "/progress connect"
 | Codex | `$agent-board` |
 | Cursor、Grok Build、OpenClaw、Hermes Agent、Antigravity | `/agent-board` |
 | 任何终端，开在任何 agent 旁边 | `node ~/.claude/agent-board.mjs --watch`（`--html` 在浏览器打开） |
+
+**像面板一样操作。** 在 agent 旁边开一个终端（分屏），`node ~/.claude/agent-board.mjs --watch` 就是能操作的看板：↑↓ 选一行、Enter 展开、`x` 勾掉自己工作的下一步、`a` 归档自己的工作或已停对话的区块（做完的会自己归档）、`1`–`9`（或 `y`／`n`）把另一个 agent 问题的答案复制起来好贴过去、`c` 复制命令、`o` 打开网页版、`q` 退出。勾掉的步骤会记进工作日志。它写 `progress.md` 的方式跟面板一样小心：先写临时文件、再读回确认，别的对话刚好也在写就重做一次；别的对话的区块不会动，除了归档已经停掉的。
+
+<img alt="左边是 Codex；右边是看板，刚按 x 勾掉一步，按键说明下面写着已完成" src="docs/images/live/work-zh-TW.png" width="100%">
+
 
 <table><tr>
 <td><img alt="Codex CLI 0.163.0：输入 $agent-board，运行看板脚本并显示看板" src="docs/images/live/codex-zh-TW.png"></td>
