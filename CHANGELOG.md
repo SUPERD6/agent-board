@@ -1,6 +1,44 @@
 # Changelog
 
-## Unreleased
+## 0.17.0 — 2026-10-17
+
+Brings the fixes below to existing installs (`claude plugin update` only
+picks up a new version), and fixes what the live Muse, dot, Cursor and Hermes
+runs on Windows found.
+
+- **`/progress tidy` archives finished work now**, as the README says, and so
+  does the pane's archive button: a block marked done a minute ago goes at
+  once, a hand-kept task with every step ticked too. The half-day wait stays
+  for the automatic tidy, and a stopped session still gets its three days.
+  Test: "asked to tidy, a block done a minute ago goes now, while a stopped
+  one still gets its three days".
+- **The README's agents table says what works, agent by agent**: whether its
+  turns reach the board and whether the board works inside it, as tested live
+  (✅), working with a limit (⚠️, which one), written from docs and not run (❔)
+  or not working (❌), with the version tested. CONTRIBUTING says when a mark
+  may change.
+- **From a review of #22, #25, #26 and this release.**
+  - Hermes hooks of ours that Hermes had rewritten in block style are left as
+    they are, so a session start no longer rewrites `config.yaml` and says it
+    connected Hermes each time. Test: "Hermes hooks of ours that Hermes
+    rewrote in block style are left as they are, so a session start says
+    nothing".
+  - An OpenClaw that has not saved its config yet is asked its version, so an
+    old one is left out there too. Test: "an OpenClaw that has not saved its
+    config yet is asked its version, and an old one is left out".
+  - Grok Build also counts as installed by the `.metadata_version` or
+    `agent_id` it writes, besides its `config.toml` and `sessions`. Tests: "a
+    ~/.grok that only another tool put hooks in is not taken for Grok Build",
+    "taking the hooks out also takes out a Grok hook an earlier version left in
+    a ~/.grok without Grok".
+  - A comment after `hooks: {}` stays. Test: "a comment after an empty Hermes
+    hooks: {} stays when ours go in under it".
+  - The guides say tidy now skips the wait and also moves another session's
+    done block, and the READMEs point dot and Muse on the web to the chat-relay
+    prompt.
+- The guides say why Cursor on Windows can stop at "blocked" (another tool's
+  PowerShell hook run through bash) and why a one-off `hermes -q` question
+  shows as stopped.
 
 - **Hardening from a review of the whole plugin.**
   - **Home folders with Chinese names.** On Windows, agents' turns now reach
@@ -49,11 +87,10 @@
     remove` takes out a hook file of ours wherever it finds one, so the hook
     an earlier connect left in such a folder comes out too; run `/progress
     connect` after it to turn connecting at session start back on.
-  - **`/progress tidy` says what it does.** The READMEs and guides called it
-    "archive finished work now"; it runs the archive sweep, which moves only
-    work past its age. When nothing is old enough, the reply now says when work
-    does move out instead of "Nothing to archive", and the count no longer
-    calls every archived task finished.
+  - **`/progress tidy` says what it does**: when nothing is left to archive,
+    the reply says what goes when, and the count no longer calls every
+    archived task finished. (This release also makes it archive finished work
+    at once; see the first entry.)
   - **A prompt to paste for a chat relay.** [Remote
     reporters](docs/REMOTE_REPORTERS.md#chat-relay-a-prompt-to-paste) gives the
     block with its exact markers for a chat assistant to repeat, since one

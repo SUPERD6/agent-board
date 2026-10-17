@@ -499,9 +499,9 @@ test("old done blocks go to the month's archive file, after what it already hold
   expect(moved.text).toBe('封存了 1 個任務。')
   expect(world.files.get(FILE)).not.toContain('session=d66f3021')
 
-  // Run again with nothing old enough left: it says when work does move out.
+  // Run again with nothing left: it says what goes when.
   const again = await $.command.run(TIDY)
-  expect(again.text).toBe('還沒有到時間該封存的。做完的區塊在最後一次更新 12 小時後封存，其他區塊 3 天後，手記的任務在面板看到每一步都打勾 24 小時後；這個對話自己的區塊不會封存。')
+  expect(again.text).toBe('沒有可以封存的。做完的工作會馬上封存；停掉的對話要 3 天沒動靜才會；這個對話自己的區塊不會封存。')
 })
 
 test('the rule rides the system prompt only while the session has a Task list', async ($, on) => {
@@ -1220,6 +1220,8 @@ test('/progress connect hooks the installed agents into the pane once, keeps the
       ['/home/me/.codex/config.toml', 'model = "gpt-6"\n'],
       ['/home/me/.codex/AGENTS.md', `# Mine\n\nUse tabs.\n\n${section}`],
       [oldGrok, '{"hooks":{}}'],
+      ['/home/me/.grok/.metadata_version', '3'],
+
       ['/home/me/.grok/config.toml', 'model = "grok-build"\n'],
       ['/home/me/.cursor/hooks.json', JSON.stringify({ version: 1, hooks: { stop: [{ command: 'say done' }] } })],
       ['/home/me/.gemini/settings.json', '{ // my comment\n "theme": "dark" }'],
@@ -1729,6 +1731,31 @@ test('an OpenClaw updated since it last saved its config is hooked in, since the
   expect(world.ran).toContainEqual(['openclaw', '--version'])
   expect(JSON.parse(world.files.get('/home/me/.openclaw/openclaw.json') ?? '{}').plugins.entries['agent-board']).toEqual({ enabled: true, hooks: { allowConversationAccess: true } })
   expect(seen.notified).toEqual(['已自動接上：OpenClaw。重開它們之後，每個回合都會出現在這裡。'])
+})
+
+test('a ~/.grok that only another tool put hooks in is not taken for Grok Build', async ($, on) => {
+  const world: World = { files: new Map([['/home/me/.grok/hooks/orca.json', '{"hooks":{}}']]), mtime: 1, hasTasks: true, ran: [] }
+  engineBeneath(on, world)
+  const connected = await $.command.run({ ...TIDY, args: 'connect' })
+  expect(connected.text).toContain('沒找到可以接的 agent')
+  expect(world.files.has('/home/me/.grok/hooks/agent-board.json')).toBe(false)
+})
+
+test('an OpenClaw that has not saved its config yet is asked its version, and an old one is left out', async ($, on) => {
+  const world: World = { files: new Map([['/home/me/.openclaw/openclaw.json', '{}']]), mtime: 1, hasTasks: true, ran: [], openclaw: 'OpenClaw 2026.3.8 (abc)\n' }
+  engineBeneath(on, world)
+  await $.session.start({ cwd: '/work/persona_framework', surface: 'terminal', isInteractive: true })
+  expect(world.ran).toContainEqual(['openclaw', '--version'])
+  expect(world.files.get('/home/me/.openclaw/openclaw.json')).toBe('{}')
+  expect(world.files.has('/home/me/.openclaw/agent-board.mjs')).toBe(false)
+})
+
+test('taking the hooks out also takes out a Grok hook an earlier version left in a ~/.grok without Grok', async ($, on) => {
+  const orphan = '/home/me/.grok/hooks/agent-board.json'
+  const world: World = { files: new Map([[orphan, '{"hooks":{}}']]), mtime: 1, hasTasks: true, ran: [] }
+  engineBeneath(on, world)
+  await $.command.run({ ...TIDY, args: 'connect remove' })
+  expect(world.ran).toContainEqual(['rm', '-f', orphan])
 })
 
 test('an agent already hooked in is left as it is, and nothing is said', async ($, on) => {
