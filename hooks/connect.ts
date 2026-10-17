@@ -1,6 +1,10 @@
 import { BOARD_SCRIPT } from './board-script'
-import { ZH_TW } from './i18n'
+import { LANGS, ZH_TW } from './i18n'
 import type { Strings } from './i18n'
+import { RELEASED } from './released'
+import type { ReleasedKind } from './released'
+import { sha256 } from './sha256'
+import { STRINGS } from './strings'
 
 // The reporter script an agent's hook runs, written beside progress.md by `/progress
 // connect`: it saves what the hook hands over into the inbox and clears files older than two
@@ -201,11 +205,24 @@ export type AgentHook = {
   file: string
   // The file an earlier name of the plugin wrote instead, taken away when connecting or removing.
   old?: string
-  edit: (text: string, remove: boolean) => string | null | typeof DELETE
+  generated?: boolean
+  edit: (text: string, remove: boolean, previous?: string) => string | null | typeof DELETE | typeof COLLISION
 }
 
 // What `edit` answers for a file of ours that removing takes away whole.
 export const DELETE = Symbol('delete')
+export const COLLISION = Symbol('collision')
+
+// Whole generated files are replaced only when their exact bytes are known. The stored
+// previous output permits upgrades; legacy templates (a list, or a check such as
+// `isReleased`) permit adoption before that record existed. A familiar path or a copied
+// header is not ownership of the rest of a file.
+export const generatedFile = (content: string, legacy: readonly string[] | ((text: string) => boolean) = []): AgentHook['edit'] => (text, remove, previous) => {
+  const isKnown = (): boolean => (typeof legacy === 'function' ? legacy(text) : legacy.includes(text))
+  if (text !== '' && text !== content && text !== previous && !isKnown()) return COLLISION
+
+  return remove ? (text === '' ? null : DELETE) : content
+}
 
 const join = (ctx: ConnectContext, ...parts: string[]): string => [ctx.home, ...parts].join(ctx.sep)
 
@@ -381,12 +398,11 @@ export const agentHooks = (ctx: ConnectContext): AgentHook[] => {
       dirs: grokSigns(ctx),
       file: [ctx.grokHome, 'hooks', 'agent-board.json'].join(ctx.sep),
       old: [ctx.grokHome, 'hooks', 'progress-pane.json'].join(ctx.sep),
-      edit: (text, remove) =>
-        remove
-          ? text.trim() === ''
-            ? null
-            : DELETE
-          : writeConfig(withGroupedHook(withGroupedHook({}, 'Stop', turn('grok'), { timeout: 10 }), 'SessionEnd', end('grok'), { timeout: 5 })),
+      generated: true,
+      edit: generatedFile(
+        writeConfig(withGroupedHook(withGroupedHook({}, 'Stop', turn('grok'), { timeout: 10 }), 'SessionEnd', end('grok'), { timeout: 5 })),
+        [writeConfig(withGroupedHook(withGroupedHook({}, 'Stop', turn('grok'), { timeout: 10 }), 'SessionEnd', end('grok'), { timeout: 1 }))],
+      ),
     },
     {
       // Muse wants schema_version 1 and no handler keys beyond type, command, timeout. The end
@@ -422,7 +438,8 @@ export const agentHooks = (ctx: ConnectContext): AgentHook[] => {
       label: 'OpenClaw',
       dir: ctx.openclawHome,
       file: [ctx.openclawHome, OPENCLAW_FILE].join(ctx.sep),
-      edit: (text, remove) => (remove ? (text.trim() === '' ? null : DELETE) : openclawPlugin(ctx)),
+      generated: true,
+      edit: generatedFile(openclawPlugin(ctx)),
     },
     {
       agent: 'openclaw',
@@ -444,7 +461,8 @@ export const agentHooks = (ctx: ConnectContext): AgentHook[] => {
       dir: join(ctx, '.config', 'opencode'),
       file: join(ctx, '.config', 'opencode', 'plugin', 'agent-board.js'),
       old: join(ctx, '.config', 'opencode', 'plugin', 'progress-pane.js'),
-      edit: (text, remove) => (remove ? (text.trim() === '' ? null : DELETE) : opencodePlugin(ctx)),
+      generated: true,
+      edit: generatedFile(opencodePlugin(ctx)),
     },
     ...boardCommands(ctx),
   ]
@@ -660,6 +678,34 @@ export const boardLangOf = (code: string): string => {
   }
 }
 
+// What stands for this machine's paths in the hashes of hooks/released.ts. No file of ours
+// holds a NUL, so a file only matches once its own paths are put back.
+export const RELEASE_PATHS = { board: '\u0000board\u0000', inbox: '\u0000inbox\u0000' } as const
+
+// A file an earlier release wrote, before the plugin kept a record of its output: with this
+// machine's paths swapped for the placeholders, its bytes hash to one that release generated.
+// An installation from any tagged release (0.17.1 on) upgrades silently this way, while a file the person
+// edited by so much as a byte is still theirs.
+export const isReleased = (kind: ReleasedKind, text: string, paths: { board?: string; inbox?: string } = {}): boolean => {
+  let normal = text
+  if (paths.board) normal = normal.split(paths.board).join(RELEASE_PATHS.board)
+  if (paths.inbox) normal = normal.split(paths.inbox).join(RELEASE_PATHS.inbox)
+  const hash = sha256(normal)
+
+  return RELEASED.some(release => release[kind].includes(hash))
+}
+
+// The board script beside progress.md: its first line names this progress.md in one of the
+// languages, and the rest is a released bundle.
+export const isReleasedBoard = (text: string, path: string): boolean => {
+  const cut = text.indexOf('\n')
+  if (cut < 0) return false
+  const head = text.slice(0, cut)
+  if (!LANGS.some(lang => head === `globalThis.AGENT_BOARD = ${JSON.stringify({ path, lang })}`)) return false
+
+  return isReleased('board', text.slice(cut + 1))
+}
+
 // Each agent's way to show the board, so the person sees every agent's work from whichever
 // one they are in. Gemini CLI and OpenCode paste a command's output into the prompt before
 // the model reads it; the others read skills, whose model runs the command. Most of them
@@ -669,17 +715,23 @@ const SKILL = 'agent-board'
 
 export const boardCommands = (ctx: ConnectContext): AgentHook[] => {
   if (ctx.board === undefined) return []
-  const s = ctx.s ?? ZH_TW
   const run = `node "${ctx.board}"`
-  const file =
-    (content: string) =>
-    (text: string, remove: boolean): string | null | typeof DELETE =>
-      remove ? (text.trim() === '' ? null : DELETE) : content
   // JSON is YAML too, so a description with a colon in it stays one value.
-  const description = JSON.stringify(s.boardCommandDescription)
-  const skill = `---\nname: ${SKILL}\ndescription: ${description}\n---\n\n${s.boardSkillPrompt(run)}\n`
-  const gemini = `# Written by the Agent Board plugin (/progress connect).\ndescription = ${description}\nprompt = '''${s.boardCommandPrompt}\n\n!{${run} --serve}\n'''\n`
-  const opencode = `---\ndescription: ${description}\n---\n\n${s.boardCommandPrompt}\n\n!\`${run} --serve\`\n`
+  const contents = (s: Strings) => {
+    const description = JSON.stringify(s.boardCommandDescription)
+    return {
+      skill: `---\nname: ${SKILL}\ndescription: ${description}\n---\n\n${s.boardSkillPrompt(run)}\n`,
+      gemini: `# Written by the Agent Board plugin (/progress connect).\ndescription = ${description}\nprompt = '''${s.boardCommandPrompt}\n\n!{${run} --serve}\n'''\n`,
+      opencode: `---\ndescription: ${description}\n---\n\n${s.boardCommandPrompt}\n\n!\`${run} --serve\`\n`,
+    }
+  }
+  const current = contents(ctx.s ?? ZH_TW)
+  // Before ownership records existed, a different session could have generated these
+  // exact files in another supported language, or an earlier release could have. No other
+  // bytes may differ.
+  const known = Object.values(STRINGS).map(contents)
+  const file = (kind: keyof typeof current) =>
+    generatedFile(current[kind], text => known.some(one => one[kind] === text) || isReleased(kind, text, { board: ctx.board ?? '' }))
 
   return [
     {
@@ -688,11 +740,12 @@ export const boardCommands = (ctx: ConnectContext): AgentHook[] => {
       dir: ctx.codexHome,
       dirs: [ctx.codexHome, join(ctx, '.cursor'), ...grokSigns(ctx), ctx.openclawHome, join(ctx, '.gemini'), join(ctx, '.config', 'opencode'), join(ctx, '.config', 'muse')],
       file: join(ctx, '.agents', 'skills', SKILL, 'SKILL.md'),
-      edit: file(skill),
+      generated: true,
+      edit: file('skill'),
     },
-    { agent: 'gemini', label: '', dir: join(ctx, '.gemini'), file: join(ctx, '.gemini', 'commands', 'board.toml'), edit: file(gemini) },
-    { agent: 'opencode', label: '', dir: join(ctx, '.config', 'opencode'), file: join(ctx, '.config', 'opencode', 'commands', 'board.md'), edit: file(opencode) },
-    { agent: 'hermes', label: '', dir: ctx.hermesHome, file: [ctx.hermesHome, 'skills', SKILL, 'SKILL.md'].join(ctx.sep), edit: file(skill) },
+    { agent: 'gemini', label: '', dir: join(ctx, '.gemini'), file: join(ctx, '.gemini', 'commands', 'board.toml'), generated: true, edit: file('gemini') },
+    { agent: 'opencode', label: '', dir: join(ctx, '.config', 'opencode'), file: join(ctx, '.config', 'opencode', 'commands', 'board.md'), generated: true, edit: file('opencode') },
+    { agent: 'hermes', label: '', dir: ctx.hermesHome, file: [ctx.hermesHome, 'skills', SKILL, 'SKILL.md'].join(ctx.sep), generated: true, edit: file('skill') },
     {
       // Antigravity reads its skills here; it has no turn-end hook of its own, so it only shows
       // the board.
@@ -700,7 +753,8 @@ export const boardCommands = (ctx: ConnectContext): AgentHook[] => {
       label: '',
       dir: join(ctx, '.gemini', 'antigravity'),
       file: join(ctx, '.gemini', 'config', 'skills', SKILL, 'SKILL.md'),
-      edit: file(skill),
+      generated: true,
+      edit: file('skill'),
     },
   ]
 }
