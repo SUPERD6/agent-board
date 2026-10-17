@@ -62,10 +62,12 @@ import { answerTurns, applyDigest, clearAsked, cleanHandoff, isWork, lastQuestio
 import type { Digest } from './digest'
 import { agentHooks, boardScript, DELETE, isWindowsHost, OPENCLAW_MIN, openclawPrinted, openclawSavedBy, openclawTooOld, psQuote, reporterPs1, reporterSh, withoutSection } from './connect'
 import {
+  ANSWER_KEEP,
   answerKey,
   inboxOrder,
   isInboxFile,
   isTakenFile,
+  isTextLog,
   isTranscriptPath,
   keepInboxDone,
   promptKey,
@@ -655,7 +657,7 @@ const takeAgentTurns = async ($: EngineInterface, turns: readonly AgentTurn[], i
     // Codex's Stop carries the reply but not the request; the session log has both.
     if ((answer === '' || prompt === '') && isTranscriptPath(turn.transcript) && (digested.has(index) || mirror.firstPrompt === '')) {
       const log = await $.fs.read(turn.transcript).catch(() => '')
-      const tail = transcriptTail(typeof log === 'string' ? log : '')
+      const tail = transcriptTail(typeof log === 'string' ? log : '', ANSWER_KEEP, isTextLog(turn.transcript))
       answer = answer || tail.answer
       prompt = prompt || tail.prompt
     }
@@ -713,7 +715,7 @@ const connectAgents = async ($: EngineInterface, mode: ConnectMode): Promise<{ t
   const hermesHome = ((await $.env.get('HERMES_HOME')) ?? '').replace(/[\\/]+$/, '') || [home, '.hermes'].join(sep)
   const openclawHome = ((await $.env.get('OPENCLAW_STATE_DIR')) ?? '').replace(/[\\/]+$/, '') || [home, '.openclaw'].join(sep)
   const script = `${path.replace(/[\\/][^\\/]*$/, '')}${sep}progress-report.${isWin ? 'ps1' : 'sh'}`
-  const reporter = isWin ? reporterPs1(inboxPath(path)) : reporterSh(inboxPath(path))
+  const reporter = isWin ? reporterPs1() : reporterSh(inboxPath(path))
   if (!remove && (await readText($, script).catch(() => '')) !== reporter) await $.fs.write(script, reporter)
   // The board for every other agent: their board commands run it, and so can any terminal.
   const board = `${path.replace(/[\\/][^\\/]*$/, '')}${sep}agent-board.mjs`
@@ -725,50 +727,64 @@ const connectAgents = async ($: EngineInterface, mode: ConnectMode): Promise<{ t
   const removeFile = (file: string): Promise<void> => removeFiles($, [file], isWin)
   const savedBy = remove ? null : openclawSavedBy(await readText($, [openclawHome, 'openclaw.json'].join(sep)).catch(() => ''))
   const openclawOld = savedBy === null || openclawTooOld(savedBy) === null ? null : await installedOpenclawOld($, isWin, savedBy)
+  // Agents with a hook file that could not be written. OpenClaw's config entry loads its
+  // plugin file, so when the plugin file fails, the entry is not written either.
+  const failed = new Set<string>()
   for (const hook of agentHooks({ home, sep, isWindows: isWin, script, inbox: inboxPath(path), codexHome, grokHome, hermesHome, openclawHome, board, s })) {
+    if (failed.has(hook.agent)) continue
     let isInstalled = false
     for (const dir of hook.dirs ?? [hook.dir]) isInstalled = isInstalled || (await $.fs.exists(dir))
     if (!isInstalled) continue
-    // Left under the plugin's earlier name, it would report every turn a second time.
-    const hadOld = hook.old !== undefined && (await $.fs.exists(hook.old))
-    if (hadOld && hook.old !== undefined) await removeFile(hook.old)
-    const before = await readText($, hook.file).catch(() => null)
-    if (before === null) {
-      if (!isAuto && hook.label !== '') skipped.push(s.connectSkipped(hook.label, hook.file))
-      continue
+    // One agent whose file cannot be written (a folder missing, a read-only file) is named and
+    // passed over, so the agents after it are still hooked in.
+    try {
+      // Left under the plugin's earlier name, it would report every turn a second time.
+      const hadOld = hook.old !== undefined && (await $.fs.exists(hook.old))
+      if (hadOld && hook.old !== undefined) await removeFile(hook.old)
+      const before = await readText($, hook.file).catch(() => null)
+      if (before === null) {
+        if (!isAuto && hook.label !== '') skipped.push(s.connectSkipped(hook.label, hook.file))
+        continue
+      }
+      // An OpenClaw too old for our entry would not start with it in its config, so it is not
+      // hooked in, and what an earlier connect put there comes back out.
+      if (hook.agent === 'openclaw' && openclawOld !== null) {
+        const after = before.trim() === '' ? null : hook.edit(before, true)
+        if (after === DELETE) await removeFile(hook.file)
+        else if (after !== null && after !== before) await $.fs.write(hook.file, after)
+        const note = s.connectTooOld(hook.label, openclawOld, OPENCLAW_MIN)
+        if (mode === 'connect' && !skipped.includes(note)) skipped.push(note)
+        continue
+      }
+      if (remove && before.trim() === '') {
+        if (hadOld) done.push(hook.label)
+        continue
+      }
+      const after = hook.edit(before, remove)
+      if (after === null) {
+        if (mode === 'connect' && hook.label !== '') skipped.push(s.connectSkipped(hook.label, hook.file))
+        continue
+      }
+      if (after === DELETE) {
+        await removeFile(hook.file)
+        // A skill is a folder of ours; an agent may complain of one left without its SKILL.md.
+        // Only an empty folder goes, so anything the person added stays.
+        if (/[\\/]SKILL\.md$/.test(hook.file)) await removeEmptyDir($, hook.file.replace(/[\\/][^\\/]*$/, ''), isWin)
+      } else if (after !== before) {
+        await $.fs.write(hook.file, after)
+      }
+      if ((remove || isAuto) && after === before && !hadOld) continue
+      // OpenClaw takes two files, a plugin and the config entry that loads it.
+      if (hook.label === '' || done.includes(hook.label)) continue
+      done.push(hook.label)
+      // The old instructions section is only tidied away; the hook is in either way.
+      if (!remove) await dropSection($, hook.agent, home, codexHome, sep).catch(() => undefined)
+    } catch {
+      // A board command (no label of its own) that cannot be written leaves the agent's hook
+      // as it is: the board is an extra, the hook is what reports.
+      if (hook.label !== '') failed.add(hook.agent)
+      if (!isAuto) skipped.push(hook.label === '' ? s.connectBoardFailed(hook.file) : s.connectFailed(hook.label, hook.file))
     }
-    // An OpenClaw too old for our entry would not start with it in its config, so it is not
-    // hooked in, and what an earlier connect put there comes back out.
-    if (hook.agent === 'openclaw' && openclawOld !== null) {
-      const after = before.trim() === '' ? null : hook.edit(before, true)
-      if (after === DELETE) await removeFile(hook.file)
-      else if (after !== null && after !== before) await $.fs.write(hook.file, after)
-      const note = s.connectTooOld(hook.label, openclawOld, OPENCLAW_MIN)
-      if (mode === 'connect' && !skipped.includes(note)) skipped.push(note)
-      continue
-    }
-    if (remove && before.trim() === '') {
-      if (hadOld) done.push(hook.label)
-      continue
-    }
-    const after = hook.edit(before, remove)
-    if (after === null) {
-      if (mode === 'connect' && hook.label !== '') skipped.push(s.connectSkipped(hook.label, hook.file))
-      continue
-    }
-    if (after === DELETE) {
-      await removeFile(hook.file)
-      // A skill is a folder of ours; an agent may complain of one left without its SKILL.md.
-      // Only an empty folder goes, so anything the person added stays.
-      if (/[\\/]SKILL\.md$/.test(hook.file)) await removeEmptyDir($, hook.file.replace(/[\\/][^\\/]*$/, ''), isWin)
-    } else if (after !== before) {
-      await $.fs.write(hook.file, after)
-    }
-    if ((remove || isAuto) && after === before && !hadOld) continue
-    // OpenClaw takes two files, a plugin and the config entry that loads it.
-    if (hook.label === '' || done.includes(hook.label)) continue
-    done.push(hook.label)
-    if (!remove) await dropSection($, hook.agent, home, codexHome, sep)
   }
   const trust = [...(done.includes('Codex') ? [s.connectCodexTrust] : []), ...(done.includes('Hermes Agent') ? [s.connectHermesTrust] : [])]
   // An agent found but left out is named below it, so "none found" would contradict that.
