@@ -568,9 +568,9 @@ test('--serve starts the page in the background once, and the next --serve bring
   let url = null
   try {
     const first = serve()
-    assert.ok(first.startsWith('Progress  ● 1 waiting'), first)
     url = first.match(/answer\): (http:\/\/127\.0\.0\.1:\d+\/\?t=[\w-]+)/)?.[1] ?? null
     assert.ok(url, first)
+    assert.ok(first.startsWith('Progress  ● 1 waiting'), first)
     assert.equal(JSON.parse(readFileSync(served, 'utf8')).url, url)
     const again = serve()
     assert.ok(again.includes(url), again)
@@ -585,7 +585,7 @@ test('--serve starts the page in the background once, and the next --serve bring
       for (let tries = 0; existsSync(served) && tries < 50; tries++) await new Promise(done => setTimeout(done, 100))
       assert.ok(!existsSync(served))
     }
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
 

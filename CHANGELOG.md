@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.20.9 — 2026-10-17
+
+The inbox no longer loses a report or its receipt when a read or write fails, and orders
+reports from the shell and PowerShell reporters correctly (a follow-up to #40 and #53).
+
+- **Inbox ordering compares shell seconds and PowerShell milliseconds in the same
+  unit, including stored v0.19.1 order values.** A later seconds report can follow
+  a millisecond report, while older turns stay older after upgrading. Tests:
+  "reporter seconds and milliseconds share a chronological order", "the same
+  reporter instant orders a turn before its end across timestamp units", and
+  "legacy seconds order in a stored mirror still rejects older turns after migration".
+- **Receipt failures retain inputs and existing records.** Both maps must be read
+  and their writes verified before settled claims are deleted; errors surface in
+  the pane with the retained path. Tests: "a receipt read failure cannot replace
+  other inputs processed records", "a receipt write that returns success but does
+  not persist cannot authorize deletion", and "receipt read-back failure retains
+  input until a later read verifies persistence", "an unreadable claimed input
+  keeps its bytes and immediately names the failure", and "a denied board write
+  immediately names the retained claim and persistence failure".
+- **Malformed and sessionless inbox inputs are retained as `.failed` files with
+  diagnostics, without processed receipts.** Quarantine cannot overwrite earlier
+  evidence. Tests: "malformed JSON remains available for diagnosis rather than
+  being acknowledged and deleted", "a report missing its session remains
+  available for diagnosis", and "quarantining invalid input preserves an earlier
+  failed payload with the same name". A later payload of the same name takes the next
+  free name (`.failed.1`). Each retained file is named once, and a model that gave no
+  summary is still retried quietly, as before.
+
 ## 0.20.8 — 2026-10-17
 
 A session start no longer hides a setup problem. It names each one once, and tells a
