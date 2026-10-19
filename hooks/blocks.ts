@@ -477,7 +477,9 @@ export const mergeBlock = (text: string, pasted: string, now: number, s: Strings
   const existing = scanBlocks(lines).find(span => span.session === auto.session)
   if (existing !== undefined) {
     const owner = autoOf(startAttrs(seenOf(lines)[existing.start]))
-    if (!existing.isClosed || owner?.agent !== auto.agent) return { problem: 'notYours' }
+    const attrs = parseAttrs(startAttrs(seenOf(lines)[existing.start]))
+    // A local reporter's binding must survive a pasted block with the same agent and id.
+    if (!existing.isClosed || owner?.agent !== auto.agent || attrs.owner !== undefined || owner.resume !== null || owner.dir !== null) return { problem: 'notYours' }
     lines.splice(existing.start, existing.end - existing.start + 1, ...block)
 
     return { text: lines.join(eol) + eol, title }

@@ -1,3 +1,7 @@
+**Codex-only setup:** run `node scripts/setup-codex.mjs` to preview local installation,
+then `--apply` after approval. No Claude Code required. See [Codex setup and separate CLI/desktop acceptance](docs/CODEX.md).
+Cursor and OpenCode use `node scripts/setup-agent.mjs --agent cursor` / `--agent opencode` with the same preview and apply flow.
+
 <h1 align="center">
 <img alt="A short tour: five agents, and the one that needs you; answering from the pane; every agent reporting through its own hooks; nothing lost; where it runs; its light and dark colours." src="docs/images/tour-en.svg" width="100%">
 </h1>

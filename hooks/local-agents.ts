@@ -1,0 +1,55 @@
+export type LocalAgent = 'codex' | 'cursor' | 'opencode' | 'gemini' | 'grok' | 'muse' | 'hermes' | 'openclaw' | 'antigravity'
+export const localAgents: LocalAgent[] = ['codex', 'cursor', 'opencode', 'gemini', 'grok', 'muse', 'hermes', 'openclaw', 'antigravity']
+export const statusEvents: Partial<Record<LocalAgent, Record<string, string>>> = {
+  gemini: { SessionStart: 'waiting', BeforeAgent: 'working', AfterAgent: 'waiting', SessionEnd: 'ended' },
+  grok: { SessionStart: 'waiting', Stop: 'waiting', SessionEnd: 'ended' },
+  muse: { Stop: 'waiting', SessionEnd: 'ended' },
+}
+export const lifecycleCapability = (agent: LocalAgent): string =>
+  agent === 'antigravity' ? 'explicit-only' : agent === 'hermes' || agent === 'openclaw' ? 'adapter-pending' : 'adapter-installed-unverified'
+
+export const cursorEvents: Record<string, string> = {
+  sessionStart: 'SessionStart', beforeSubmitPrompt: 'UserPromptSubmit',
+  stop: 'Stop', afterAgentResponse: 'Stop', sessionEnd: 'SessionEnd',
+}
+
+// Cursor supplies a stable conversation id and a generation id for each user message.
+export const cursorEvent = (input: Record<string, unknown>): Record<string, unknown> => {
+  const event = cursorEvents[String(input.hook_event_name)]
+  if (!event) throw new Error('INVALID_EVENT')
+  return { session_id: input.conversation_id ?? input.session_id, turn_id: input.generation_id, hook_event_name: event }
+}
+
+// OpenCode supplies session status but no stable turn id on those status events. Keep
+// that limit explicit instead of manufacturing a turn id or fetching conversation text.
+export const opencodePlugin = (node: string, script: string, progress: string, description: string): string => `import { spawnSync } from 'node:child_process'
+import { tool } from '@opencode-ai/plugin'
+
+const run = (mode, payload, session) => {
+  const args = [${JSON.stringify(script)}, mode, '--agent', 'opencode', '--progress-file', ${JSON.stringify(progress)}]
+  if (session) args.push('--session', session)
+  const result = spawnSync(${JSON.stringify(node)}, args, { input: JSON.stringify(payload), encoding: 'utf8', windowsHide: true, timeout: 3000 })
+  if (result.error || result.status !== 0) throw new Error('AGENT_BOARD_REPORT_FAILED')
+  return result.stdout
+}
+
+export const AgentBoardLocal = async ({ client }) => ({
+  event: async ({ event }) => {
+    const p = event.properties ?? {}
+    const session = p.sessionID ?? p.info?.id
+    if (!session || !['session.created', 'session.status', 'session.idle', 'session.deleted'].includes(event.type)) return
+    if (event.type === 'session.status' && !['busy', 'retry', 'idle'].includes(p.status?.type)) return
+    const info = event.type === 'session.deleted' ? { data: p.info } : await client.session.get({ path: { id: session } })
+    if (info.data?.parentID) return
+    const state = event.type === 'session.deleted' ? 'ended' : event.type === 'session.status' && p.status?.type !== 'idle' ? 'working' : 'waiting'
+    run('--agent-status', { session_id: session, state })
+  },
+  tool: {
+    agent_board_progress: tool({
+      description: ${JSON.stringify(description)},
+      args: { title: tool.schema.string(), project: tool.schema.string(), state: tool.schema.enum(['working', 'waiting', 'done', 'ended']), steps: tool.schema.array(tool.schema.string()) },
+      execute: async (args, context) => run('--codex-report', args, context.sessionID),
+    }),
+  },
+})
+`

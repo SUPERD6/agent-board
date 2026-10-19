@@ -795,6 +795,11 @@ test('ticking and tidying from the page write progress.md the way the pane does,
     const refused = await call('POST', '/api/paste', { body: { text: block.replaceAll('c0ffee12', 'b2c3d4e5') } })
     assert.equal(refused.status, 409)
     assert.ok(readFileSync(path, 'utf8').includes(`resume=${GROK_ID}`))
+    // Matching an agent's name does not grant a pasted block its local ownership.
+    const beforeSpoof = readFileSync(path, 'utf8')
+    const spoofed = await call('POST', '/api/paste', { body: { text: block.replaceAll('c0ffee12', 'b2c3d4e5').replace('agent=muse', 'agent=grok') } })
+    assert.equal(spoofed.status, 409)
+    assert.equal(readFileSync(path, 'utf8'), beforeSpoof)
   } finally {
     await board.close()
   }
@@ -1392,6 +1397,9 @@ test('a newer --serve does not start a second page while the page it would repla
     // Another reply to that session meets the one in flight; only one run of the agent started.
     const second = await board.call('POST', '/api/act', { body: { ...reply, text: 'Memcached' } })
     assert.equal(second.status, 409)
+    // Acceptance is asynchronous; a busy Windows host may not have started the mock
+    // child by the time the board has already rejected a duplicate reply.
+    for (let tries = 0; held.ran().length === 0 && tries < 100; tries++) await pause(50)
     assert.equal(held.ran().length, 1)
     // The address file 0.19.0 left beside progress.md is kept the same way while its page sends.
     const beside = join(board.dir, 'progress-serve.json')

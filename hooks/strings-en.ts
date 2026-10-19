@@ -4,6 +4,15 @@ import type { Lang, Strings } from './i18n'
 // English strings for the pane. Same keys, same order as ZH_TW in i18n.ts.
 
 export const EN: Strings = {
+  localAgentTask: (agent: string): string => `Local ${agent} task`,
+  localAgentSkillDescription: 'Open the local interactive board and track real task progress for the current Codex, Cursor or OpenCode session.',
+  localAgentSkill: (command: string): string => `Run \`${command} --serve\` and show the interactive link on its last line. On desktop open it in a panel when a URL-opening tool is available. This is a web UI, not a native pane. CLI users may run \`${command} --watch\` in another terminal.\n\nWhen asked to track current work, report minimal task summaries after each real step or state change; never raw chat or secrets. In OpenCode use agent_board_progress, bound by the tool context. In Codex use current CODEX_THREAD_ID with \`${command} --codex-report\`. In Cursor, only after hooks inject AGENT_BOARD_AGENT=cursor and AGENT_BOARD_SESSION_ID, use \`${command} --codex-report --agent cursor\`. Without a proven binding say it is disconnected. Never scan transcripts, guess ids or specify another session. Commands accept JSON on stdin: {\"title\":\"Task summary\",\"project\":\"Project\",\"state\":\"working\",\"steps\":[\"- [x] Finished\",\"- [~] Current step\"]}. Use waiting and [?] for user input, [!] for a blocker, done only when every step is complete. Hooks update activity only; you explicitly report semantic steps. Files, mocks or RPC acceptance do not prove live hooks or reverse delivery. Ordinary replies cannot approve tools or PR merges.`,
+  codexTask: 'Local Codex task',
+  codexProject: 'Codex',
+  codexLifecycle: 'Local session activity; Codex explicitly reports task steps',
+  codexTrust: 'Codex installation does not automatically trust hooks. Resolve the actual Codex executable and preview --codex-trust --codex-bin with its absolute path. List the six current definitions, hashes and config.toml changes, then ask the user to confirm once before adding --apply to that command. This uses the Codex config API to trust only those hashes, preserves other settings and never bypasses trust globally. Only fall back to CLI /hooks when the API is unsupported; do not assume a desktop entry. Read trust back and observe real events afterward; without execution keep acceptance unverified.',
+  codexPrivacy: 'Keeps only session, turn, state and explicit task summaries. Never reads transcripts, stores hook prompts, tool inputs or replies, or sends content to another model.',
+  codexDoctor: 'Checks files and hook definitions, not hook trust or execution. Verify CLI and desktop separately.',
   lang: 'en' as Lang,
 
   inboxTitle: 'Inbox report retained',
@@ -404,7 +413,7 @@ export const EN: Strings = {
   pasteMixed: 'The start and end markers name different session ids.',
   pasteBadBlock: 'The line after the start marker must be a "### title", and the block cannot hold ```, <!-- -->, # headings or a second block.',
   pasteNoProject: 'A new block needs a "## project" line first.',
-  pasteNotYours: "That id is someone else's block (Claude's, another agent's, or one without its end marker); it can't be replaced.",
+  pasteNotYours: "That id belongs to a local reporter, a session with a resume binding, another agent, or an unclosed block; it can't be replaced.",
   serveRelay: 'Copy the prompt for a web chat',
   serveRelayHint: 'Paste it into the chat once, at the start; every reply then ends with the block, to paste here.',
 }

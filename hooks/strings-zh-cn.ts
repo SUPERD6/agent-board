@@ -4,6 +4,15 @@ import type { Lang, Strings } from './i18n'
 // Simplified Chinese strings for the pane. Same keys, same order as ZH_TW in i18n.ts.
 
 export const ZH_CN: Strings = {
+  localAgentTask: (agent: string): string => `${agent} 本地任务`,
+  localAgentSkillDescription: '打开本地交互看板，跟踪 Codex、Cursor 或 OpenCode 当前 session 的实际任务进度。',
+  localAgentSkill: (command: string): string => `执行 \`${command} --serve\`，显示最后一行的交互看板链接；桌面有打开网址工具时就在面板打开。这是网页 UI，不是原生 pane。CLI 也可在另一个终端执行 \`${command} --watch\`。\n\n用户要求跟踪当前工作时，在每个实际步骤或状态改变后自行报告最少任务摘要，不传原始对话或机密。OpenCode 使用 agent_board_progress 工具，由工具 context 绑定当前 session；Codex 用当前 CODEX_THREAD_ID，执行 \`${command} --codex-report\`；Cursor 只有在 hooks 注入 AGENT_BOARD_AGENT=cursor 和 AGENT_BOARD_SESSION_ID 后才执行 \`${command} --codex-report --agent cursor\`。没有可证明的绑定就明示未接通，不扫描对话或猜 session，也不指定其他 session。命令以 stdin 接受 JSON：{\"title\":\"任务摘要\",\"project\":\"项目\",\"state\":\"working\",\"steps\":[\"- [x] 已完成\",\"- [~] 当前步骤\"]}。等用户用 waiting 与 [?]；阻挡用 [!]；所有步骤完成才用 done。hooks 只更新活动状态，语义步骤由你明确报告。不要以写文件、mock 或 RPC 接受宣称自动 hooks 或反向送达已验收。一般回复不批准工具或 PR 合并。`,
+  codexTask: 'Codex 本地任务',
+  codexProject: 'Codex',
+  codexLifecycle: '本地 session 活动状态；任务步骤由 Codex 明确报告',
+  codexTrust: 'Codex 安装不会自动信任 hooks。先查明实际 Codex 可执行文件，以 --codex-trust --codex-bin 加该完整路径预览；主动列出六个当前定义、哈希与 config.toml 变更范围，请用户确认一次，再对同一命令加 --apply。此流程通过 Codex 设置 API 只信任指定哈希，保留其他设置，不使用全局略过。API 不支持时才引导 CLI /hooks，不假设桌面有相同入口。完成后读回信任并观察真实事件；未触发仍列未验收。',
+  codexPrivacy: '只保留 session、turn、状态及明确报告的任务摘要；不读对话记录，不保存 hook 的 prompt、工具输入或回复，不发送给其他模型。',
+  codexDoctor: '检查文件与 hook 定义，不能证明 hooks 已获信任或实际触发；仍须在 CLI 和桌面版分别验收。',
   lang: 'zh-CN' as Lang,
 
   inboxTitle: '收件箱报告已保留',
@@ -400,7 +409,7 @@ export const ZH_CN: Strings = {
   pasteMixed: '开头和结尾标记的 session id 不一样。',
   pasteBadBlock: '开头标记的下一行要是“### 标题”；区块里不能有 ```、<!-- -->、# 标题或第二个区块。',
   pasteNoProject: '新区块的第一行要写“## 项目名称”。',
-  pasteNotYours: '这个 id 已经是别人的区块（Claude、另一个 agent，或没有结尾标记的），不能盖掉。',
+  pasteNotYours: '这个 id 属于本地报告器、有续接信息的 session、另一个 agent，或没有结尾标记的区块，不能盖掉。',
   serveRelay: '复制给网页聊天的提示',
   serveRelayHint: '在聊天一开始贴一次，之后它每次回复都会附上区块，再贴到这里。',
 }

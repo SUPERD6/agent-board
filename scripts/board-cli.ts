@@ -8,6 +8,7 @@
 // progress file and language the Claude Code session uses set on its first line. `--keys
 // "down x"` plays keys without a terminal and prints the board after them, for tests and checks.
 import { spawn, spawnSync } from 'node:child_process'
+import { runCodexLocal } from './codex-local'
 import { chmodSync, closeSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { homedir, tmpdir } from 'node:os'
@@ -701,6 +702,7 @@ const chat = (): void => {
 }
 
 const run = async (): Promise<void> => {
+  if (await runCodexLocal(args, path, s)) return
   if (args.includes('--help') && !args.includes('--chat')) {
     process.stdout.write(`${s.boardUsage}\n`)
   } else if (args.includes('--serve-child')) {
