@@ -1,3 +1,7 @@
+**只用 Codex：** 執行 `node scripts/setup-codex.mjs` 預覽本機安裝，確認範圍後加上
+`--apply`。不需要 Claude Code。見 [Codex 安裝與 CLI／桌面版分開驗收](docs/CODEX.md)。
+Cursor、OpenCode 可用 `node scripts/setup-agent.mjs --agent cursor`／`--agent opencode`，採相同的預覽與確認安裝流程。
+
 <h1 align="center">
 <img alt="簡短導覽：五個 agent，其中一個在等你；直接在面板回答；每個 agent 透過自己的 hook 回報；什麼都不會漏；在哪裡用；淺色深色兩種配色。" src="docs/images/tour-zh-TW.svg" width="100%">
 </h1>

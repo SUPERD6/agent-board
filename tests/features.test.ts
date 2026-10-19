@@ -2290,6 +2290,14 @@ test('a block pasted from a web chat joins its project, then replaces its own ea
   expect('text' in mergeBlock(SERVE_FILE, bare, now, STRINGS.en) ? 'merged' : 'refused').toBe('merged')
 })
 
+test('a pasted block cannot overwrite a local reporter or resume binding with the same agent and session', () => {
+  const base = '## local\n<!-- auto session=abcdef12 agent=codex state=working EXTRA -->\n### Keep\n- [~] Work\n<!-- /auto session=abcdef12 -->\n'
+  const pasted = base.replace(' EXTRA', '').replace('Keep', 'Impersonated')
+  for (const extra of ['owner=0123456789abcdef', 'resume=01234567-0123-0123-0123-0123456789ab', 'dir=%2Fw%2Flocal']) {
+    expect(mergeBlock(base.replace('EXTRA', extra), pasted, SERVE_NOW, STRINGS.en)).toMatchObject({ problem: 'notYours' })
+  }
+})
+
 test('a pasted block never takes the place of Claude’s, another agent’s or an unclosed block, and one that would hide its own end is refused', () => {
   const pasted = (session: string, agent: string, body = '### Draft the launch post\n- [ ] Outline') =>
     `## launch\n<!-- auto session=${session} agent=${agent} state=working updated=2026-10-17T08:00:00Z -->\n${body}\n<!-- /auto session=${session} -->`

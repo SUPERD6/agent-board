@@ -42,6 +42,15 @@ Rules:
   left. updated= is the time of this update in UTC, ending in Z.`
 
 export const ZH_TW = {
+  localAgentTask: (agent: string): string => `${agent} 本機任務`,
+  localAgentSkillDescription: '開啟本機互動看板，追蹤 Codex、Cursor 或 OpenCode 目前 session 的實際任務進度。',
+  localAgentSkill: (command: string): string => `執行 \`${command} --serve\`，顯示最後一行的互動看板連結；桌面有開啟網址工具時就在面板開啟。這是網頁 UI，不是原生 pane。CLI 也可在另一個終端執行 \`${command} --watch\`。\n\n使用者要求追蹤目前工作時，在每個實際步驟或狀態改變後自行回報最少任務摘要，不傳原始對話或機密。OpenCode 使用 agent_board_progress 工具，由工具 context 綁定目前 session；Codex 用目前 CODEX_THREAD_ID，執行 \`${command} --codex-report\`；Cursor 只有在 hooks 注入 AGENT_BOARD_AGENT=cursor 和 AGENT_BOARD_SESSION_ID 後才執行 \`${command} --codex-report --agent cursor\`。沒有可證明的綁定就明示未接通，不掃描對話或猜 session，也不指定其他 session。命令以 stdin 接受 JSON：{\"title\":\"任務摘要\",\"project\":\"專案\",\"state\":\"working\",\"steps\":[\"- [x] 已完成\",\"- [~] 目前步驟\"]}。等使用者用 waiting 與 [?]；阻擋用 [!]；所有步驟完成才用 done。hooks 只更新活動狀態，語意步驟由你明確回報。不要以寫檔、mock 或 RPC 接受宣稱自動 hooks 或反向送達已驗收。一般回覆不批准工具或 PR 合併。`,
+  codexTask: 'Codex 本機任務',
+  codexProject: 'Codex',
+  codexLifecycle: '本機 session 活動狀態；任務步驟由 Codex 明確回報',
+  codexTrust: '安裝不會信任 hooks。CLI 請用 /hooks 檢查並信任；桌面版請在 hook 審查介面信任，若沒有該介面則自動回報未驗證。',
+  codexPrivacy: '只保留 session、turn、狀態及明確回報的任務摘要；不讀對話紀錄，不保存 hook 的 prompt、工具輸入或回覆，不傳送給其他模型。',
+  codexDoctor: '檢查檔案與 hook 定義，不能證明 hooks 已獲信任或實際觸發；仍須在 CLI 和桌面版分別驗收。',
   lang: 'zh-TW' as Lang,
 
   inboxTitle: '收件匣報告已保留',
@@ -441,7 +450,7 @@ export const ZH_TW = {
   pasteMixed: '開頭和結尾標記的 session id 不一樣。',
   pasteBadBlock: '開頭標記的下一行要是「### 標題」；區塊裡不能有 ```、<!-- -->、# 標題或第二個區塊。',
   pasteNoProject: '新區塊的第一行要寫「## 專案名稱」。',
-  pasteNotYours: '這個 id 已經是別人的區塊（Claude、另一個 agent，或沒有結尾標記的），不能蓋掉。',
+  pasteNotYours: '這個 id 屬於本機回報器、有續接資訊的 session、另一個 agent，或沒有結尾標記的區塊，不能蓋掉。',
   serveRelay: '複製給網頁聊天的提示',
   serveRelayHint: '在聊天一開始貼一次，之後它每次回覆都會附上區塊，再貼到這裡。',
 }

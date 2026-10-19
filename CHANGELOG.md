@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased
+
+- **Codex-only local setup and progress, without Claude Code** (#33, #35):
+  `node scripts/setup-codex.mjs` previews the standalone board, skill, progress file,
+  ownership record and lifecycle hooks; `--apply` installs them. Explicit reports bind to
+  the current Codex thread. Trusted hooks update activity directly without transcripts,
+  model calls or a Claude inbox consumer. Doctor does not claim runtime trust. CLI and
+  desktop acceptance remain separate; the desktop view is a web UI, not a native pane,
+  and active-session replies are not added. Tests: "Codex-only setup previews every
+  persistent change without writing", "Codex-only setup initializes the board and skill
+  without Claude and is idempotent", "Codex explicit reports bind the current thread and
+  preserve other blocks byte for byte", "Codex hooks reject unbound sessions and stale
+  turns without changing the board", "Codex lifecycle hooks never read transcripts or
+  retain conversation and approval payloads", "Codex uninstall removes only owned
+  integration files and preserves progress and foreign hooks".
+- **Independent Cursor and OpenCode bootstrap:** `scripts/setup-agent.mjs --agent`
+  adds native metadata adapters without Claude inbox consumption. OpenCode uses the
+  documented plural `plugins/` directory and a session-bound progress tool; its status
+  events explicitly lack turn binding. Shared files survive removal of one target.
+  Tests: "Cursor initializes independently and binds conversation and generation
+  metadata", "OpenCode metadata adapter and task tool work without reading messages or
+  Claude", "removing one agent preserves the shared board and skill used by another
+  agent". Neither host has been run live for this change.
+- **Pasted blocks preserve local reporter bindings** (#105): a matching agent and short
+  session id cannot replace a block carrying an owner or resume binding. Test: "a pasted
+  block cannot overwrite a local reporter or resume binding with the same agent and session".
+- **Shared bootstrap plan for nine targets:** `setup-agent.mjs --agent all` previews every
+  integration, installs them sequentially after approval, and shares one progress file.
+  Gemini, Grok and Muse have metadata-only coarse status adapters. Hermes/OpenClaw native
+  adapters remain explicitly pending; Antigravity has explicit reporting only. Tests:
+  "all targets initialize one shared board and explicitly name unfinished native adapters",
+  "concurrent agents preserve every shared progress block and foreign manual text".
+
 ## 0.22.2 — 2026-10-18
 
 Four smaller faults in `/progress connect`, found in an audit (#96).

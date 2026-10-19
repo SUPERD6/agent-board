@@ -157,7 +157,8 @@ An attribute is `name=value`, where the name is letters, digits, `_` or `-`, and
 | `dir` | No | The session's folder, percent-encoded as `encodeURIComponent` does (spaces become `%20`). Used with `resume` to show `cd '<dir>' && claude --resume <id>` (or that agent's own command), or a PowerShell `Set-Location` for a Windows path, and as the folder the board's page runs Grok Build or Codex in; without it the page does not answer the session. Like `resume`, a pasted or merged block loses it. An undecodable value, or one that decodes to a control character (a line break, a tab), is ignored. |
 | `pr` | No | A pull request number, a positive integer. Shown as `PR #n`. Other values are ignored. |
 | `ci` | No | `none`, `pending`, `pass` or `fail`. Shown after the PR number, only when `pr` is present. Other values are ignored. |
-| `source` | No | `turns` when the steps were summed up from the session's turns because it keeps no task list; absent when they come from the agent's own list. Informational: readers show the block the same either way. |
+| `source` | No | `turns` when steps were summed up from session turns; `codex-local`, `cursor-local` or `opencode-local` for the independent local reporter. Readers show the block the same way. |
+| `owner` | No | Full SHA-256 of `<agent>:<full-session-id>` for a local reporter. Prevents accidental short-id collisions and pasted replacements of its block; it is not an authentication credential. Older readers ignore it. |
 
 ### Body
 
