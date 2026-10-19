@@ -79,8 +79,7 @@ decision to stop that work permanently.
 
 Hooks keep only selected metadata. They ignore `transcript_path`, prompts, tool inputs,
 assistant messages and permission decisions, never read transcripts, and call no model.
-A permission event marks waiting; no output approves a tool or merge. `Stop` marks a turn
-ended, not task completion. Detailed steps and completion still come from explicit reports.
+A permission event marks waiting; no output approves a tool or merge. `Stop` marks activity waiting, never conversation termination or task completion. Detailed steps and completion still come from explicit reports.
 Disconnected or untrusted hooks cannot update activity; existing stale-time rules apply.
 
 This feature does not send replies to an active desktop thread. A file, mock or accepted
@@ -209,7 +208,7 @@ session id actually provided by that host, never a guessed name or a transcript 
 | Codex | Lifecycle hooks, thread and turn metadata | Host trust and live CLI/desktop verification |
 | Cursor | Lifecycle hooks, conversation and generation ids | IDE/CLI parity needs live checks |
 | OpenCode | Session status plugin and bound task tool | Status events have no turn id |
-| Gemini | SessionStart, BeforeAgent, AfterAgent, SessionEnd | Coarse status; no turn id |
+| Legacy Gemini CLI | SessionStart, BeforeAgent, AfterAgent, SessionEnd | Separate enterprise/API compatibility; not Antigravity |
 | Grok Build | SessionStart, Stop, SessionEnd | Coarse status; no working-turn event |
 | Muse Code | Stop, SessionEnd | Coarse status; no working-turn event |
 | Hermes Agent | Board and agent-specific skill installed | Native adapter pending |
@@ -219,7 +218,7 @@ session id actually provided by that host, never a guessed name or a transcript 
 Doctor distinguishes `installed`, `ready` and `connected`. Pending native adapters never
 report ready; `connected` stays unverified until host execution is observed. Shared-file
 tests are not evidence that every host discovered its adapter or accepted its hook schema.
-This PR is a common foundation and does not close the full multi-agent acceptance work.
+This release is a common foundation; full multi-agent and desktop acceptance remains separate. See the [native CLI record](validation/2026-10-19-native-hooks.md).
 
 Progress sharing is local file interoperability. It does not imply active-session messaging,
 remote synchronization, a real dot connection, or tool/merge approval from ordinary replies.

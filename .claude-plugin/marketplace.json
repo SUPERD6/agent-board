@@ -1,12 +1,14 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "agent-board",
-  "description": "Agent Board: one progress pane for all your AI coding agents",
-  "owner": { "name": "Wenyu Chiou" },
+  "description": "Agent Board: a local interactive board for coding agents",
+  "owner": {
+    "name": "Wenyu Chiou"
+  },
   "plugins": [
     {
       "name": "agent-board",
-      "description": "See what every AI coding agent is doing, with whatever is waiting on you at the top: Claude Code, Codex, Gemini CLI, OpenCode, Grok Build, Hermes Agent, OpenClaw, and more",
+      "description": "A local interactive board for coding agents: shared progress, questions and live-session replies, with an optional Claude Code pane.",
       "source": "./",
       "category": "productivity",
       "strict": true

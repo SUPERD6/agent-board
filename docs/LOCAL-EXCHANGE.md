@@ -1,5 +1,7 @@
 # Local exchange for Codex and dot
 
+This is the opt-in filesystem queue, separate from the current [live-message hub](MESSAGING.md) and [common local setup](SETUP.md). Native Codex/Antigravity owner ACK evidence is recorded in the [acceptance report](validation/2026-10-19-native-hooks.md); it does not connect true dot or make this older file queue a native transport.
+
 This optional interface lets an agent report selected progress and receive an
 explicit message through local files. It requires Node 22.18 or newer (or
 Node 24), which loads the contract's `.ts` file directly, and a cooperating
@@ -11,15 +13,14 @@ the Claude Code pane continue to work as before.
 |---|---|---|
 | Explicit minimal progress report | File/CLI, tested | File/CLI, tested |
 | Local message queue and receipts | Cooperating consumer | Cooperating consumer |
-| Native running-session delivery | Host adapter; mock transport tested | Unsupported |
+| Native delivery through this file queue | Host-supplied adapter; mock transport tested | Unsupported |
 | Existing pane reply buttons | Submit to current Claude Code session | Submit to current Claude Code session |
 
 `native: unsupported` in the CLI status is intentional. A directory binding
 declares a cooperating recipient; it does not prove an app is connected.
-The board buttons are not wired to this queue in this first implementation.
+The current web card Send action uses the separate live-message hub, not this queue.
 
-Codex's own `Stop` hook (set up by `/progress connect`) already reports its
-completed turns to the board, and the pane's reply buttons submit to the
+Codex's independent lifecycle hooks report activity directly (see [Codex](CODEX.md)); the optional `/progress connect` inbox path is separate, and the pane's reply buttons submit to the
 current Claude Code session, not to a running Codex session. dot has no
 native connector in this plugin; this exchange is its only route. The Codex
 adapter below accepts an owner connection that the host supplies and

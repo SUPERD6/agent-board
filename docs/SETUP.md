@@ -36,6 +36,12 @@ On Windows use the exact Node and script paths printed by setup. Closing a brows
 leaves the local service running. Close the board stops it; `--idle-minutes 30` opts into
 idle shutdown. No startup service is installed.
 
+For maintenance, the installed program retains the compatibility flags
+`--codex-doctor --agent <name>` and `--codex-remove --agent <name>`; removal previews
+before `--apply`. Close that board first. Progress/history/session records remain, and
+shared files stay while another installed target needs them. Do not use the legacy
+Claude setup scripts as a prerequisite for this installer.
+
 ## Native status adapters
 
 | Host | Installed adapter | Separate acceptance / remaining limit |
