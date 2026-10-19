@@ -125,6 +125,15 @@ not automatic lifecycle hooks or reverse delivery.
 
 Official schema and trust rules: [Codex hooks](https://learn.chatgpt.com/docs/hooks).
 
+Installation and hook trust are separate. On Codex 0.163.0-alpha.10.2 the generated
+app-server protocol exposes `hooks/list`, but no method to grant hook trust. The documented
+review entry is CLI `/hooks`; do not invent a desktop review screen or silently edit
+Codex's private trust storage. An agent can prepare and inspect the exact definitions,
+but this installer cannot grant unattended trust through a supported API on that version.
+Do not use the invocation-wide hook-trust bypass as an installer default. When the host
+reports `untrusted`, record automatic progress as not connected, even if installation
+succeeded or a person previously reported trusting a different definition.
+
 ## Cursor and OpenCode without a Codex or Claude session
 
 The same bootstrap supports explicit targets, with the same preview/approval/apply flow:

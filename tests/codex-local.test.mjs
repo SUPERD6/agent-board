@@ -46,6 +46,22 @@ test('Codex-only setup initializes the board and skill without Claude and is ide
   assert.equal(JSON.parse(doctor.stdout).hooksTrusted, 'unknown')
 }))
 
+test('the generated Codex hook command runs through the platform shell with JSON on stdin', () => fixture(f => {
+  assert.equal(f.install('--apply').status, 0)
+  const command = JSON.parse(readFileSync(f.hooks)).hooks.UserPromptSubmit[0].hooks[0].command
+  const isWindows = process.platform === 'win32'
+  const shell = isWindows ? process.env.ComSpec || 'cmd.exe' : '/bin/sh'
+  const args = isWindows ? ['/d', '/s', '/c', `"${command}"`] : ['-c', command]
+  const result = spawnSync(shell, args, {
+    input: JSON.stringify({ session_id: session, hook_event_name: 'UserPromptSubmit', turn_id: 'native-shell-fixture' }),
+    encoding: 'utf8', windowsHide: true, windowsVerbatimArguments: isWindows,
+  })
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(readFileSync(f.progress, 'utf8'), /state=working/)
+  const record = JSON.parse(readFileSync(join(f.root, 'sessions', createHash('sha256').update(`codex:${session}`).digest('hex') + '.json')))
+  assert.equal(record.turn, 'native-shell-fixture')
+}))
+
 test('Codex-only setup preserves unrelated hooks and refuses edited skill files', () => fixture(f => {
   const unrelated = { hooks: [{ type: 'command', command: 'echo other' }] }
   f.save(f.hooks, JSON.stringify({ other: true, hooks: { Stop: [unrelated] } }))

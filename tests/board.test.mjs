@@ -795,6 +795,11 @@ test('ticking and tidying from the page write progress.md the way the pane does,
     const refused = await call('POST', '/api/paste', { body: { text: block.replaceAll('c0ffee12', 'b2c3d4e5') } })
     assert.equal(refused.status, 409)
     assert.ok(readFileSync(path, 'utf8').includes(`resume=${GROK_ID}`))
+    // Matching an agent's name does not grant a pasted block its local ownership.
+    const beforeSpoof = readFileSync(path, 'utf8')
+    const spoofed = await call('POST', '/api/paste', { body: { text: block.replaceAll('c0ffee12', 'b2c3d4e5').replace('agent=muse', 'agent=grok') } })
+    assert.equal(spoofed.status, 409)
+    assert.equal(readFileSync(path, 'utf8'), beforeSpoof)
   } finally {
     await board.close()
   }
