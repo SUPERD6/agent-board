@@ -256,3 +256,32 @@ test('an overlapping projection keeps complete producer payload and exact revisi
   const replayed = observeQuestions(restored, [], null, [], START + 2, true, 'writer:3', undefined, pending).ledger
   expect(replayed.records.filter(one => one.isUnresolved).length).toBe(0)
 })
+
+test('a resolved producer token rejects stale block and own-mirror replay while a fresh revision or changed question resurfaces', () => {
+  const mirror = applyTaskCreate(emptyMirror('11223344-native', 'demo', START), { subject: 'Keep the exact producer ask?', metadata: { waiting: 'you' } }, '1', START)
+  const raw = `## demo\n${renderAutoBlock(mirror).join('\n')}`
+  const projects = parseProgress(raw)
+  const initial = observeQuestions(emptyQuestions(), projects, null, [], START, true, 'writer:1').ledger
+  const completed = observeQuestions(initial, parseProgress(raw.replace('- [?]', '- [x]')), null, [], START + 1, true, 'writer:2').ledger
+  const record = completed.records[0]!
+  const restored = withCaptures(initial, [{ version: 1, disposition: 'resolved', record }])
+  const replayed = observeQuestions(restored, projects, null, [], START + QUESTION_DAY, true, 'writer:3').ledger
+  expect(replayed.records.filter(row => row.isUnresolved).length).toBe(0)
+  expect(replayed.records.length).toBe(1)
+  for (const s of Object.values(STRINGS)) {
+    const external = buildView(projects, [], null, START + QUESTION_DAY, 0, {}, s, [], {}, restored)
+    const own = buildView(projects, [], mirror, START + QUESTION_DAY, 0, {}, s, [], {}, restored)
+    expect(external.waiting.length).toBe(0)
+    expect(external.overview.waiting).toBe(0)
+    expect(external.focus?.type === 'ask').toBe(false)
+    expect(own.waiting.length).toBe(0)
+    expect(own.current?.status).toBe(s.answeredNote)
+    expect(serveModel(external, [], s).counts.waiting).toBe(0)
+  }
+  const renewed = applyTaskUpdate(mirror, { taskId: '1', metadata: { waiting: 'you' } }, START + QUESTION_DAY)
+  const fresh = observeQuestions(restored, parseProgress(`## demo\n${renderAutoBlock(renewed).join('\n')}`), null, [], START + QUESTION_DAY, true, 'writer:4').ledger
+  expect(fresh.records.filter(row => row.isUnresolved).length).toBe(1)
+  expect(fresh.records.find(row => row.isUnresolved)?.producer === record.producer).toBe(false)
+  const changed = observeQuestions(restored, parseProgress(raw.replaceAll('Keep the exact producer ask?', 'Choose the new substantive question?')), null, [], START + QUESTION_DAY, true, 'writer:5').ledger
+  expect(changed.records.filter(row => row.isUnresolved).length).toBe(1)
+})

@@ -162,7 +162,12 @@ export const observeQuestions = (
 ): { ledger: QuestionLedger; keys: Record<string, string>; marked: string[] } => {
   // Only an exact producer revision receipt suppresses replay. Equal words and connection
   // clocks do not prove resolution, and a new file/content revision can be a fresh ask.
-  const rows = observations(projects, mine, pending).filter(row => row.source.kind !== 'inbox' || row.producerRevisions === undefined || row.producerRevisions.length === 0 || !row.producerRevisions.every(revision => ledger.records.some(record => record.scope === row.scope && record.isUnresolved === false && record.producerRevisions?.includes(revision))))
+  const seen = observations(projects, mine, pending)
+  const resolved = seen.flatMap(row => {
+    const record = row.isWaiting && row.producer !== '' ? ledger.records.find(record => record.scope === row.scope && record.producer === row.producer && record.words === questionWords(row.text) && record.isUnresolved === false) : undefined
+    return record === undefined ? [] : [{ row, record }]
+  })
+  const rows = seen.filter(row => !resolved.some(item => item.row === row) && (row.source.kind !== 'inbox' || row.producerRevisions === undefined || row.producerRevisions.length === 0 || !row.producerRevisions.every(revision => ledger.records.some(record => record.scope === row.scope && record.isUnresolved === false && record.producerRevisions?.includes(revision)))))
   const records = ledger.records.map(row => ({ ...row }))
   for (const record of records) {
     if (proofs.retired.includes(sha256(record.id))) {
@@ -171,7 +176,8 @@ export const observeQuestions = (
     }
   }
   const legacy = { ...ledger.legacy }
-  const keys: Record<string, string> = {}
+  // Bind stale source details to the resolved incarnation without making it actionable.
+  const keys: Record<string, string> = Object.fromEntries(resolved.map(({ row, record }) => [questionSlot(row.scope, row.index), record.id]))
   const assigned = new Set<string>()
   const groups = new Map<string, Observation[]>()
   for (const row of rows) {

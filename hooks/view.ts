@@ -690,7 +690,7 @@ export const buildView = (
       const keys = task.auto === null || observed === null
         ? blockKeys(task)
         : task.steps.map((step, index) => step.status === 'waiting' ? observed.keys[questionSlot(questionScope(project.name, task.auto?.agent ?? '', task.auto?.session ?? ''), index)] ?? '' : '')
-      const isAsked = (index: number): boolean => !marked.has(keys[index] ?? '')
+      const isAsked = (index: number): boolean => !marked.has(keys[index] ?? '') && observed?.ledger.records.find(record => record.id === keys[index])?.isUnresolved !== false
       const stageOf = (index: number) => {
         const id = observed?.keys[questionSlot(questionScope(project.name, task.auto?.agent ?? 'manual', task.auto?.session ?? task.title), index)]
         return questionAge(observed?.ledger.records.find(record => record.id === id)?.firstObserved ?? 0, now).stage
@@ -835,7 +835,9 @@ export const buildView = (
     const parts = splitNote(turn.text)
     return [{ key: `inbox::${id}`, questionId: id, project: turn.project, task: '', context: '', ...parts, when: '', ...askOf(parts.text, parts.note), where: 'other' as const, agent: turn.agent, session: turn.id ?? '', sessionId: null, resumeVia: null, reopen: null, hideKey: id, step: null, target: null }]
   })
-  const all = [...(mine === null ? [] : ownWaiting(mine, observed?.keys).map(item => ({ ...item, questionId: item.hideKey }))), ...waiting, ...inbox].map(item => {
+  const own = mine === null ? [] : ownWaiting(mine, observed?.keys).map(item => ({ ...item, questionId: item.hideKey }))
+  const isResolved = (item: WaitingItem): boolean => observed?.ledger.records.find(record => record.id === item.questionId)?.isUnresolved === false
+  const all = [...own, ...waiting, ...inbox].filter(item => !isResolved(item)).map(item => {
     const record = observed?.ledger.records.find(row => row.id === item.questionId)
     const age = questionAge(record?.firstObserved ?? 0, now)
     return { ...item, ageStage: age.stage, when: age.age === null ? s.questionAgeUnknown : relativeTime(record?.firstObserved ?? 0, now, s) }
@@ -877,6 +879,9 @@ export const buildView = (
   const current = mine === null ? null : currentOf(mine, s)
   if (current !== null && !asks.some(item => item.where === 'here') && all.some(item => item.where === 'here' && item.ageStage !== 'pending')) {
     current.status = reminder.some(item => item.where === 'here') ? s.sectionQuestionReminders : s.sectionOlderQuestions
+    current.tone = 'quiet'
+  } else if (current !== null && own.some(isResolved) && !all.some(item => item.where === 'here')) {
+    current.status = s.answeredNote
     current.tone = 'quiet'
   }
   return {
