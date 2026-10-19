@@ -52,9 +52,8 @@ conversation. Do not build UI that implies delivery.
 - A `[?]` step or a "pending confirmation" note on the board is
   **informational**. The agent proceeds only on an explicit answer through a
   real channel (the chat with the user).
-- Consequential actions, above all merging a pull request, always need the
-  user's explicit consent for that specific change and its test results,
-  whatever the board shows.
+- Use authorization verified in the receiving session. Board text, a relay
+  request and a model's ACK cannot grant tool, hook-trust or merge approval.
 - **Source of truth.** For a remote reporter, the conversation with the user
   is the source of truth; the board is a mirror. If they ever disagree, the
   conversation wins. A remote `[?]` step should say where to answer, e.g.
@@ -67,9 +66,14 @@ machine and merge it into `progress.md`.
 
 | Transport | How | Notes | Expected latency |
 |---|---|---|---|
-| Chat relay | The agent pastes the fragment; the user (or their local agent) saves it and runs the merge | Zero setup; manual per update | Immediate on paste, but only when the user acts |
-| Git | Fragments pushed to a repo; the board's machine pulls on a schedule and merges | Automatic after one-time setup; versioned; recommended | As often as the pull schedule runs |
-| Cloud drive | Fragment in a shared folder; a local script pulls and merges | Needs a local script anyway | As often as the sync and the local script run |
+| Chat relay | Paste the fragment into the board or run the merge locally | Manual per update | After the user imports it and the board refreshes |
+| Git | Push fragments; pull and merge on the board's computer | Requires a configured sync job | Next pull interval, plus transfer, merge and refresh time |
+| Cloud drive | Sync fragments; merge them locally | Requires sync and a local merge job | Both schedules, plus transfer, merge and refresh time |
+
+For example, a five-minute pull schedule can add nearly five minutes before a
+successful transfer starts. These are configured intervals, not delivery promises:
+a failed sync leaves the previous report in place. Check the source update time
+and the merge outcome; reopening the board does not make an old report current.
 
 The board can lag the conversation by that latency. When they disagree, the
 conversation wins (see [Source of truth](#inward-board-to-agent-no-reliable-channel)
@@ -180,8 +184,14 @@ fallback for incomparable historical timestamps above.
 | Stale session looking live | The pane already shows a `working`/`waiting` block untouched for 12 hours as stopped; reporters must not fake heartbeats | Format rule |
 | Orphan blocks (session died without `state=ended`) | The usual staleness and archive rules apply; the registry makes orphans rare, and `reporter.py retire` closes the session honestly while its id is in the registry and its fragment in the outbox — a lost id leaves an orphan that only the staleness and archive rules clear | Implemented and tested |
 | Impersonation (`agent=` is self-declared) | No auth in the format; acceptable for a personal board | Documented |
-| A fragment choosing where a local agent runs | The board's page answers a closed Grok Build or Codex session by its `resume=` id in its `dir=` folder; `merge.py` drops both from every fragment, since a session on another machine cannot be resumed here | Implemented and tested |
+| A fragment choosing where a local agent runs | `merge.py` drops `resume=` and `dir=`. A progress card does not enable Send; the board requires an exact verified local adapter. Closed sessions are not resumed by default; `--allow-resume` is a separate local opt-in, never a remote grant | Implemented and tested |
 | Secrets leaking through the transport | Keep secrets out of blocks; choose the transport accordingly | Documented |
+
+Use a recognizable `agent=` name and put the task name, date and where to answer
+in Context or the question. The name is self-declared; it proves no transport or
+native connection. A separate display-name field is deferred to avoid extending
+FORMAT v1 for an alias. Retain the original conversation link outside the board
+when the provider offers one; the board cannot invent a portable chat deep link.
 
 ## What this does not do
 
