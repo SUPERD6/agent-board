@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createHash } from 'node:crypto'
 
-const source = readFileSync(new URL('../hooks/connect.ts', import.meta.url), 'utf8')
+const source = readFileSync(new URL('../hooks/connect-pure.ts', import.meta.url), 'utf8')
 const ctx = { inbox: '/synthetic/progress-inbox' }
 const template = (name, end, withPrompt = true) => {
   const start = source.indexOf(`export const ${name} =`)
