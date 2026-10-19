@@ -97,6 +97,9 @@ test('the installed Codex host grants only six reviewed hashes and preserves unr
   assert.equal(again.status, 0, again.stderr)
   assert.equal(JSON.parse(again.stdout).changes, 0)
   assert.equal(JSON.parse(again.stdout).hooks.length, 6)
+  const doctor = f.command(['--codex-doctor', '--codex-bin', executable])
+  assert.equal(JSON.parse(doctor.stdout).hooksTrusted, true, doctor.stderr)
+  assert.equal(JSON.parse(doctor.stdout).connected, 'unverified')
 }))
 
 test('Codex-only setup preserves unrelated hooks and refuses edited skill files', () => fixture(f => {
