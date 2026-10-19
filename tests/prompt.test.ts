@@ -19,6 +19,24 @@ test('a prompt receipt contains only binding metadata and never enters the diges
   expect(peekInbox([{ name: `codex-prompt-${AT + 1000}-1.json`, body: JSON.stringify({ session_id: SESSION, prompt: 'PRIVATE_NEW_INPUT', transcript_path: '/not/read.jsonl' }), at: AT + 1000 }], () => { throw new Error('prompt read a transcript') })).toEqual([])
 })
 
+for (const kind of ['future', 'unsafe-order', 'unknown-source', 'unbound-session'] as const) test(`pending previews keep reports and questions after ${kind} prompts`, () => {
+  const now = AT + 2000
+  const source = kind === 'future' ? now + 86400000 : kind === 'unsafe-order' ? Number.MAX_SAFE_INTEGER : now
+  const submitted = { name: `codex-prompt-${source}-2.json`, body: JSON.stringify({ session_id: SESSION, prompt: 'PRIVATE_NEW_INPUT', last_assistant_message: 'PRIVATE_FAKE_REPLY?', transcript_path: '/not/read.jsonl' }), at: now }
+  const current = kind === 'unbound-session' ? undefined : kind === 'unknown-source' ? { ...mirror(), turnOrder: undefined, updated: now - 1 } : mirror()
+  expect(answerAgentPrompt(current, readTurn(submitted.name, submitted.body)!, now)).toBeNull()
+  let transcriptReads = 0
+  const readLog = (): never => { transcriptReads += 1; throw new Error('prompt preview read a transcript') }
+  for (const answer of ['Validation finished; packaging next.', 'Ship it to staging now?']) {
+    const report = { name: kind === 'unknown-source' ? 'codex-turn-no-clock-1.json' : `codex-turn-${AT}-1.json`, body: JSON.stringify({ session_id: SESSION, cwd: '/demo', last_assistant_message: answer }), at: now - 100 }
+    const expected = peekInbox([report], readLog)
+    expect(expected).toHaveLength(1)
+    expect(peekInbox([report, submitted], readLog)).toEqual(expected)
+    expect(JSON.stringify(peekInbox([report, submitted], readLog))).not.toContain('PRIVATE_')
+  }
+  expect(transcriptReads).toBe(0)
+})
+
 test('prompt ordering preserves saved binary turn and end numbers and answers only strictly newer receipts', () => {
   const current = mirror()
   const next = answerAgentPrompt(current, prompt(), AT + 2000)!

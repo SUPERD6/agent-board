@@ -23,6 +23,8 @@ The common installer writes the shared board, skills and available native adapte
 
 Supported prompt hooks mark an existing agent's questions answered and its task working on the next inbox poll, without a model call. Legacy inbox receipts with older, equal, unknown or invalid source times do nothing; they never create or restore a block. A receipt must be read back before its inbox input is removed; a failure retries. `/progress connect` updates the hooks and `connect remove` removes them. OpenClaw requires the host's `external_user` origin classification. [Prompt contracts and checks](validation/2026-10-19-prompt-hooks.md) lists coverage and limits.
 
+Read-only previews skip prompt metadata while keeping unprocessed reports and questions visible. A prompt timestamp or file modification time alone cannot prove that a report was handled.
+
 OpenClaw and DeepSeek Harness now have independent metadata plugins and native skills; Grok reports new prompts as working. OpenCode respects its config-directory overrides. [Portable acceptance](validation/2026-10-19-portable-hosts.md) records isolated callback/SDK checks and unrun native surfaces. Hooks do not install receiving transports. Agents attached to one private message directory share its receipts and deduplication history; task archiving does not expire those message ids.
 
 Native hooks report activity, not inferred task steps. Codex Stop and Antigravity Stop mean waiting for another turn, not a closed conversation or completed task. A new native prompt/start reactivates the same block. Task titles, steps, blockers and completion come from explicit reports bound to the agent's own proven session. Without host-provided context, do not guess an id or inspect conversations to manufacture a report.

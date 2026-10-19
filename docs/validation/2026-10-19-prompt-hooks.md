@@ -54,6 +54,15 @@ raw file overwritten by a noncooperating writer. Inbox receipt-map updates
 also share the write queue so prompt and summary persistence cannot lose each
 other's receipts within a plugin instance.
 
+Read-only pending previews skip prompt metadata without retiring any report or
+question. Filesystem mtime is display/intake metadata, not proof that a prompt
+answered a report. Preview callers have no accepted owner binding or stored
+source barrier, so even plausible prompt timestamps cannot authorize hiding
+pending work. Claimed/processed input and verified receipt handling determine
+when those reports leave the preview. Future/overflow prompt clocks, missing
+report source clocks and sessions without a board mirror all retain pending
+reports and questions, while prompt prose and transcript paths stay excluded.
+
 The immutable receipt must read back exactly before its claimed inbox input can
 be acknowledged or removed. A denied write, a write that reports success without
 persisting, or a readback error retains the claim for retry, without model work.

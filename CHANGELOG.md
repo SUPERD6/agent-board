@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Keep unprocessed reports visible beside prompt metadata.** Read-only previews cannot establish that a prompt was accepted or answered a question. Skip prompts without hiding pending reports, including future/overflow timestamps, missing source clocks and sessions without a board binding. Prompt prose stays excluded. Tests: `pending previews keep reports and questions after future prompts` (also unsafe-order/unknown-source/unbound-session), `--chat keeps unprocessed reports and questions after future prompt metadata` (same variants).
+
 - A known legacy session without a valid stored source clock keeps its questions; heartbeat time cannot establish that a prompt is newer. Tests: `a known agent without a valid stored source clock keeps its questions despite a later heartbeat`, `a known session with no stored source clock keeps its visible question on prompt intake`.
 
 - Prompt barriers persist as separate immutable metadata receipts, read back before inbox cleanup. Denied, nonpersisting and unreadable receipts retry without a model call. Completion composition uses the prompt's source clock, preserving old/equal/unknown or invalid clocks and retaining the barriers against paused writers. Tests: `a prompt denied write retains its claim until its immutable receipt is verified` (also nonpersisting write/readback error), `a newer owner landing immediately before prompt persistence is never overwritten`, `immutable prompt receipts project over stale owner writes without answering newer work`, `prompt receipts compose after manual completion and only newer source prompts resume work`.

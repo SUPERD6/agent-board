@@ -23,6 +23,8 @@ node scripts/setup-agent.mjs --apply
 
 支持的提示 hook 会在下次收件箱轮询时，把已有 agent 的问题标为已回答并切回工作中，不调用模型。旧版收件箱事件若来源时间较旧、相同、不明或无效，就不更改，也不创建或恢复区块。回执必须读回确认才移除收件箱输入，失败会保留重试。`/progress connect` 更新 hooks，`connect remove` 一并移除；OpenClaw 必须由 host 明确标示 `external_user` 来源。[提示事件契约与检查](validation/2026-10-19-prompt-hooks.md)列出支持范围及限制。
 
+只读预览会略过提示元数据，保留尚未整理的汇报与问题。单凭提示时间或文件修改时间，不能证明汇报已处理。
+
 OpenClaw、DeepSeek Harness 已有独立状态 plugin 与原生 skill；Grok 新提示会切回工作中，OpenCode 遵循配置目录覆盖。[跨 host 验收](validation/2026-10-19-portable-hosts.md)区分隔离回调／SDK 检查与未执行的原生测试。hooks 不会安装收信通道；接到同一私有消息目录的 agent 共享回执与去重记录，任务归档不会清掉消息 ID。
 
 原生 hooks 汇报活动，不推测任务步骤。Codex Stop、Antigravity Stop 代表等待下一轮，不是对话关闭或任务完成。原生新提示／启动会重新激活同一区块。任务标题、步骤、阻塞及完成由 agent 明确汇报，且只能绑定自身可证明的 session。缺少 host context 时，不猜 ID、不读对话来拼凑汇报。
