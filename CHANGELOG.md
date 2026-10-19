@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.23.0 — 2026-10-19
+
+- **Refresh the documentation.** Shorten all three READMEs and guides, keep the common install prompt expanded, remove screenshot galleries, and update setup, format, security, development and release guidance. CLI, App and IDE evidence remain separate; legacy Gemini compatibility is not Antigravity. No file-format change.
 
 - **Send only to live sessions by default.** Both web controls and the action API
   refuse to launch closed Codex/Grok sessions, including boards without a message

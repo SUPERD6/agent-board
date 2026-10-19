@@ -1,5 +1,5 @@
 name: Bug report
-description: The pane shows something wrong, a step reads the wrong way, or setup fails.
+description: Board, progress, messaging or setup does not behave as expected.
 labels: [bug]
 body:
   - type: textarea
@@ -18,8 +18,8 @@ body:
     id: versions
     attributes:
       label: Versions
-      description: Plugin version (`claude plugin list`) and Claude Code version (`claude --version`).
-      placeholder: agent-board 0.10.0, Claude Code 2.1.302
+      description: Agent Board and affected host versions. Include Claude Code only for its optional plugin.
+      placeholder: Agent Board 0.23.0, affected host <version>
     validations:
       required: true
   - type: input
@@ -33,13 +33,13 @@ body:
   - type: input
     id: system
     attributes:
-      label: System, terminal and pane language
-      placeholder: Windows 11, Windows Terminal, zh-TW
+      label: System, surface and board language
+      placeholder: Windows 11, Codex desktop App / CLI / IDE, en
   - type: input
     id: agent
     attributes:
       label: Agent name
-      description: claude, codex, gemini, cursor, … Leave empty for a task you keep by hand.
+      description: codex, antigravity, claude, cursor, … Leave empty for a manual task.
   - type: input
     id: agent_version
     attributes:

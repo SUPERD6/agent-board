@@ -1,6 +1,6 @@
 # progress.md format, version 1
 
-`progress.md` is the one file the Agent Board pane reads. Anything that can write a text file can put its work on the pane: Claude Code, Codex CLI, Gemini CLI, Cursor, Aider, Continue, a shell script, or a person with an editor.
+`progress.md` is the shared storage read by the interactive board and optional Claude Code pane. A native reporter, explicit agent report, shell script or person can write a valid block. See [common setup](SETUP.md) for Codex, Antigravity CLI and other host adapters; this specification does not imply live receiving support.
 
 This page says what the pane's parser accepts and what the pane's writer produces. It is written from the code (`hooks/parse.ts`, `hooks/blocks.ts`, `hooks/mirror.ts`, `hooks/ask.ts`, `hooks/journal.ts`, `hooks/view.ts`, `hooks/register.tsx`, and the words the writer uses in `hooks/i18n.ts`). Where this page and the code disagree, the code wins and this page has a bug.
 
@@ -12,8 +12,8 @@ Contents: [File](#file) · [Structure](#structure) · [Steps](#steps-and-marks) 
 
 | | |
 |---|---|
-| Default path | `~/.claude/progress.md`. On Windows, `%USERPROFILE%\.claude\progress.md`. `USERPROFILE` is read before `HOME`. |
-| Override | Checked in this order, and an empty value is skipped: the environment variable `CLAUDE_PROGRESS_FILE`, a full path; then `CLAUDE_CONFIG_DIR`, a folder, in which the file is `progress.md` (there is no `.claude` level inside it). If neither is set, the default path is used. `HOME` and `USERPROFILE` only change where the default path starts; no other variable moves the file. |
+| Default path | Fresh independent setup: `~/.agent-board/progress.md`; existing installs retain their selected file. Optional Claude plugin: `~/.claude/progress.md` (`%USERPROFILE%\.claude\progress.md` on Windows). |
+| Override | The common installer accepts `--progress-file` and records the selected path in its manifest/bundle. For the optional Claude plugin, checked in this order, skipping empty values: the environment variable `CLAUDE_PROGRESS_FILE`, a full path; then `CLAUDE_CONFIG_DIR`, a folder, in which the file is `progress.md` (there is no `.claude` level inside it). If neither is set, the default path is used. `HOME` and `USERPROFILE` only change where the default path starts; no other variable moves the file. |
 | Encoding | UTF-8. Do not write a byte order mark. |
 | Line endings | LF or CRLF. Both are read. |
 | Missing file | Read as empty. The first writer creates it. |

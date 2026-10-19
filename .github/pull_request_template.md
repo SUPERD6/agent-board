@@ -4,10 +4,12 @@
 
 ## Checks
 
+- [ ] Applicable Node board, storage, local reporter and messaging/exchange tests
+- [ ] Bundle/released files current, if generated output changed
 - [ ] `claude plugin validate --strict .`
 - [ ] `claude plugin test .`
-- [ ] `tsc -p .`
+- [ ] Applicable strict standalone typechecks; report if full `tsc -p .` SDK types are unavailable
 - [ ] `bash tests/setup.check.sh` / `tests/setup.check.ps1`, if a setup script changed
 - [ ] `docs/FORMAT.md` updated, if the file format changed (backward compatible)
 - [ ] `CHANGELOG.md` entry naming the tests that cover the change
-- [ ] Images redrawn (`bun docs/preview/render.ts`), if the pane looks different
+- [ ] Native/model evidence and CLI/App/IDE limits stated separately; no private data or board tokens attached

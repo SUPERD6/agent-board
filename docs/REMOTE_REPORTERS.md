@@ -2,7 +2,7 @@
 
 Agents that do not run on the board's machine (a cloud VM, a chat-based
 assistant, anything without local hooks or a shared filesystem) can still
-report to the pane. This page covers only what is specific to them; see
+report selected progress to the board. Local installation does not enable remote sync; use [common setup](SETUP.md) for agents on this computer. A remote fragment does not establish a [live receiving adapter](MESSAGING.md) or true dot connection. This page covers only remote reporting; see
 [What this does not do](#what-this-does-not-do) for the limits.
 
 ## The contract

@@ -1,7 +1,7 @@
 {
   "name": "agent-board",
-  "version": "0.22.2",
-  "description": "See what every AI coding agent is doing, with whatever is waiting on you at the top: Claude Code, Codex, Gemini CLI, OpenCode, Grok Build, Hermes Agent, OpenClaw, and more",
+  "version": "0.23.0",
+  "description": "A local interactive board for coding agents: shared progress, questions and live-session replies, with an optional Claude Code pane.",
   "author": {
     "name": "Wenyu Chiou"
   },
@@ -18,7 +18,8 @@
     "codex",
     "gemini",
     "cursor",
-    "opencode"
+    "opencode",
+    "antigravity"
   ],
   "types": "./types/index.d.ts",
   "userConfig": {
@@ -37,7 +38,7 @@
     "autoConnect": {
       "type": "boolean",
       "title": "Connect other agents automatically",
-      "description": "Each Claude Code session hooks any coding agent installed on this machine (Codex, Gemini CLI, Cursor, OpenCode, Grok Build, Hermes Agent, Muse Code, OpenClaw) into the pane, and says what it did. /progress connect remove also turns this off.",
+      "description": "Optional Claude Code inbox connector for installed agents. This is separate from the independent setup-agent installer and Antigravity native hooks. /progress connect remove also disables auto-connect.",
       "default": true
     }
   }

@@ -109,7 +109,7 @@ The progress support described in the README is separate from connected-session 
 | Codex | Independent setup and explicit reporter; isolated native app-server SessionStart, UserPromptSubmit and Stop observed | Authenticated owners forwarded two prompts each way with Antigravity and native ACKs; autonomous model tools, CLI TTY and desktop chat remain separate |
 | Antigravity CLI | Independent named hooks; all four native Windows events observed after the command-quoting fix | Same cross-host owner acceptance; native stream ACK, idle continuation, deduplication, conflict and offline rejection verified |
 | Antigravity App / IDE | Same global hook path; each host must load and execute it, with no arbitrary session discovery | No existing-editor receiver established |
-| Gemini CLI | Existing AfterAgent / SessionEnd reporter hooks and `/board` integration | Generic client API only; no Gemini-native connector or bidirectional acceptance yet |
+| Legacy Gemini CLI | Separate enterprise/API compatibility hooks and `/board` integration | Generic client API only; no Gemini-native connector or bidirectional acceptance |
 | OpenCode | Independent setup, session-context progress tool and plugin events | Generic client API only; no native receiving adapter or real bidirectional acceptance yet |
 | OpenClaw | Existing reporter plugin and board skill, with documented version/restart requirements | Its native session tools are not yet integrated into this hub; no real bidirectional acceptance |
 | Grok Build | Existing reporter hooks; optional legacy resume requires `--allow-resume` | No live receiving adapter acceptance |
@@ -127,7 +127,7 @@ Import `scripts/message-client.mjs` and attach an existing host transport:
 ```js
 import { boardClient } from './message-client.mjs'
 const receiver = await boardClient(privateBoardUrl).attach({
-  agent: 'gemini', session: actualSessionId, turn: actualTurnId, surface: 'Gemini CLI',
+  agent: 'example-agent', session: actualSessionId, turn: actualTurnId, surface: 'Example host UI',
   verify: async () => host.isConnectedTo(actualSessionId, actualTurnId),
   deliver: async (message, accepted) => {
     const result = await host.sendToCurrentTurn(message.text)
@@ -140,8 +140,8 @@ await receiver.send({ id, target: targetConnectionId, turn: targetTurnId, text }
 await receiver.close()
 ```
 
-`host` above is the integrating application's API, not a built-in Gemini connector. The
-API is agent-neutral; Claude Code, Gemini, Cursor and other UI adapters still need their
+`host` above is the integrating application's API, not a built-in connector. The
+API is agent-neutral; Claude Code, legacy Gemini, Cursor and other UI adapters still need their
 own supported transport and live acceptance. No shell typing, transcript scraping,
 credential discovery, automatic resume, or approval RPC is implemented by this client.
 The original host remains responsible for its normal permission checks.
