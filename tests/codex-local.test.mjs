@@ -24,7 +24,7 @@ const fixture = fn => {
   const save = (file, text) => { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, text) }
   const report = (state = 'working', steps = ['- [~] Real task']) => command(['--codex-report'], { title: 'Task', state, steps })
   const event = (name, turn = 'turn-1', extra = {}) => command(['--codex-event'], { session_id: session, hook_event_name: name, turn_id: turn, ...extra })
-  try { return fn({ home, root, script, progress, hooks, skill, install, command, save, report, event }) }
+  try { return fn({ home, root, script, progress, hooks, skill, env, install, command, save, report, event }) }
   finally { rmSync(home, { recursive: true, force: true }) }
 }
 
@@ -40,7 +40,8 @@ test('Codex-only setup initializes the board and skill without Claude and is ide
   assert.equal(f.install('--apply').status, 0)
   assert.ok(existsSync(f.progress) && existsSync(f.skill))
   const instructions = readFileSync(f.skill, 'utf8')
-  assert.match(instructions, /ask the user.*\/hooks/)
+  assert.match(instructions, /ask the user to confirm once/)
+  assert.match(instructions, /--codex-trust --codex-bin/)
   assert.ok(instructions.includes(f.hooks))
   assert.match(instructions, /SessionStart, UserPromptSubmit, PermissionRequest, Stop, Interrupt, SessionEnd/)
   const again = f.install()
@@ -64,6 +65,41 @@ test('the generated Codex hook command runs through the platform shell with JSON
   assert.match(readFileSync(f.progress, 'utf8'), /state=working/)
   const record = JSON.parse(readFileSync(join(f.root, 'sessions', createHash('sha256').update(`codex:${session}`).digest('hex') + '.json')))
   assert.equal(record.turn, 'native-shell-fixture')
+}))
+
+test('Codex trust requires an owned installation and an explicit host binary', () => fixture(f => {
+  assert.notEqual(f.command(['--codex-trust']).status, 0)
+  assert.equal(f.install('--apply').status, 0)
+  assert.match(f.command(['--codex-trust']).stderr, /CODEX_BINARY_REQUIRED/)
+}))
+
+test('the installed Codex host grants only six reviewed hashes and preserves unrelated config', { skip: !process.env.AGENT_BOARD_TEST_CODEX }, () => fixture(f => {
+  const executable = process.env.AGENT_BOARD_TEST_CODEX
+  f.env.CODEX_HOME = join(f.home, '.codex')
+  const config = join(f.home, '.codex', 'config.toml')
+  const original = '# Keep this comment\n[features]\nhooks = true\n[hooks.state.unrelated]\nenabled = false\n'
+  f.save(config, original)
+  f.save(f.hooks, JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: 'echo foreign' }] }] } }))
+  assert.equal(f.install('--apply').status, 0)
+  const args = ['--codex-trust', '--codex-bin', executable]
+  const plan = f.command(args)
+  assert.equal(plan.status, 0, plan.stderr)
+  assert.equal(JSON.parse(plan.stdout).changes, 6)
+  assert.equal(readFileSync(config, 'utf8'), original)
+  const applied = f.command([...args, '--apply'])
+  assert.equal(applied.status, 0, applied.stderr)
+  assert.equal(JSON.parse(applied.stdout).trusted, 6)
+  const saved = readFileSync(config, 'utf8')
+  assert.match(saved, /# Keep this comment/)
+  assert.match(saved, /\[hooks.state.unrelated\]\nenabled = false/)
+  assert.equal((saved.match(/trusted_hash/g) ?? []).length, 6)
+  const again = f.command(args)
+  assert.equal(again.status, 0, again.stderr)
+  assert.equal(JSON.parse(again.stdout).changes, 0)
+  assert.equal(JSON.parse(again.stdout).hooks.length, 6)
+  const doctor = f.command(['--codex-doctor', '--codex-bin', executable])
+  assert.equal(JSON.parse(doctor.stdout).hooksTrusted, true, doctor.stderr)
+  assert.equal(JSON.parse(doctor.stdout).connected, 'unverified')
 }))
 
 test('Codex-only setup preserves unrelated hooks and refuses edited skill files', () => fixture(f => {

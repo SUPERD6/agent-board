@@ -24,7 +24,7 @@ export const ZH_CN: Strings = {
   codexTask: 'Codex 本地任务',
   codexProject: 'Codex',
   codexLifecycle: '本地 session 活动状态；任务步骤由 Codex 明确报告',
-  codexTrust: '安装不会信任 hooks。请主动列出本次六个定义及 hooks.json 来源，询问用户到本机 Codex CLI 的 /hooks 审查并信任。不要假设桌面有相同入口。操作后读回信任状态并观察真实事件；未触发仍列未验收，不使用全局略过信任。',
+  codexTrust: 'Codex 安装不会自动信任 hooks。先查明实际 Codex 可执行文件，以 --codex-trust --codex-bin 加该完整路径预览；主动列出六个当前定义、哈希与 config.toml 变更范围，请用户确认一次，再对同一命令加 --apply。此流程通过 Codex 设置 API 只信任指定哈希，保留其他设置，不使用全局略过。API 不支持时才引导 CLI /hooks，不假设桌面有相同入口。完成后读回信任并观察真实事件；未触发仍列未验收。',
   codexPrivacy: '只保留 session、turn、状态及明确报告的任务摘要；不读对话记录，不保存 hook 的 prompt、工具输入或回复，不发送给其他模型。',
   codexDoctor: '检查文件与 hook 定义，不能证明 hooks 已获信任或实际触发；仍须在 CLI 和桌面版分别验收。',
   lang: 'zh-CN' as Lang,

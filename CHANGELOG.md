@@ -14,6 +14,12 @@
   a server restart`, `a mock Codex proxy keeps steering and native ACK separate and never
   answers approval RPCs` and the other `tests/messaging.test.mjs` cases.
 
+Agent-assisted Codex hook trust previews six owned declarations and, after explicit user
+consent, merges their exact hashes through Codex's config API. It preserves unrelated
+settings and reads trust back; native host execution remains a separate acceptance step
+(tests: `Codex trust requires an owned installation and an explicit host binary`,
+`the installed Codex host grants only six reviewed hashes and preserves unrelated config`).
+
 - **Wait for the test agent to start before counting it.** The existing newer-serve
   in-flight-reply test could see zero launches on a busy Windows host immediately after
   HTTP acceptance. It now waits for the launch while retaining the one-launch assertion.

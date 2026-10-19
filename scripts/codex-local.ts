@@ -8,6 +8,7 @@ import type { Strings } from '../hooks/i18n'
 import { STRINGS } from '../hooks/strings'
 import { cursorEvent, cursorEvents, lifecycleCapability, localAgents, opencodePlugin, statusEvents } from '../hooks/local-agents'
 import type { LocalAgent } from '../hooks/local-agents'
+import { trustCodex } from './codex-host'
 
 type Json = Record<string, unknown>
 type Manifest = { files: Record<string, string>; groups: Record<string, unknown> }
@@ -67,7 +68,7 @@ const quote = (path: string): string => {
 }
 
 export const runCodexLocal = async (args: string[], boardPath: string, s: Strings): Promise<boolean> => {
-  const mode = ['--codex-setup', '--codex-doctor', '--codex-remove', '--codex-report', '--codex-event', '--agent-status'].find(one => args.includes(one))
+  const mode = ['--codex-setup', '--codex-doctor', '--codex-remove', '--codex-trust', '--codex-report', '--codex-event', '--agent-status'].find(one => args.includes(one))
   if (!mode) return false
   const flag = (name: string): string | undefined => {
     const index = args.indexOf(name)
@@ -202,9 +203,17 @@ export const runCodexLocal = async (args: string[], boardPath: string, s: String
     notice: s.codexTrust, privacy: s.codexPrivacy,
     capabilities: { ui: 'web-and-tui', progress: 'explicit-reports', lifecycle: lifecycleCapability(agent), turnBinding: agent === 'codex' || agent === 'cursor' ? 'host-event-id' : 'unavailable-in-status-events', liveReply: false },
   }
+  if (mode === '--codex-trust') {
+    if (agent !== 'codex' || conflicts.length || changes.length || readLocal(manifestFile) === null) throw new Error('OWNED_CODEX_INSTALL_REQUIRED')
+    const executable = flag('--codex-bin')
+    if (!executable) throw new Error('CODEX_BINARY_REQUIRED')
+    output(await trustCodex(executable, config, manifest.groups, args.includes('--apply')))
+    return true
+  }
   if (mode === '--codex-doctor') {
     const installed = conflicts.length === 0 && changes.length === 0 && readLocal(manifestFile) !== null
-    output({ ...plan, installed, ready: installed && lifecycleCapability(agent) !== 'adapter-pending', connected: 'unverified', hooksTrusted: 'unknown', notice: s.codexDoctor })
+    const host = installed && agent === 'codex' && flag('--codex-bin') ? await trustCodex(flag('--codex-bin')!, config, manifest.groups, false) : null
+    output({ ...plan, installed, ready: installed && lifecycleCapability(agent) !== 'adapter-pending', connected: 'unverified', hooksTrusted: host ? host.hooks.every(hook => hook.trust === 'trusted') : 'unknown', notice: s.codexDoctor })
     return true
   }
   if (!args.includes('--apply')) { output(plan); return true }

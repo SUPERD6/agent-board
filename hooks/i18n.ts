@@ -62,7 +62,7 @@ export const ZH_TW = {
   codexTask: 'Codex 本機任務',
   codexProject: 'Codex',
   codexLifecycle: '本機 session 活動狀態；任務步驟由 Codex 明確回報',
-  codexTrust: '安裝不會信任 hooks。請主動列出本次六個定義及 hooks.json 來源，詢問使用者到本機 Codex CLI 的 /hooks 審查並信任。不要假設桌面有相同入口。操作後讀回信任狀態並觀察真實事件；未觸發仍列未驗收，不使用全域略過信任。',
+  codexTrust: 'Codex 安裝不會自動信任 hooks。先查明實際 Codex 執行檔，以 --codex-trust --codex-bin 加該完整路徑預覽；主動列出六個目前定義、雜湊與 config.toml 變更範圍，請使用者確認一次，再對同一命令加 --apply。此流程透過 Codex 設定 API 只信任指定雜湊，保留其他設定，不使用全域略過。API 不支援時才引導 CLI /hooks，不假設桌面有相同入口。完成後讀回信任並觀察真實事件；未觸發仍列未驗收。',
   codexPrivacy: '只保留 session、turn、狀態及明確回報的任務摘要；不讀對話紀錄，不保存 hook 的 prompt、工具輸入或回覆，不傳送給其他模型。',
   codexDoctor: '檢查檔案與 hook 定義，不能證明 hooks 已獲信任或實際觸發；仍須在 CLI 和桌面版分別驗收。',
   lang: 'zh-TW' as Lang,

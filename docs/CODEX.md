@@ -125,14 +125,29 @@ not automatic lifecycle hooks or reverse delivery.
 
 Official schema and trust rules: [Codex hooks](https://learn.chatgpt.com/docs/hooks).
 
-Installation and hook trust are separate. On Codex 0.163.0-alpha.10.2 the generated
-app-server protocol exposes `hooks/list`, but no method to grant hook trust. The documented
-review entry is CLI `/hooks`; do not invent a desktop review screen or silently edit
-Codex's private trust storage. An agent can prepare and inspect the exact definitions,
-but this installer cannot grant unattended trust through a supported API on that version.
-Do not use the invocation-wide hook-trust bypass as an installer default. When the host
-reports `untrusted`, record automatic progress as not connected, even if installation
-succeeded or a person previously reported trusting a different definition.
+Installation and hook trust are separate. Agent-assisted trust needs one explicit user
+confirmation for six exact definitions, instead of asking the person to navigate a CLI:
+
+```sh
+node /path/to/installed/agent-board.mjs --codex-trust --codex-bin /absolute/path/to/codex
+# After the person approves the displayed config.toml scope and six hashes:
+node /path/to/installed/agent-board.mjs --codex-trust --codex-bin /absolute/path/to/codex --apply
+```
+
+Resolve the actual executable; do not guess a desktop binary location. Preview does not
+write. Apply requires an intact owned installation, rediscovers the same definitions,
+and uses `hooks/list` plus `config/batchWrite` to merge only their `hooks.state` trusted
+hashes into the user config. It preserves unrelated settings, disabled state and comments,
+then reads trust back. It starts no model thread, reads no transcript and never uses the
+invocation-wide hook-trust bypass. A changed definition needs a new preview and consent.
+
+This was tested against Codex 0.163.0-alpha.10.2 in an isolated child-process home, without
+changing the real CODEX_HOME or credentials. The native test is opt-in via
+`AGENT_BOARD_TEST_CODEX=/absolute/path/to/codex node --test tests/codex-local.test.mjs`.
+If the host API does not support the operation, report that clearly and offer CLI `/hooks`
+as the manual fallback. Do not invent a desktop review screen. When the host reports
+`untrusted`, automatic progress remains disconnected. Trusted definitions still need a
+real hook event to establish execution on each CLI/desktop surface.
 
 ## Cursor and OpenCode without a Codex or Claude session
 

@@ -24,7 +24,7 @@ export const EN: Strings = {
   codexTask: 'Local Codex task',
   codexProject: 'Codex',
   codexLifecycle: 'Local session activity; Codex explicitly reports task steps',
-  codexTrust: 'Installation does not trust hooks. List the six installed definitions and their hooks.json source, then ask the user to review and trust them in local Codex CLI /hooks. Do not assume desktop has the same entry. Read trust back and observe real events afterward; without execution keep acceptance unverified. Do not bypass trust globally.',
+  codexTrust: 'Codex installation does not automatically trust hooks. Resolve the actual Codex executable and preview --codex-trust --codex-bin with its absolute path. List the six current definitions, hashes and config.toml changes, then ask the user to confirm once before adding --apply to that command. This uses the Codex config API to trust only those hashes, preserves other settings and never bypasses trust globally. Only fall back to CLI /hooks when the API is unsupported; do not assume a desktop entry. Read trust back and observe real events afterward; without execution keep acceptance unverified.',
   codexPrivacy: 'Keeps only session, turn, state and explicit task summaries. Never reads transcripts, stores hook prompts, tool inputs or replies, or sends content to another model.',
   codexDoctor: 'Checks files and hook definitions, not hook trust or execution. Verify CLI and desktop separately.',
   lang: 'en' as Lang,
