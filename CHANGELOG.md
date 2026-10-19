@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Wait for asynchronous progress observation in the regression test.** After writing a fresh exact-session report, poll for the server to observe it, as the real page does. Keep future timestamps and wrong sessions rejected. Test: `handoffs time out visibly until exact fresh progress appears, independently of a live receiver`. No runtime or release-bundle change.
+
 ## 0.23.0 — 2026-10-19
 
 - **Refresh the documentation.** Shorten all three READMEs and guides, keep the common install prompt expanded, remove screenshot galleries, and update setup, format, security, development and release guidance. CLI, App and IDE evidence remain separate; legacy Gemini compatibility is not Antigravity. No file-format change.

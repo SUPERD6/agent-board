@@ -43,6 +43,9 @@ test('a connection observation requires one exact newer report, never a relay cl
   const report = { agent: 'codex', session: 'native1', updated: 11000 }
   assert.equal(observeSession(one, [report, report], 12000), one)
   assert.equal(observeSession(one, [report], 12000).observed, 11000)
+  const future = { ...report, updated: 13000 }
+  assert.equal(observeSession(one, [future], 12000), one)
+  assert.equal(observeSession(one, [future], 13000).observed, 13000)
   const prompt = connectionPrompt(one)
   assert.match(prompt, /not proof of human authorization/)
   assert.match(prompt, /BLOCKED link1 DIRECT_USER_CONFIRMATION_REQUIRED/)
@@ -122,8 +125,10 @@ test('handoffs time out visibly until exact fresh progress appears, independentl
     assert.equal(row.status, 'timed_out'); assert.equal(row.receiving, true)
     writeFileSync(join(dir, 'progress.md'), progress(Date.now()).replace('resume=native1', 'resume=native10'))
     assert.equal((await board.call('/api/board')).body.messaging.sessions[0].status, 'timed_out')
-    writeFileSync(join(dir, 'progress.md'), progress(Date.now()))
-    assert.equal((await board.call('/api/board')).body.messaging.sessions[0].status, 'reported')
+    // Force the report briefly ahead of the server clock. Keep the future-time gate,
+    // then observe through polling as the page does; a write is not an immediate ACK.
+    writeFileSync(join(dir, 'progress.md'), progress(Date.now() + 250))
+    await waitFor(async () => (await board.call('/api/board')).body.messaging.sessions[0].status === 'reported')
   } finally { await receiver.close() }
   row = (await board.call('/api/board')).body.messaging.sessions[0]
   assert.equal(row.status, 'reported'); assert.equal(row.receiving, false)
