@@ -738,6 +738,42 @@ setTimeout(() => process.stdout.write('Redis it is; wiring it up now.\\n'), 1000
   return { dir, path, url, port, token, call, rows, rowOf, keyOf, close, exited, served: servedAt(run, path) }
 }
 
+test('live blocks of every agent refuse forged web archives without writes and terminal a and tidy preserve them', { timeout: 30_000 }, async () => {
+  const agents = ['claude', 'codex', 'gemini', 'cursor', 'grok', 'muse', 'hermes', 'openclaw', 'opencode', 'antigravity', 'deepseek', 'custom-agent']
+  const blocks = agents.flatMap((agent, index) => ['working', 'waiting'].map((state, n) => {
+    const id = String(10000000 + index * 2 + n)
+    return `<!-- auto session=${id} agent=${agent} state=${state} updated=${ago(60000)} -->\n### Synthetic ${agent} ${state}\n- [ ] Next step\n<!-- /auto session=${id} -->\n`
+  })).join('\n')
+  const board = await page()
+  try {
+    const file = `# Progress\n\n## Synthetic\n${blocks}`
+    writeFileSync(board.path, file)
+    const files = readdirSync(board.dir).sort()
+    const model = (await board.call('GET', '/api/board')).json().model
+    const rows = model.groups.flatMap(group => group.rows)
+    assert.equal(rows.length, 24)
+    const html = (await board.call('GET', `/?t=${board.token}`)).body
+    const dom = await pageDom(html, model)
+    assert.ok(!dom.node('board').textContent.includes('Archive'), dom.node('board').textContent)
+    assert.ok(dom.node('board').textContent.includes('Still running; archive after it stops.'))
+    for (const row of rows) {
+      assert.equal(row.canArchive, false)
+      const reply = await board.call('POST', '/api/act', { body: { key: row.key, type: 'archive', text: '', session: '', fp: row.fp } })
+      assert.equal(reply.status, 409, reply.body)
+      assert.match(reply.json().note, /Still running/)
+      assert.equal(readFileSync(board.path, 'utf8'), file)
+      assert.deepEqual(readdirSync(board.dir).sort(), files)
+    }
+    const terminal = execFileSync(process.execPath, [join(board.dir, 'agent-board.mjs'), '--keys', Array.from({ length: 24 }, () => 'a down').join(' ')], { env: { ...process.env, CLAUDE_PROGRESS_FILE: '', NO_COLOR: '1' }, encoding: 'utf8' })
+    assert.match(terminal, /Still running; archive after it stops\./)
+    assert.equal(readFileSync(board.path, 'utf8'), file)
+    assert.deepEqual(readdirSync(board.dir).sort(), files)
+    assert.equal((await board.call('POST', '/api/tidy', { body: {} })).status, 200)
+    assert.equal(readFileSync(board.path, 'utf8'), file)
+    assert.deepEqual(readdirSync(board.dir).sort(), files)
+  } finally { await board.close() }
+})
+
 test('the terminal and served boards show only the newest thirty inbox files', { timeout: 30_000 }, async () => {
   const board = await page()
   try {

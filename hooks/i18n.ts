@@ -356,6 +356,7 @@ export const ZH_TW = {
   sectionRecent: '最近完成',
   archiveNow: '現在封存',
   archiveThis: '封存',
+  archiveLive: '仍在執行；停止後即可封存。',
   archivedOne: (title: string): string => `已封存「${title}」。`,
   archiveGone: '找不到這件工作，可能已經改過或封存了。',
   journalNoticeTitle: '完成紀錄沒有存成功',

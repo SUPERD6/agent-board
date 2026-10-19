@@ -317,6 +317,7 @@ export const drawPane = (ui: PaneUi, model: PaneModel, actions: PaneActions): Re
       {item.note !== '' && <Text wrap="wrap">{item.note}</Text>}
       {item.note === '' && item.context !== '' && muted(s.contextLine(item.context))}
       {item.when !== '' && muted(item.when)}
+      {item.where !== 'manual' && muted(s.archiveLive)}
       {askActions(item)}
       {item.hideKey !== '' && (
         <Box marginTop={1}>
@@ -364,7 +365,7 @@ export const drawPane = (ui: PaneUi, model: PaneModel, actions: PaneActions): Re
       )
     }
     if (row.auto !== null) {
-      return muted(row.isHere ? s.heldElsewhere : s.continueElsewhere(row.project))
+      return <Box flexDirection="column">{muted(row.isHere ? s.heldElsewhere : s.continueElsewhere(row.project))}{muted(s.archiveLive)}</Box>
     }
     const next = row.next
     if (next === null) return archive === null ? null : <Box marginTop={1}>{archive}</Box>

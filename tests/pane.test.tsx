@@ -29,6 +29,29 @@ const PROPS: RenderPropsOf['Pane'] = {
   view: {},
 }
 
+for (const lang of ['en', 'zh-TW', 'zh-CN'] as const) test(`pane archive controls protect every live agent and explain why in ${lang}`, { options: { language: lang } }, async ($, on) => {
+  const agents = ['claude', 'codex', 'gemini', 'cursor', 'grok', 'muse', 'hermes', 'openclaw', 'opencode', 'antigravity', 'deepseek', 'custom-agent']
+  const cases = agents.flatMap((agent, index) => ['working', 'waiting', 'stopped', 'ended'].map((kind, n) => ({ agent, kind, id: (10000000 + index * 4 + n).toString(), title: `${agent} ${kind}` })))
+  const file = '# Progress\n\n## Demo\n' + cases.map(({ agent, kind, id, title }) => `<!-- auto session=${id} agent=${agent} state=${kind === 'stopped' ? 'waiting' : kind} updated=${kind === 'stopped' ? '2026-10-15T23:59:59Z' : '2026-10-16T12:00:00Z'} -->\n### ${title}\n- [ ] Next step\n<!-- /auto session=${id} -->\n`).join('\n')
+  const world: World = { files: new Map([[FILE, file]]), mtime: 1, hasTasks: true, store: { lang, autoConnectOff: true, opened: ['others'] } }
+  engineBeneath(on, world)
+  await $.session.start({ cwd: '/work/persona_framework', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop', props: PROPS })
+  for (const one of cases) {
+    await ui.press({ key: `Demo::${one.title}` })
+    const live = one.kind === 'working' || one.kind === 'waiting'
+    const button = await ui.find({ type: 'Button', key: `Demo::${one.title}::archive` })
+    if (live) {
+      expect(button).toBeUndefined()
+      expect(await ui.find({ type: 'Text', text: STRINGS[lang].archiveLive })).toBeDefined()
+    } else expect(button).toBeDefined()
+  }
+  const before = world.files.get(FILE)
+  await $.command.run({ ...TIDY, args: 'tidy' })
+  expect(world.files.get(FILE)).toBe(before)
+  await ui.unmount()
+})
+
 type World = {
   files: Map<string, string>
   dirs?: Set<string>

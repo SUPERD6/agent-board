@@ -21,10 +21,48 @@ import { parseQuickAdd } from '../hooks/quick'
 import { keepRecent, remindersOf } from '../hooks/remind'
 import { lanAddress, localHosts, pagePolicy, pageWords, replyText, requestProblem, sendKey, sendMode, sendPlan, serveAction, serveModel, servePage } from '../hooks/serve'
 import { qrModules, qrText } from '../hooks/qr'
+import { STALE_MS } from '../hooks/parse'
 import { RELEASED } from '../hooks/released'
 import { sha256 } from '../hooks/sha256'
 import { RELEASE_0_18_1, RELEASE_0_20_5 } from './fixtures/released'
 import { agentName, buildView, contextOf, handoffOf, replyHint, resumeCommand, resumeVia, statusLine, wayBackText, withSeen, IDLE_MS } from '../hooks/view'
+
+const ARCHIVE_AGENTS = ['claude', 'codex', 'gemini', 'cursor', 'grok', 'muse', 'hermes', 'openclaw', 'opencode', 'antigravity', 'deepseek', 'custom-agent']
+
+test('every agent keeps live blocks safe across terminal and page at the twelve-hour boundary in every language', () => {
+  const now = Date.parse('2026-10-19T12:00:00Z')
+  for (const s of Object.values(STRINGS)) for (const agent of ARCHIVE_AGENTS) {
+    for (const state of ['working', 'waiting', 'ended']) for (const age of [0, STALE_MS, STALE_MS + 1]) {
+      const live = state !== 'ended' && age <= STALE_MS
+      const file = `## Demo\n<!-- auto session=11223344 agent=${agent} state=${state} updated=${new Date(now - age).toISOString()} -->\n### Synthetic task\n- [ ] Next step\n<!-- /auto session=11223344 -->\n`
+      const view = buildView(parseProgress(file), [], null, now, 0, {}, s)
+      const items = boardItems(view, [])
+      const item = items[0]
+      expect(item?.type).toBe('row')
+      if (item?.type !== 'row') throw new Error('Missing synthetic row')
+      expect(item.row.archive === null).toBe(live)
+      const drawn = pinned(emptyBoardState, items)
+      expect(boardKey(drawn, 'a', items, s).action?.type ?? null).toBe(live ? null : 'archive')
+      expect(boardScreen(view, [], drawn, s, { width: 160, isColor: false }).includes(s.archiveLive)).toBe(live)
+      const page = serveModel(view, [], s).groups.flatMap(group => group.rows)[0]
+      expect(page?.canArchive).toBe(!live)
+      expect(page?.archiveNote === s.archiveLive).toBe(live)
+      const forged = serveAction(items, { key: item.key, type: 'archive', text: '', session: '', fp: fingerprint(item, items) }, s)
+      expect(forged.type).toBe(live ? 'refuse' : 'archive')
+      if (live) expect(forged).toEqual({ type: 'refuse', note: s.archiveLive })
+      const ref = { project: 'Demo', title: 'Synthetic task', line: 2, session: '11223344' }
+      expect(takeTask(file, ref, now, s) === null).toBe(live)
+      expect(takeArchivable(file, now, undefined, s, true).text).toBe(file)
+    }
+    const asked = `## Demo\n<!-- auto session=11223344 agent=${agent} state=waiting updated=${new Date(now).toISOString()} -->\n### Question\n- [?] Choose a limit?\n<!-- /auto session=11223344 -->\n`
+    const view = buildView(parseProgress(asked), [], null, now, 0, {}, s)
+    expect(boardScreen(view, [], emptyBoardState, s, { width: 160, isColor: false })).toContain(s.archiveLive)
+    expect(serveModel(view, [], s).asks[0]?.archiveNote).toBe(s.archiveLive)
+    // A selected stopped block that resumes before the queued write stays owned.
+    expect(takeTask(asked, { project: 'Demo', title: 'Question', line: 2, session: '11223344' }, now, s)).toBe(null)
+    expect(takeTask(asked.replace(/ updated=[^ ]+/, ''), { project: 'Demo', title: 'Question', line: 2, session: '11223344' }, now, s)).toBe(null)
+  }
+})
 
 const NOW = Date.parse('2026-10-16T12:00:00.000Z')
 const SESSION = '2be48af2-6193-5040-aacc-e0546d6784f1'
@@ -2122,7 +2160,7 @@ test('a press on the page is worked out from the file as it is now: a line that 
   // An ended block can go to the archive; a working one cannot yet.
   expect(resumeAction(items, { key: grok, type: 'archive', text: '', session: '', fp: fpIn(items, grok) }, STRINGS.en)).toMatchObject({ type: 'archive', title: 'Pick the cache' })
   const working = keyOf(item => item.type === 'row' && item.row.title === 'Dark mode for the settings page')
-  expect(resumeAction(items, { key: working, type: 'archive', text: '', session: '' }, STRINGS.en)).toEqual({ type: 'refuse', note: STRINGS.en.archiveGone })
+  expect(resumeAction(items, { key: working, type: 'archive', text: '', session: '' }, STRINGS.en)).toEqual({ type: 'refuse', note: STRINGS.en.archiveLive })
   expect(resumeAction(items, { key: grok, type: 'delete', text: '', session: '' }, STRINGS.en)).toEqual({ type: 'refuse', note: '' })
   expect(replyText('x'.repeat(5000)).length).toBe(4000)
 })
