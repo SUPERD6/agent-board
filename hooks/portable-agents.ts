@@ -25,7 +25,7 @@ export default {
         if (event.stream !== 'lifecycle' || !event.sessionId || !event.runId) return
         const phase = event.data?.phase
         if (!['start', 'end', 'error'].includes(phase)) return
-        report('--codex-event', { session_id: event.sessionId, turn_id: event.runId, hook_event_name: phase === 'start' ? 'UserPromptSubmit' : 'Stop' })
+        report('--codex-event', { session_id: event.sessionId, turn_id: event.runId, hook_event_name: phase === 'start' ? 'UserPromptSubmit' : 'Stop', prompt_submitted: false })
       },
     })
   },

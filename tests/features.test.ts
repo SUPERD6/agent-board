@@ -915,7 +915,7 @@ test('Hermes Agent’s hooks go into its config.yaml beside the person’s own, 
   expect(once).toBe(
     'model:\n  default: x\nhooks:\n  pre_tool_call:\n    - command: "~/guard.sh"\n      matcher: terminal\n  post_llm_call:\n' +
       `  - {command: "sh '/h/.claude/progress-report.sh' hermes turn || true", timeout: 10}\n  - command: "~/log.sh"\n` +
-      `  on_session_finalize:\n    - {command: "sh '/h/.claude/progress-report.sh' hermes end || true", timeout: 10}\nagent:\n  max_turns: 5\n`,
+      `  on_session_finalize:\n    - {command: "sh '/h/.claude/progress-report.sh' hermes end || true", timeout: 10}\n  pre_llm_call:\n    - {command: "sh '/h/.claude/progress-report.sh' hermes prompt || true", timeout: 10}\nagent:\n  max_turns: 5\n`,
   )
   expect(hermes?.edit(once, false)).toBe(once)
   expect(hermes?.edit(once, true)).toBe(own)
@@ -931,7 +931,8 @@ test('a Hermes config.yaml with the empty hooks: {} it ships with gets our hooks
   const hermes = agentHooks(ctx).find(hook => hook.agent === 'hermes')
   const ours =
     `  post_llm_call:\n    - {command: "sh '/h/.claude/progress-report.sh' hermes turn || true", timeout: 10}\n` +
-    `  on_session_finalize:\n    - {command: "sh '/h/.claude/progress-report.sh' hermes end || true", timeout: 10}\n`
+    `  on_session_finalize:\n    - {command: "sh '/h/.claude/progress-report.sh' hermes end || true", timeout: 10}\n` +
+    `  pre_llm_call:\n    - {command: "sh '/h/.claude/progress-report.sh' hermes prompt || true", timeout: 10}\n`
   const stock = 'model:\n  default: x\nhooks: {}\nhooks_auto_accept: false\n'
   const once = String(hermes?.edit(stock, false))
   expect(once).toBe(`model:\n  default: x\nhooks:\n${ours}hooks_auto_accept: false\n`)

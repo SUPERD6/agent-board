@@ -11,7 +11,10 @@ import { dashboardHtml } from '../hooks/dashboard'
 import { buildView, IDLE_MS, parseSeen, seenJson, seenPath, withSeen } from '../hooks/view'
 import { parseProgress } from '../hooks/parse'
 import { chatText, peekInbox } from '../hooks/board'
-import { isInboxFile } from '../hooks/inbox'
+import { answerAgentPrompt, blockId, isInboxFile, withAgentPrompts } from '../hooks/inbox'
+import { emptyMirror } from '../hooks/mirror'
+import { applyDigest } from '../hooks/digest'
+import { upsertAutoBlock } from '../hooks/blocks'
 import { RELEASE_0_18_1, RELEASE_0_20_5 } from './fixtures/released'
 
 const FILE = '/home/me/.claude/progress.md'
@@ -90,6 +93,7 @@ type World = {
   isRemoveRefused?: (path: string) => boolean
   // What the model answers asynchronously; a promise that never settles is a hung call.
   hang?: (prompt: string) => boolean
+  holdComplete?: { reached: () => void; release: Promise<void> }
   // Every prompt the model was given.
   asked?: string[]
   // What the conversation was handed by $.session.append.
@@ -107,6 +111,7 @@ type World = {
   unwritable?: Set<string>
   failStore?: (operation: 'get' | 'set', key: string) => boolean
   ignoreStore?: (key: string) => boolean
+  beforeStoreSet?: (key: string) => void
   afterMove?: (from: string, to: string) => boolean
   // A removal that fails, or reports success while the file still exists.
   unremovable?: Set<string>
@@ -141,6 +146,7 @@ const engineBeneath = (on: On, world: World): MockClock => {
       return world.failStore?.('get', e.key) ? { deny: 'EIO' } : { value: store[e.key] }
     })
     on('store.set', ($, e) => {
+      world.beforeStoreSet?.(e.key)
       if (world.failStore?.('set', e.key)) return { deny: 'EIO' }
       if (world.ignoreStore?.(e.key)) return { value: undefined }
       store[e.key] = e.value
@@ -233,6 +239,12 @@ const engineBeneath = (on: On, world: World): MockClock => {
   on('model.complete', ($, e) => {
     const prompt = typeof e.prompt === 'string' ? e.prompt : ''
     world.asked?.push(prompt)
+    if (world.holdComplete !== undefined) {
+      const hold = world.holdComplete
+      world.holdComplete = undefined
+      hold.reached()
+      return hold.release.then(() => answerOf(prompt))
+    }
     return world.hang?.(prompt) === true ? new Promise<never>(() => undefined) : answerOf(prompt)
   })
   const answerOf = (prompt: string) => ({
@@ -319,6 +331,178 @@ const PROBE_BODY = JSON.stringify({ session_id: 'pr53-fixture', cwd: '/work/synt
 const PROBE_REPLY = 'TITLE: fixture\nCONTEXT: synthetic\nDONE: Saved first result\nNEXT: Verify recovery\nASK: -'
 const probeWorld = (): World => ({ files: new Map([[FILE, '# Progress\n'], [`${INBOX}/${PROBE_NAME}`, PROBE_BODY]]), mtime: 1, hasTasks: true, asked: [], store: { inboxDone: {}, autoConnectOff: true }, reply: () => PROBE_REPLY })
 const probeStart = async ($: Engine): Promise<void> => { await $.session.start({ cwd: '/work/persona_framework', surface: 'desktop', isInteractive: true }) }
+
+const PROMPT_AT = Date.parse('2026-10-16T11:59:00Z')
+const PROMPT_SESSION = 'prompt-owner'
+const PROMPT_ID = blockId('codex', PROMPT_SESSION)
+const questionWorld = () => {
+  const mirror = { ...applyDigest(emptyMirror(PROMPT_ID, 'demo', PROMPT_AT, '/demo', 'codex'), { title: 'Migration', context: '', done: '', next: 'Continue migration', ask: 'Database', why: 'Use staging?' }, PROMPT_AT), resume: PROMPT_SESSION, firstPrompt: 'Original request', turnOrder: PROMPT_AT * 2 }
+  const world: World = { files: new Map([[FILE, upsertAutoBlock('# Progress\n', mirror, ZH_TW)]]), mtime: 1, hasTasks: true, asked: [], reads: [], store: { inboxDone: {}, autoConnectOff: true, [`agent:${PROMPT_ID}`]: mirror }, reply: () => 'TITLE: Migration\nCONTEXT: fixture\nDONE: -\nNEXT: Continue\nASK: Old decision — OLD_QUESTION?' }
+  return { world, mirror }
+}
+const addPrompt = (world: World, at: number, session = PROMPT_SESSION): string => {
+  const name = `codex-prompt-${at}-77.json`
+  world.files.set(`${INBOX}/${name}`, JSON.stringify({ session_id: session, prompt: 'PRIVATE_NEW_INPUT', last_assistant_message: 'PRIVATE_FAKE_REPLY?', transcript_path: '/home/me/.codex/sessions/2026/10/16/rollout-prompt.jsonl' }))
+  world.mtime += 1
+  return name
+}
+
+const effectivePromptMirror = (world: World) => withAgentPrompts(world.store![`agent:${PROMPT_ID}`] as ReturnType<typeof emptyMirror>, Object.entries(world.store!).filter(([key]) => key.startsWith(`agentPrompt:${PROMPT_ID}:`)).map(([, value]) => value), Date.parse('2026-10-16T13:00:00Z'))!
+
+test('another agent prompt immediately answers its visible question without a model or transcript read', async ($, on) => {
+  const { world, mirror } = questionWorld()
+  const foreign = '\n## other\n### Personal task\n- [?] Leave this question alone\n'
+  world.files.set(FILE, world.files.get(FILE)! + foreign)
+  addPrompt(world, PROMPT_AT + 1000)
+  const clock = engineBeneath(on, world)
+  await probeStart($)
+  await clock.advance(5000)
+  const saved = effectivePromptMirror(world)
+  expect(world.store![`agent:${PROMPT_ID}`]).toEqual(mirror)
+  expect(saved.state).toBe('working')
+  expect(saved.tasks.some(one => one.waiting === 'you')).toBe(false)
+  expect(saved.firstPrompt).toBe('Original request')
+  expect(saved.turnOrder).toBe(PROMPT_AT * 2)
+  expect(JSON.stringify(saved)).not.toContain('PRIVATE_')
+  expect(world.asked).toEqual([])
+  expect(world.reads?.some(path => path.includes('rollout-prompt'))).toBe(false)
+  expect(world.files.get(FILE)).toContain('state=working')
+  expect(world.files.get(FILE)?.endsWith(foreign)).toBe(true)
+})
+
+test('unknown stale equal-clock and unclocked agent prompts change neither mirrors nor board', async ($, on) => {
+  const { world, mirror } = questionWorld()
+  const before = world.files.get(FILE)
+  addPrompt(world, PROMPT_AT - 1000)
+  addPrompt(world, PROMPT_AT)
+  addPrompt(world, PROMPT_AT + 1000, 'never-seen-session')
+  world.files.set(`${INBOX}/codex-prompt-no-clock-88.json`, JSON.stringify({ session_id: PROMPT_SESSION }))
+  const clock = engineBeneath(on, world)
+  await probeStart($)
+  await clock.advance(5000)
+  expect(world.files.get(FILE)).toBe(before)
+  expect(world.store![`agent:${PROMPT_ID}`]).toEqual(mirror)
+  expect(Object.keys(world.store!).filter(key => key.startsWith('agent:'))).toEqual([`agent:${PROMPT_ID}`])
+  expect(world.asked).toEqual([])
+})
+
+test('a known session with no stored source clock keeps its visible question on prompt intake', async ($, on) => {
+  const { world, mirror } = questionWorld()
+  const { turnOrder, ...unknown } = mirror
+  world.store![`agent:${PROMPT_ID}`] = { ...unknown, updated: PROMPT_AT + 6000 }
+  const before = world.files.get(FILE)
+  addPrompt(world, PROMPT_AT + 1000)
+  const clock = engineBeneath(on, world)
+  await probeStart($)
+  await clock.advance(5000)
+  expect(world.files.get(FILE)).toBe(before)
+  expect(Object.keys(world.store!).some(key => key.startsWith('agentPrompt:'))).toBe(false)
+  expect(world.asked).toEqual([])
+})
+
+for (const variant of ['archived', 'fenced', 'foreign', 'duplicate', 'unclosed']) test(`a prompt never recreates or changes a ${variant} agent block`, async ($, on) => {
+  const { world, mirror } = questionWorld()
+  const block = world.files.get(FILE)!
+  const before = variant === 'archived' ? '# Progress\n' : variant === 'fenced' ? `\`\`\`markdown\n${block}\n\`\`\`\n` : variant === 'foreign' ? block.replace(`resume=${PROMPT_SESSION}`, 'resume=foreign-owner') : variant === 'unclosed' ? block.replace(`<!-- /auto session=${PROMPT_ID} -->`, '') : `${block}\n${block}`
+  world.files.set(FILE, before)
+  addPrompt(world, PROMPT_AT + 1000)
+  const clock = engineBeneath(on, world)
+  await probeStart($)
+  await clock.advance(5000)
+  expect(world.files.get(FILE)).toBe(before)
+  expect(world.store![`agent:${PROMPT_ID}`]).toEqual(mirror)
+  expect(world.asked).toEqual([])
+})
+
+test('a prompt clears a question during an older model summary and that summary cannot reopen it', async ($, on) => {
+  const { world } = questionWorld()
+  let reached!: () => void, release!: () => void
+  const entered = new Promise<void>(resolve => { reached = resolve })
+  const held = new Promise<void>(resolve => { release = resolve })
+  world.holdComplete = { reached, release: held }
+  world.files.set(`${INBOX}/codex-turn-${PROMPT_AT + 5000}-1.json`, JSON.stringify({ session_id: PROMPT_SESSION, cwd: '/demo', prompt: 'Older work', last_assistant_message: 'OLD_QUESTION?' }))
+  const clock = engineBeneath(on, world)
+  await probeStart($)
+  await clock.advance(5000)
+  await entered
+  addPrompt(world, PROMPT_AT + 6000)
+  await clock.advance(5000)
+  expect(effectivePromptMirror(world).state).toBe('working')
+  expect(parseProgress(world.files.get(FILE)!).flatMap(project => project.tasks).flatMap(task => task.steps).some(step => step.status === 'waiting')).toBe(false)
+  expect(world.asked).toHaveLength(1)
+  release()
+  await clock.advance(1000)
+  expect(world.files.get(FILE)).not.toContain('OLD_QUESTION')
+  expect(effectivePromptMirror(world).state).toBe('working')
+  expect(world.asked).toHaveLength(1)
+})
+
+test('another session prompt barrier survives an older digest read-back retry', async ($, on) => {
+  const { world, mirror } = questionWorld()
+  const original = world.files.get(FILE)!
+  world.files.set(`${INBOX}/codex-turn-${PROMPT_AT + 5000}-1.json`, JSON.stringify({ session_id: PROMPT_SESSION, cwd: '/demo', prompt: 'Older work', last_assistant_message: 'OLD_QUESTION?' }))
+  world.afterWrite = () => {
+    const current = world.store![`agent:${PROMPT_ID}`] as typeof mirror
+    const next = answerAgentPrompt(current, { agent: 'codex', event: 'prompt', id: PROMPT_ID, session: PROMPT_SESSION, cwd: '/demo', project: 'demo', prompt: '', answer: '', transcript: '', at: PROMPT_AT + 6000 }, PROMPT_AT + 7000)!
+    world.store![`agent:${PROMPT_ID}`] = next
+    return upsertAutoBlock(original, next, ZH_TW)
+  }
+  const clock = engineBeneath(on, world)
+  await probeStart($)
+  await clock.advance(5000)
+  expect(world.files.get(FILE)).toContain('state=working')
+  expect(world.files.get(FILE)).not.toContain('OLD_QUESTION')
+  expect((world.store![`agent:${PROMPT_ID}`] as { state: string }).state).toBe('working')
+  expect(world.asked).toHaveLength(1)
+})
+
+test('a newer owner landing immediately before prompt persistence is never overwritten', async ($, on) => {
+  const { world, mirror } = questionWorld()
+  const newer = { ...mirror, title: 'Newer owner work', turnOrder: (PROMPT_AT + 2000) * 2, updated: PROMPT_AT + 2000 }
+  let isInterleaved = false
+  world.beforeStoreSet = key => {
+    if (isInterleaved || key !== `agent:${PROMPT_ID}` && !key.startsWith(`agentPrompt:${PROMPT_ID}:`)) return
+    isInterleaved = true
+    world.store![`agent:${PROMPT_ID}`] = newer
+    world.files.set(FILE, upsertAutoBlock(world.files.get(FILE)!, newer, ZH_TW))
+  }
+  addPrompt(world, PROMPT_AT + 1000)
+  const clock = engineBeneath(on, world)
+  await probeStart($)
+  await clock.advance(5000)
+  expect(isInterleaved).toBe(true)
+  expect(world.store![`agent:${PROMPT_ID}`]).toEqual(newer)
+  expect(effectivePromptMirror(world)).toEqual(newer)
+  expect(world.files.get(FILE)).toContain('### Newer owner work')
+  expect(world.asked).toEqual([])
+})
+
+for (const failure of ['denied write', 'nonpersisting write', 'readback error']) test(`a prompt ${failure} retains its claim until its immutable receipt is verified`, async ($, on) => {
+  const { world } = questionWorld()
+  let isFailing = true
+  world.failStore = (operation, key) => isFailing && key.startsWith(`agentPrompt:${PROMPT_ID}:`) && (failure === 'denied write' && operation === 'set' || failure === 'readback error' && operation === 'get')
+  world.ignoreStore = key => isFailing && failure === 'nonpersisting write' && key.startsWith(`agentPrompt:${PROMPT_ID}:`)
+  const name = addPrompt(world, PROMPT_AT + 1000)
+  const clock = engineBeneath(on, world)
+  await probeStart($)
+  await clock.advance(5000)
+  const claim = [...world.files.keys()].find(path => path.startsWith(`${INBOX}/${name}.`) && path.endsWith('.taking'))!
+  expect(claim).toBeDefined()
+  expect(world.files.get(FILE)).toContain('state=working')
+  expect((world.store!.inboxDone as Record<string, string>)[name]).toBeUndefined()
+  expect((world.store!.inboxFailed as Record<string, string>)[name]).toContain(failure === 'nonpersisting write' ? 'PROMPT_RECEIPT_NOT_KEPT' : 'EIO')
+  const expired = `${INBOX}/${name}.deadbeef-${(PROMPT_AT - 3600000).toString(36)}-1.taking`
+  world.files.set(expired, world.files.get(claim)!)
+  world.files.delete(claim)
+  world.mtime += 1
+  isFailing = false
+  await clock.advance(5000)
+  expect(world.files.has(expired)).toBe(false)
+  expect((world.store!.inboxDone as Record<string, string>)[name]).toBeDefined()
+  expect(effectivePromptMirror(world).state).toBe('working')
+  expect(world.asked).toEqual([])
+  expect(world.reads?.some(path => path.includes('rollout-prompt'))).toBe(false)
+})
 
 test('receipt write failure retains the input despite a verified board output', async ($, on) => {
   const world = probeWorld()
@@ -3972,7 +4156,7 @@ test('taking the hooks out also takes out a Grok hook an earlier version left in
 })
 
 test('an agent already hooked in is left as it is, and nothing is said', async ($, on) => {
-  const hooked = JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: "sh '/home/me/.claude/progress-report.sh' codex turn || true", timeout: 10 }] }], SessionEnd: [{ hooks: [{ type: 'command', command: "sh '/home/me/.claude/progress-report.sh' codex end || true", timeout: 3 }] }] } }, null, 2) + '\n'
+  const hooked = String(agentHooks(CONNECT).find(hook => hook.agent === 'codex')!.edit('', false))
   const world: World = { files: new Map([['/home/me/.codex/hooks.json', hooked]]), mtime: 1, hasTasks: true, ran: [] }
   engineBeneath(on, world)
   const seen = outside(on)

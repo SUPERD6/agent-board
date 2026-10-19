@@ -234,7 +234,7 @@ test('the HTML board shows only the agent and project for a pending turn without
 // `--chat` in a folder of its own, with the home folder, the temp folders and every XDG folder
 // inside it, so no run can read or write the real ones. `home` is a path inside it. `change`
 // edits the script's text first, to make it fail the way a bug in it would.
-const chatRun = (args, { file = () => FILE, beside = {}, lang = 'en', isFolder = false, change = text => text, inbox = {} } = {}) => {
+const chatRun = (args, { file = () => FILE, beside = {}, lang = 'en', isFolder = false, change = text => text, inbox = {}, inboxTimes = {} } = {}) => {
   const root = mkdtempSync(join(tmpdir(), 'board-chat-'))
   try {
     const home = join(root, 'Jane Doe')
@@ -245,7 +245,11 @@ const chatRun = (args, { file = () => FILE, beside = {}, lang = 'en', isFolder =
     else mkdirSync(path)
     for (const [name, text] of Object.entries(beside)) writeFileSync(join(dirs['.claude'], name), text)
     mkdirSync(join(dirs['.claude'], 'progress-inbox'))
-    for (const [name, body] of Object.entries(inbox)) writeFileSync(join(dirs['.claude'], 'progress-inbox', name), body)
+    for (const [name, body] of Object.entries(inbox)) {
+      const target = join(dirs['.claude'], 'progress-inbox', name)
+      writeFileSync(target, body)
+      if (inboxTimes[name] !== undefined) utimesSync(target, inboxTimes[name] / 1000, inboxTimes[name] / 1000)
+    }
     const script = join(dirs['.claude'], 'agent-board.mjs')
     writeFileSync(script, `globalThis.AGENT_BOARD = ${JSON.stringify({ path, lang })}\n${change(BOARD_SCRIPT)}`)
     const env = {
@@ -382,6 +386,28 @@ test('--chat does not duplicate a claimed digest or mistake a fresh heartbeat fo
     assert.equal(ran.stdout.includes('Validation finished; package next.'), !isClaimed, ran.stdout)
     assert.equal(ran.stdout.includes('Unprocessed reports'), !isClaimed, ran.stdout)
     assert.equal(ran.stdout.split('› Export package').length - 1, 1, ran.stdout)
+    assert.deepEqual([ran.wrote, ran.modified, ran.served], [[], [], []])
+  }
+})
+
+for (const kind of ['future', 'unsafe-order', 'unknown-source', 'unbound-session']) test(`--chat keeps unprocessed reports and questions after ${kind} prompt metadata`, () => {
+  const now = Date.now(), source = now - 2000
+  const report = kind === 'unknown-source' ? 'codex-turn-no-clock-1.json' : `codex-turn-${source}-1.json`
+  const promptAt = kind === 'future' ? now + 86400000 : kind === 'unsafe-order' ? Number.MAX_SAFE_INTEGER : now
+  const prompt = `codex-prompt-${promptAt}-2.json`
+  for (const answer of ['Validation finished; packaging next.', 'Ship it to staging now?']) {
+    const ran = chatRun(['--chat'], {
+      file: () => '# Progress\n',
+      inbox: {
+        [report]: JSON.stringify({ session_id: 'pending-preview', cwd: '/work/export', last_assistant_message: answer }),
+        [prompt]: JSON.stringify({ session_id: 'pending-preview', prompt: 'PRIVATE_NEW_INPUT', last_assistant_message: 'PRIVATE_FAKE_REPLY?', transcript_path: '/synthetic/not-read.jsonl' }),
+      },
+      inboxTimes: { [report]: now - 100, [prompt]: now },
+    })
+    assert.equal(ran.status, 0, ran.stderr)
+    assert.ok(ran.stdout.includes(answer), ran.stdout)
+    assert.ok(!ran.stdout.includes('No work in progress right now.'), ran.stdout)
+    assert.ok(!ran.stdout.includes('PRIVATE_') && !ran.stdout.includes('not-read'), ran.stdout)
     assert.deepEqual([ran.wrote, ran.modified, ran.served], [[], [], []])
   }
 })

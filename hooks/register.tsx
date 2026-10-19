@@ -11,6 +11,7 @@ import {
   removeAutoBlock,
   setManualStep,
   shortId,
+  scanBlocks,
   takeArchivable,
   takeManualDone,
   takeTask,
@@ -70,6 +71,8 @@ import type { AgentSetup, HookState, SetupNotice, SetupProblem, SetupState } fro
 import {
   ANSWER_KEEP,
   answerKey,
+  answerAgentPrompt,
+  withAgentPrompts,
   claimAction,
   failedName,
   inboxOrder,
@@ -984,17 +987,27 @@ const digestTurn = async ($: EngineInterface, prompt: string, answer: string): P
 // back, so what can be written without it is.
 // A turn older than one already folded in (a file taken again after a later turn of the same
 // session got through, its end included) changes nothing: its steps would stand over newer ones.
+const agentMirror = async ($: EngineInterface, id: string): Promise<ProgressMirror | undefined> => {
+  const raw = (await $.store.get(`agent:${id}`)) as ProgressMirror | undefined
+  const receipts = []
+  for (const key of await $.store.keys()) {
+    if (key.startsWith(`agentPrompt:${id}:`)) receipts.push(await $.store.get(key))
+  }
+  return withAgentPrompts(raw, receipts, await $.clock.now())
+}
+
 const takeAgentTurns = async ($: EngineInterface, turns: readonly AgentTurn[], isRetry = false, isLastTry = false): Promise<void> => {
   const last = turns.at(-1)
   if (last === undefined) return
   const at = await $.clock.now()
-  const stored = (await $.store.get(`agent:${last.id}`)) as Partial<ProgressMirror> | undefined
+  const stored = await agentMirror($, last.id)
   const seen = JSON.stringify(stored ?? null)
   const fresh = emptyMirror(last.id, last.project || (await wordsOf($)).uncategorized, at, last.cwd, last.agent)
   const firstPrompt = promptKey(stored?.firstPrompt || turns.find(one => one.prompt !== '')?.prompt || '')
   let mirror: ProgressMirror = { ...fresh, ...stored, firstPrompt, lastAnswer: answerKey(stored?.lastAnswer ?? ''), resume: last.session }
   const newest = normalizeTurnOrder(stored?.turnOrder) ?? -1
-  const isNewer = (turn: AgentTurn): boolean => (turnOrder(turn) ?? newest) >= newest
+  const barrier = Math.max(newest, normalizeTurnOrder(stored?.promptOrder) ?? -1)
+  const isNewer = (turn: AgentTurn): boolean => (turnOrder(turn) ?? barrier) >= barrier
   const digested = turnsToDigest(turns)
   for (const [index, turn] of turns.entries()) {
     if (turn.event !== 'turn' || !isNewer(turn)) continue
@@ -1026,7 +1039,7 @@ const takeAgentTurns = async ($: EngineInterface, turns: readonly AgentTurn[], i
   const written = mirror
   let hasMoved = false
   await enqueue(async () => {
-    if (!isRetry && JSON.stringify((await $.store.get(`agent:${last.id}`)) ?? null) !== seen) {
+    if (JSON.stringify((await agentMirror($, last.id)) ?? null) !== seen) {
       hasMoved = true
       return
     }
@@ -1034,12 +1047,61 @@ const takeAgentTurns = async ($: EngineInterface, turns: readonly AgentTurn[], i
     const path = await progressPath($)
     const isKept = (check: string): boolean =>
       extractAutoBlock(check, written.sessionId) === extractAutoBlock(upsertAutoBlock(check, written, s), written.sessionId)
-    await rewrite($, path, before => upsertAutoBlock(before, written, s), isKept)
+    await rewrite($, path, async before => {
+      if (JSON.stringify((await agentMirror($, last.id)) ?? null) !== JSON.stringify(written)) {
+        hasMoved = true
+        return null
+      }
+      return upsertAutoBlock(before, written, s)
+    }, isKept)
+    if (hasMoved) return
     // Another session's write can undo it three times over; only a block read back counts.
     if (!isKept(await readText($, path))) throw new Error(NOT_KEPT)
     await poll($)
   })
-  if (hasMoved) await takeAgentTurns($, turns, true, isLastTry)
+  if (hasMoved) {
+    if (isRetry) throw new Error('INBOX_CHANGED')
+    await takeAgentTurns($, turns, true, isLastTry)
+  }
+}
+
+// This queue contains bounded file writes, never model work. Prompt receipts can
+// therefore answer a visible question while an older turn is still being summed.
+const takeAgentPrompt = async ($: EngineInterface, prompt: AgentTurn): Promise<void> => {
+  await enqueue(async () => {
+    const stored = await agentMirror($, prompt.id)
+    const updated = await $.clock.now()
+    const next = answerAgentPrompt(stored, prompt, updated)
+    if (next === null) return
+    const path = await progressPath($)
+    const s = await wordsOf($)
+    let written: string | null = null
+    let original: string | undefined
+    await rewrite($, path, async before => {
+      if (JSON.stringify((await agentMirror($, prompt.id)) ?? null) !== JSON.stringify(stored)) throw new Error('PROMPT_CHANGED')
+      const matches = parseProgress(before).flatMap(project => project.tasks).filter(task => task.auto?.session === prompt.id)
+      if (matches.length !== 1 || matches[0]?.auto?.agent !== prompt.agent || matches[0]?.auto?.resume !== prompt.session) return null
+      const spans = scanBlocks(before.split(/\r?\n/)).filter(span => span.session === prompt.id)
+      if (spans.length !== 1 || !spans[0]?.isClosed) return null
+      const block = extractAutoBlock(before, prompt.id)
+      if (block === null) return null
+      if (original !== undefined && block !== original) return null
+      original = block
+      written = extractAutoBlock(upsertAutoBlock(before, next, s), prompt.id)
+      return upsertAutoBlock(before, next, s)
+    }, check => extractAutoBlock(check, prompt.id) === written)
+    if (written === null) return
+    if (extractAutoBlock(await readText($, path), prompt.id) !== written) throw new Error(NOT_KEPT)
+    // No owner-key write: a later owner may advance while this await is pending.
+    // Every receipt has its own key, so simultaneous prompts do not erase barriers.
+    const key = `agentPrompt:${prompt.id}:${next.promptOrder}:${updated}`
+    const receipt = { id: prompt.id, agent: prompt.agent, session: prompt.session, at: prompt.at, updated }
+    await $.store.set(key, receipt)
+    // A successful call alone does not prove persistence. Keep the claimed input
+    // until this immutable barrier can be read back with the same binding/time.
+    if (JSON.stringify(await $.store.get(key)) !== JSON.stringify(receipt)) throw new Error('PROMPT_RECEIPT_NOT_KEPT')
+    await poll($)
+  })
 }
 
 // `/progress connect`: the reporter script beside progress.md, and a hook for it in every
@@ -1521,15 +1583,33 @@ const drainInbox = async ($: EngineInterface): Promise<void> => {
     isDraining = false
   }
   if (taken.length === 0) return
+  // Prompt intake bypasses the digest promise, which may be waiting on a model.
+  const prompts = taken.filter(one => one.turn?.event === 'prompt')
+  if (prompts.length > 0) {
+    const settled: Taken[] = []
+    const failed: Record<string, string> = {}
+    for (const one of prompts.sort((a, b) => inboxOrder(a.name, b.name))) {
+      if (one.turn === null || one.turn === undefined || !(await $.fs.exists(one.path))) continue
+      try { await takeAgentPrompt($, one.turn); settled.push(one) } catch (error) {
+        const reason = inboxFailure(error)
+        failed[one.name] = `${one.attempt}:${at}:${reason}`
+        await inboxNotice($, one.path, reason)
+      }
+    }
+    await recordInbox($, settled.map(one => one.name), failed, at)
+    await removeFiles($, settled.map(one => one.path), isWin)
+  }
+  const regular = taken.filter(one => one.turn?.event !== 'prompt')
+  if (regular.length === 0) return
   const job = digests.then(async () => {
-    const invalid = taken.filter(one => one.turn === null)
-    const settled = taken.filter(one => one.turn !== null && one.turn !== undefined && isBoardTurn(one.turn))
+    const invalid = regular.filter(one => one.turn === null)
+    const settled = regular.filter(one => one.turn !== null && one.turn !== undefined && isBoardTurn(one.turn))
     const failed: Record<string, string> = Object.fromEntries([
       ...invalid.map(one => [one.name, `${one.attempt}:${at}:INVALID_INPUT`]),
-      ...taken.filter(one => one.error !== undefined).map(one => [one.name, `${one.attempt}:${at}:${one.error}`]),
+      ...regular.filter(one => one.error !== undefined).map(one => [one.name, `${one.attempt}:${at}:${one.error}`]),
     ])
     const bySession = new Map<string, Taken[]>()
-    for (const one of [...taken].sort((a, b) => inboxOrder(a.name, b.name))) {
+    for (const one of [...regular].sort((a, b) => inboxOrder(a.name, b.name))) {
       if (one.turn === null || one.turn === undefined || isBoardTurn(one.turn)) continue
       bySession.set(one.turn.id, [...(bySession.get(one.turn.id) ?? []), one])
     }
@@ -1570,14 +1650,16 @@ const drainInbox = async ($: EngineInterface): Promise<void> => {
 // rather than the turn, and why each file still in the inbox is there.
 const recordInbox = async ($: EngineInterface, settled: readonly string[], failed: Readonly<Record<string, string>>, at: number): Promise<void> => {
   if (settled.length === 0 && Object.keys(failed).length === 0) return
-  const stamp = `${(await read($, mine))?.sessionId.slice(0, 8) ?? '-'}:${at}`
-  // Read both maps before replacing either. A read error must not become an
-  // empty map, and cleanup must wait for the required records to read back.
-  const before = await readInboxRecord($, 'inboxDone')
-  const held = await readInboxRecord($, 'inboxFailed')
-  const notes = Object.entries(held).filter(([name]) => !settled.includes(name))
-  await writeInboxRecord($, 'inboxFailed', keepInboxFailed({ ...Object.fromEntries(notes), ...failed }))
-  await writeInboxRecord($, 'inboxDone', keepInboxDone({ ...before, ...Object.fromEntries(settled.map(name => [name, stamp])) }, at))
+  await enqueue(async () => {
+    const stamp = `${(await read($, mine))?.sessionId.slice(0, 8) ?? '-'}:${at}`
+    // Read both maps before replacing either. A read error must not become an
+    // empty map, and cleanup must wait for the required records to read back.
+    const before = await readInboxRecord($, 'inboxDone')
+    const held = await readInboxRecord($, 'inboxFailed')
+    const notes = Object.entries(held).filter(([name]) => !settled.includes(name))
+    await writeInboxRecord($, 'inboxFailed', keepInboxFailed({ ...Object.fromEntries(notes), ...failed }))
+    await writeInboxRecord($, 'inboxDone', keepInboxDone({ ...before, ...Object.fromEntries(settled.map(name => [name, stamp])) }, at))
+  })
 }
 
 const readInboxRecord = async ($: EngineInterface, key: string): Promise<Record<string, string>> => {

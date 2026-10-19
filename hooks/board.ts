@@ -37,6 +37,9 @@ export const peekInbox = (
   for (const file of [...files].sort((a, b) => a.at - b.at)) {
     const read = readTurn(file.name, file.body)
     if (read === null) continue
+    // A preview has neither the owner mirror nor an accepted prompt receipt.
+    // Prompt metadata cannot retire an unprocessed report or answer its question.
+    if (read.event === 'prompt') continue
     const turn = read.prompt === '' && isTranscriptPath(read.transcript) ? { ...read, prompt: transcriptTail(readLog(read.transcript)).prompt } : read
     if (isBoardTurn(turn)) continue
     if (turn.event === 'end') {

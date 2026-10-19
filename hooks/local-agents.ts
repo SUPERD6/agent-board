@@ -3,7 +3,7 @@ export const localAgents: LocalAgent[] = ['codex', 'cursor', 'opencode', 'gemini
 export const statusEvents: Partial<Record<LocalAgent, Record<string, string>>> = {
   gemini: { SessionStart: 'waiting', BeforeAgent: 'working', AfterAgent: 'waiting', SessionEnd: 'ended' },
   grok: { SessionStart: 'waiting', UserPromptSubmit: 'working', Stop: 'waiting', SessionEnd: 'ended' },
-  muse: { Stop: 'waiting', SessionEnd: 'ended' },
+  muse: { UserPromptSubmit: 'working', Stop: 'waiting', SessionEnd: 'ended' },
   antigravity: { SessionStart: 'waiting', PreInvocation: 'working', PostInvocation: 'working', Stop: 'waiting' },
 }
 export const lifecycleCapability = (agent: LocalAgent): string =>
@@ -40,6 +40,13 @@ const run = (mode, payload, session) => {
 }
 
 export const AgentBoardLocal = async ({ client }) => ({
+  'chat.message': async ({ sessionID }) => {
+    try {
+      const info = await client.session.get({ path: { id: sessionID } })
+      if (!info.data || info.error || info.data.id !== sessionID || info.data.parentID) return
+      run('--agent-status', { session_id: sessionID, state: 'working', prompt_submitted: true })
+    } catch {}
+  },
   event: async ({ event }) => {
     const p = event.properties ?? {}
     const session = p.sessionID ?? p.info?.id

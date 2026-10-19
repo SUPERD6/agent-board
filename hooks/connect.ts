@@ -11,7 +11,7 @@ import { boardRun, geminiBoardCommand, normalizeCommandPath, opencodeBoardComman
 // connect`: it saves what the hook hands over into the inbox and clears files older than two
 // days. No dependencies: POSIX sh on macOS and Linux, Windows PowerShell 5.1 on Windows.
 
-// Arguments: the agent's name, `turn` or `end`, then optionally the JSON itself (as Codex's
+// Arguments: the agent's name, `prompt`, `turn` or `end`, then optionally the JSON itself (as Codex's
 // legacy notify passes it) instead of on stdin.
 export const reporterSh = (inbox: string): string => `#!/bin/sh
 # Written by the Agent Board plugin (/progress connect). An agent's hook runs it at the end of
@@ -72,7 +72,7 @@ export const psQuote = (text: string): string => `'${text.replace(/'/g, "''")}'`
 // which Gemini CLI, Codex, Grok Build and Muse Code read as "block" and run the agent
 // again, for ever; `|| true` keeps it at 0. PowerShell exits 64 for a missing file, which
 // they only warn about.
-export const reportCommand = (script: string, agent: string, event: 'turn' | 'end', isWindows: boolean): string =>
+export const reportCommand = (script: string, agent: string, event: 'prompt' | 'turn' | 'end', isWindows: boolean): string =>
   isWindows
     ? `powershell -NoProfile -ExecutionPolicy Bypass -File "${script}" ${agent} ${event}`
     : `sh ${shellQuote(script)} ${agent} ${event} || true`
@@ -245,7 +245,7 @@ const jsonEdit =
 // is left alone. The empty map `hooks: {}` is the one flow-style value it can follow: Hermes
 // writes that into a new config.yaml, and it holds nothing to keep.
 // A comment runs to the line end, a Windows `\r` included.
-const HERMES_KEY = /^\s+(?:post_llm_call|on_session_finalize)\s*:\s*(?:#[^\n]*)?$/
+const HERMES_KEY = /^\s+(?:pre_llm_call|post_llm_call|on_session_finalize)\s*:\s*(?:#[^\n]*)?$/
 const TOP_HOOKS = /^hooks\s*:\s*(?:#[^\n]*)?$/
 const EMPTY_HOOKS = /^hooks\s*:\s*\{\s*\}\s*(?:#[^\n]*)?$/
 
@@ -352,6 +352,7 @@ export const agentHooks = (ctx: ConnectContext): AgentHook[] => {
   const opencodeHome = ctx.opencodeHome ?? join(ctx, '.config', 'opencode')
   const turn = (agent: string): string => reportCommand(ctx.script, agent, 'turn', ctx.isWindows)
   const end = (agent: string): string => reportCommand(ctx.script, agent, 'end', ctx.isWindows)
+  const prompt = (agent: string): string => reportCommand(ctx.script, agent, 'prompt', ctx.isWindows)
 
   return [
     {
@@ -362,7 +363,7 @@ export const agentHooks = (ctx: ConnectContext): AgentHook[] => {
       dir: ctx.codexHome,
       file: [ctx.codexHome, 'hooks.json'].join(ctx.sep),
       edit: jsonEdit(config =>
-        withGroupedHook(withGroupedHook(config, 'Stop', turn('codex'), { timeout: 10 }), 'SessionEnd', end('codex'), { timeout: 3 }),
+        withGroupedHook(withGroupedHook(withGroupedHook(config, 'Stop', turn('codex'), { timeout: 10 }), 'SessionEnd', end('codex'), { timeout: 3 }), 'UserPromptSubmit', prompt('codex'), { timeout: 3 }),
       ),
     },
     {
@@ -372,12 +373,12 @@ export const agentHooks = (ctx: ConnectContext): AgentHook[] => {
       dir: join(ctx, '.gemini'),
       file: join(ctx, '.gemini', 'settings.json'),
       edit: jsonEdit(config =>
-        withGroupedHook(
+        withGroupedHook(withGroupedHook(
           withGroupedHook(config, 'AfterAgent', turn('gemini'), { name: 'agent-board', timeout: 5000 }),
           'SessionEnd',
           end('gemini'),
           { name: 'agent-board-end', timeout: 5000 },
-        ),
+        ), 'BeforeAgent', prompt('gemini'), { name: 'agent-board-prompt', timeout: 5000 }),
       ),
     },
     {
@@ -388,7 +389,7 @@ export const agentHooks = (ctx: ConnectContext): AgentHook[] => {
       dir: join(ctx, '.cursor'),
       file: join(ctx, '.cursor', 'hooks.json'),
       edit: jsonEdit(config =>
-        withFlatHook(withFlatHook(withFlatHook(config, 'afterAgentResponse', turn('cursor')), 'stop', turn('cursor')), 'sessionEnd', end('cursor')),
+        withFlatHook(withFlatHook(withFlatHook(withFlatHook(config, 'afterAgentResponse', turn('cursor')), 'stop', turn('cursor')), 'sessionEnd', end('cursor')), 'beforeSubmitPrompt', prompt('cursor')),
       ),
     },
     {
@@ -402,8 +403,8 @@ export const agentHooks = (ctx: ConnectContext): AgentHook[] => {
       old: [ctx.grokHome, 'hooks', 'progress-pane.json'].join(ctx.sep),
       generated: true,
       edit: generatedFile(
-        writeConfig(withGroupedHook(withGroupedHook({}, 'Stop', turn('grok'), { timeout: 10 }), 'SessionEnd', end('grok'), { timeout: 5 })),
-        [writeConfig(withGroupedHook(withGroupedHook({}, 'Stop', turn('grok'), { timeout: 10 }), 'SessionEnd', end('grok'), { timeout: 1 }))],
+        writeConfig(withGroupedHook(withGroupedHook(withGroupedHook({}, 'Stop', turn('grok'), { timeout: 10 }), 'SessionEnd', end('grok'), { timeout: 5 }), 'UserPromptSubmit', prompt('grok'), { timeout: 5 })),
+        [1, 5].map(timeout => writeConfig(withGroupedHook(withGroupedHook({}, 'Stop', turn('grok'), { timeout: 10 }), 'SessionEnd', end('grok'), { timeout }))),
       ),
     },
     {
@@ -414,7 +415,7 @@ export const agentHooks = (ctx: ConnectContext): AgentHook[] => {
       dir: join(ctx, '.config', 'muse'),
       file: join(ctx, '.config', 'muse', 'settings.json'),
       edit: jsonEdit(config =>
-        withGroupedHook(withGroupedHook({ schema_version: 1, ...config }, 'Stop', turn('muse'), { timeout: 10 }), 'SessionEnd', end('muse'), { timeout: 5 }),
+        withGroupedHook(withGroupedHook(withGroupedHook({ schema_version: 1, ...config }, 'Stop', turn('muse'), { timeout: 10 }), 'SessionEnd', end('muse'), { timeout: 5 }), 'UserPromptSubmit', prompt('muse'), { timeout: 5 }),
       ),
     },
     {
@@ -431,6 +432,7 @@ export const agentHooks = (ctx: ConnectContext): AgentHook[] => {
           : withHermesHooks(text, [
               ['post_llm_call', turn('hermes')],
               ['on_session_finalize', end('hermes')],
+              ['pre_llm_call', prompt('hermes')],
             ]),
     },
     {
@@ -441,7 +443,7 @@ export const agentHooks = (ctx: ConnectContext): AgentHook[] => {
       dir: ctx.openclawHome,
       file: [ctx.openclawHome, OPENCLAW_FILE].join(ctx.sep),
       generated: true,
-      edit: generatedFile(openclawPlugin(ctx)),
+      edit: generatedFile(openclawPlugin(ctx), [openclawPlugin(ctx, false)]),
     },
     {
       agent: 'openclaw',
@@ -464,7 +466,7 @@ export const agentHooks = (ctx: ConnectContext): AgentHook[] => {
       file: [opencodeHome, 'plugin', 'agent-board.js'].join(ctx.sep),
       old: [opencodeHome, 'plugin', 'progress-pane.js'].join(ctx.sep),
       generated: true,
-      edit: generatedFile(opencodePlugin(ctx)),
+      edit: generatedFile(opencodePlugin(ctx), [opencodePlugin(ctx, false)]),
     },
     ...boardCommands(ctx),
   ]
@@ -473,7 +475,7 @@ export const agentHooks = (ctx: ConnectContext): AgentHook[] => {
 // OpenCode takes plugins, not commands: this one writes the session's last exchange into the
 // inbox when the session goes idle (a subagent's session aside), and an end when it is
 // deleted. Every export of a plugin file must be a function.
-export const opencodePlugin = (ctx: ConnectContext): string => `// Written by the Agent Board plugin (/progress connect): reports each finished turn to the Agent Board
+export const opencodePlugin = (ctx: ConnectContext, withPrompt = true): string => `// Written by the Agent Board plugin (/progress connect): reports each finished turn to the Agent Board
 // pane.
 import { mkdirSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -496,6 +498,14 @@ const textOf = message =>
     .join('\\n')
 
 export const AgentBoard = async ({ client, directory }) => ({
+${withPrompt ? `  'chat.message': async ({ sessionID }) => {
+    try {
+      const session = await client.session.get({ path: { id: sessionID } })
+      if (!session.data || session.data.id !== sessionID || session.data.parentID) return
+      save('prompt', { session_id: sessionID, cwd: directory })
+    } catch {}
+  },
+` : ''}\
   event: async ({ event }) => {
     try {
       if (event.type === 'session.idle') {
@@ -616,7 +626,7 @@ export const withoutOpenclawPlugin = (config: Json, file: string): Json => {
 // Writes each finished turn into the inbox itself, as the OpenCode plugin does, so it needs
 // no shell. Heartbeat and memory runs are OpenClaw talking to itself, not the person's work;
 // a compaction or a restart does not end the session.
-export const openclawPlugin = (ctx: ConnectContext): string => `// Written by the Agent Board plugin (/progress connect): reports each finished turn to the Agent Board
+export const openclawPlugin = (ctx: ConnectContext, withPrompt = true): string => `// Written by the Agent Board plugin (/progress connect): reports each finished turn to the Agent Board
 // pane.
 import { mkdirSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -643,6 +653,13 @@ export default {
   id: '${OPENCLAW_ID}',
   name: 'Agent Board',
   register(api) {
+${withPrompt ? `    api.on('before_prompt_build', (_event, ctx) => {
+      try {
+        if (!ctx?.sessionId || ctx.inputProvenance?.kind !== 'external_user') return
+        save('prompt', { session_id: ctx.sessionId, cwd: ctx.workspaceDir ?? '' })
+      } catch {}
+    })
+` : ''}\
     api.on('agent_end', (event, ctx) => {
       try {
         if (!ctx?.sessionId || ctx.trigger === 'heartbeat' || ctx.trigger === 'memory') return

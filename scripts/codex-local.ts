@@ -3,7 +3,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, u
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { codexEvent, codexEvents, codexReport, putCodexBlock } from '../hooks/codex'
+import { answerLocalQuestions, codexEvent, codexEvents, codexReport, putCodexBlock } from '../hooks/codex'
 import type { CodexReport } from '../hooks/codex'
 import type { Strings } from '../hooks/i18n'
 import { STRINGS } from '../hooks/strings'
@@ -117,16 +117,17 @@ export const runCodexLocal = async (args: string[], boardPath: string, s: String
     if (mode === '--agent-status' && !['working', 'waiting', 'ended'].includes(String(status))) throw new Error('INVALID_STATE')
     const event = agent === 'antigravity' && mode === '--agent-status' ? flag('--event') : undefined
     if (event !== undefined && statusEvents.antigravity?.[event] !== status) throw new Error('INVALID_EVENT_STATE')
+    const isPrompt = mode === '--agent-status' && status === 'working' && (payload.prompt_submitted === true || /^(?:UserPromptSubmit|user_prompt_submit|BeforeAgent)$/.test(String(payload.hook_event_name ?? payload.hookEventName)))
     const base = mode === '--codex-event' ? codexEvent(previous, payload, now, s) : codexReport(previous, session, mode === '--agent-status' ? {
       title: previous?.title ?? s.localAgentTask(agent), project: previous?.project ?? agent,
       state: status === 'working' ? 'working' : previous?.state === 'done' ? 'done' : status,
-      steps: previous?.steps ?? [`- [ ] ${s.localAgentLifecycle}`],
+      steps: isPrompt && previous ? answerLocalQuestions(previous.steps) : previous?.steps ?? [`- [ ] ${s.localAgentLifecycle}`],
     } : payload, now, s)
     const priorActivity = previous?.activity ?? []
     const report = { ...base, agent, ...(mode === '--codex-event' && !previous ? { title: s.localAgentTask(agent), project: agent } : {}), ...(event === undefined ? {} : { activity: [...priorActivity, { event, state: String(status), updated: now }].slice(-16) }) }
     if (mode !== '--codex-report' && previous) {
       // Replayed hooks do not refresh the time or regress an explicit task report.
-      const same = previous.state === report.state && previous.turn === report.turn
+      const same = previous.state === report.state && previous.turn === report.turn && JSON.stringify(previous.steps) === JSON.stringify(report.steps)
       if (same && (event === undefined || priorActivity.at(-1)?.event === event)) {
         if (agent === 'cursor') output(raw.hook_event_name === 'sessionStart' ? { env: { AGENT_BOARD_SESSION_ID: session, AGENT_BOARD_AGENT: agent } } : {})
         else if (agent === 'gemini' || agent === 'antigravity') output({})
