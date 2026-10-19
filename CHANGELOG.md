@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Keep verified Codex and Antigravity sessions connected across ordinary native work. Busy owners can send; inbound messages remain queued until their adapter is ready, without consuming a claim or inventing an ACK. Poll readiness does not weaken ownership, session, turn, deduplication, or permission checks.
+  Tests: `receive=false renews an authenticated lease without claiming queued work`; `busy native owners remain connected and can send: codex` (also `antigravity`).
 
 - Preserve canceled text from an uncached completed block when a later prompt renews activity. Bounded internal snapshots keep these `[-]` lines outside completed-work counts without inferring a recipient; a fresh producer mirror can supersede the snapshot. Tests: `uncached completion retains canceled pointers through the first old inbox and older prompt` (also equal/newer), `uncached completion retains bounded canceled text outside completed counts and fresh owner truth wins`.
 
