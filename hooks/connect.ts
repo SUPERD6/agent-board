@@ -5,7 +5,7 @@ import { RELEASED } from './released'
 import type { ReleasedKind } from './released'
 import { sha256 } from './sha256'
 import { STRINGS } from './strings'
-import { boardRun, geminiBoardCommand, opencodeBoardCommand } from './board-commands'
+import { boardRun, geminiBoardCommand, normalizeCommandPath, opencodeBoardCommand } from './board-commands'
 
 // The reporter script an agent's hook runs, written beside progress.md by `/progress
 // connect`: it saves what the hook hands over into the inbox and clears files older than two
@@ -690,7 +690,7 @@ export const RELEASE_PATHS = { board: '\u0000board\u0000', inbox: '\u0000inbox\u
 // edited by so much as a byte is still theirs.
 export const isReleased = (kind: ReleasedKind, text: string, paths: { board?: string; inbox?: string } = {}): boolean => {
   let normal = text
-  if (paths.board) normal = normal.split(paths.board).join(RELEASE_PATHS.board)
+  if (paths.board) normal = normalizeCommandPath(normal, paths.board, RELEASE_PATHS.board)
   if (paths.inbox) normal = normal.split(paths.inbox).join(RELEASE_PATHS.inbox)
   const hash = sha256(normal)
 

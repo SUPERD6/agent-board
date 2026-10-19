@@ -12,7 +12,23 @@ import { test } from 'node:test'
 import { runInNewContext } from 'node:vm'
 import assert from 'node:assert/strict'
 import { BOARD_SCRIPT } from '../hooks/board-script.ts'
-import { boardRun, geminiBoardCommand, opencodeBoardCommand } from '../hooks/board-commands.ts'
+import { boardRun, geminiBoardCommand, normalizeCommandPath, opencodeBoardCommand } from '../hooks/board-commands.ts'
+
+test('release command normalization keeps platform paths and encoded paths portable', () => {
+  for (const sensitive of [false, true]) {
+    const normalized = []
+    for (const base of ['/home/a', '/home/b', 'C:\\Users\\a', 'C:\\Users\\b']) {
+      const sep = base.startsWith('C:') ? '\\' : '/'
+      const path = [base, ...(sensitive ? ["$board 'quoted' `ticks` %literal%"] : []), 'agent-board.mjs'].join(sep)
+      const command = geminiBoardCommand('Board', 'Show the board.', boardRun(path))
+      const canonical = normalizeCommandPath(command, path, '\0board\0')
+      assert.ok(canonical.includes('\0board\0'))
+      assert.notEqual(normalizeCommandPath(command + '# edited', path, '\0board\0'), canonical)
+      normalized.push(canonical)
+    }
+    assert.ok(normalized.every(text => text === normalized[0]))
+  }
+})
 
 test('generated board commands pass literal shell-sensitive paths through Gemini and OpenCode wrappers', () => {
   const root = mkdtempSync(join(tmpdir(), 'board-command-'))

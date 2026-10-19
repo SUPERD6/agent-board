@@ -14,6 +14,7 @@ import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { RELEASE_PATHS } from '../hooks/connect'
 import { sha256 } from '../hooks/sha256'
+import { normalizeCommandPath } from '../hooks/board-commands'
 
 const root = join(import.meta.dir, '..')
 const PREFIX = 'agent-board--v'
@@ -41,12 +42,13 @@ const hashOf = (text: string): string => {
 // Two synthetic machines on each system: a template is only a template if it comes out the
 // same on both, once the board's and the inbox's paths are swapped for the placeholders.
 const MACHINES = [false, true].flatMap(isWindows =>
-  ['synthetic-a', 'synthetic-b'].map(user => {
+  ['synthetic-a', 'synthetic-b'].flatMap(user => ['plain', 'sensitive'].map(variant => {
     const sep = isWindows ? '\\' : '/'
     const home = isWindows ? `C:\\Users\\${user}` : `/home/${user}`
     const base = [home, '.claude'].join(sep)
     return {
-      name: `${isWindows ? 'windows' : 'posix'} ${user}`,
+      name: `${isWindows ? 'windows' : 'posix'} ${user} ${variant}`,
+      variant,
       system: isWindows ? 'windows' : 'posix',
       ctx: {
         home,
@@ -58,10 +60,10 @@ const MACHINES = [false, true].flatMap(isWindows =>
         grokHome: [home, '.grok'].join(sep),
         hermesHome: [home, '.hermes'].join(sep),
         openclawHome: [home, '.openclaw'].join(sep),
-        board: [base, 'agent-board.mjs'].join(sep),
+        board: [base, ...(variant === 'plain' ? [] : ["$board 'quoted' `ticks` %literal%"]), 'agent-board.mjs'].join(sep),
       },
     }
-  }),
+  })),
 )
 
 // The paths each kind's caller in hooks/ swaps back: a placeholder left in any other kind's
@@ -92,8 +94,8 @@ const outputsOf = async (dir: string, label: string): Promise<Output> => {
     seen.set(key, text)
     if (!texts[kind].includes(text)) texts[kind].push(text)
   }
-  const swap = (text: string, ctx: { board: string; inbox: string }) => text.split(ctx.board).join(RELEASE_PATHS.board).split(ctx.inbox).join(RELEASE_PATHS.inbox)
-  for (const { name, system, ctx } of MACHINES) {
+  const swap = (text: string, ctx: { board: string; inbox: string }) => normalizeCommandPath(text, ctx.board, RELEASE_PATHS.board).split(ctx.inbox).join(RELEASE_PATHS.inbox)
+  for (const { name, system, variant, ctx } of MACHINES) {
     add('reporterSh', 'reporterSh', swap(connect.reporterSh(ctx.inbox), ctx))
     add('reporterPs1', 'reporterPs1', swap(connect.reporterPs1(ctx.inbox), ctx))
     for (const [lang, s] of Object.entries(STRINGS)) {
@@ -102,9 +104,9 @@ const outputsOf = async (dir: string, label: string): Promise<Output> => {
         if (typeof text !== 'string') continue
         const file: string = hook.file
         const ending = (...parts: string[]) => file.endsWith(parts.join(ctx.sep))
-        if (ending('', 'SKILL.md')) add('skill', `skill ${lang} ${hook.agent}`, swap(text, ctx))
-        else if (ending('commands', 'board.toml')) add('gemini', `gemini ${lang}`, swap(text, ctx))
-        else if (ending('commands', 'board.md')) add('opencode', `opencode ${lang}`, swap(text, ctx))
+        if (ending('', 'SKILL.md')) add('skill', `skill ${lang} ${hook.agent} ${variant}`, swap(text, ctx))
+        else if (ending('commands', 'board.toml')) add('gemini', `gemini ${lang} ${variant}`, swap(text, ctx))
+        else if (ending('commands', 'board.md')) add('opencode', `opencode ${lang} ${variant}`, swap(text, ctx))
         else if (ending('hooks', 'agent-board.json') || ending('plugin', 'agent-board.js') || ending('.openclaw', 'agent-board.mjs')) fixed.set(`${system} ${name} ${file.slice(ctx.home.length)}`, text)
         // A generated file of a kind this script does not know would go unchecked, and an
         // installation from before the record would find it foreign.

@@ -14,3 +14,10 @@ export const geminiBoardCommand = (description: string, prompt: string, run: str
 
 export const opencodeBoardCommand = (description: string, prompt: string, run: string): string =>
   `---\ndescription: ${JSON.stringify(description)}\n---\n\n${prompt}\n\n!\`${run} --serve\`\n`
+
+// Hash the same template on every host, including paths escaped by TOML's JSON
+// string syntax or encoded for the shell. The placeholder is internal hash data.
+export const normalizeCommandPath = (text: string, path: string, placeholder: string): string => {
+  const encoded = `String.fromCodePoint(${Array.from(path, char => char.codePointAt(0)).join(',')})`
+  return text.split(encoded).join(placeholder).split(JSON.stringify(path).slice(1, -1)).join(placeholder).split(path).join(placeholder)
+}
