@@ -344,7 +344,7 @@ test('ACK text from a failed native Codex turn cannot acknowledge delivery', asy
   const receiver = await attachCodexSession({ boardUrl: board.address, transport, thread, state: () => ({ thread, status: 'idle', turn: null }), verifyOwner: () => true })
   try {
     await receiver.send({ ...input, target: receiver.id, turn: 'session' })
-    const result = await waitFor(async () => { const one = (await board.call('/api/board')).body.messaging.messages[0]; return one?.status === 'uncertain' && one })
+    const result = await waitFor(async () => { const one = (await board.call('/api/board')).body.messaging.messages[0]; return one?.status === 'uncertain' && one.error === 'TURN_NOT_COMPLETED' && one })
     assert.equal(result.error, 'TURN_NOT_COMPLETED')
     assert.equal(result.reply, '')
   } finally { await receiver.close() }
