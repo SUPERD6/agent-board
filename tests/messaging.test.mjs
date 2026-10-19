@@ -125,9 +125,9 @@ test('handoffs time out visibly until exact fresh progress appears, independentl
     assert.equal(row.status, 'timed_out'); assert.equal(row.receiving, true)
     writeFileSync(join(dir, 'progress.md'), progress(Date.now()).replace('resume=native1', 'resume=native10'))
     assert.equal((await board.call('/api/board')).body.messaging.sessions[0].status, 'timed_out')
-    writeFileSync(join(dir, 'progress.md'), progress(Date.now()))
-    // The page polls. Across Windows processes a new timestamp can briefly be ahead
-    // of the server clock; observing the file is asynchronous, not an immediate ACK.
+    // Force the report briefly ahead of the server clock. Keep the future-time gate,
+    // then observe through polling as the page does; a write is not an immediate ACK.
+    writeFileSync(join(dir, 'progress.md'), progress(Date.now() + 250))
     await waitFor(async () => (await board.call('/api/board')).body.messaging.sessions[0].status === 'reported')
   } finally { await receiver.close() }
   row = (await board.call('/api/board')).body.messaging.sessions[0]
