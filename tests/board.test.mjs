@@ -19,7 +19,11 @@ test('the bundled release table excludes its current board fingerprint and retai
   const version = JSON.parse(readFileSync(new URL('../.claude-plugin/plugin.json', import.meta.url))).version
   const current = RELEASED.find(release => release.version === version)
   assert.ok(current)
-  for (const fingerprint of current.board) assert.ok(!BOARD_SCRIPT.includes(fingerprint), 'a board cannot embed its own fingerprint')
+  const ownFingerprint = createHash('sha256').update(BOARD_SCRIPT).digest('hex')
+  assert.ok(!BOARD_SCRIPT.includes(ownFingerprint), 'a board cannot embed its own fingerprint')
+  for (const fingerprint of current.board.filter(one => one !== ownFingerprint)) {
+    assert.ok(BOARD_SCRIPT.includes(fingerprint), 'an earlier tag of the same manifest version remains recognized')
+  }
   for (const release of RELEASED.filter(release => release.version !== version)) {
     for (const fingerprint of release.board) assert.ok(BOARD_SCRIPT.includes(fingerprint), 'historical released boards remain recognized')
   }

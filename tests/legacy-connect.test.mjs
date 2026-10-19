@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { once } from 'node:events'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
@@ -32,6 +32,71 @@ const fixture = async fn => {
   try { return await fn({ home, script, progress, config, control, lock, foreign, request, command, run }) }
   finally { rmSync(home, { recursive: true, force: true }) }
 }
+
+const taggedBoards = new Map()
+const taggedBoard = (version, commit) => {
+  if (taggedBoards.has(version)) return taggedBoards.get(version)
+  const cwd = new URL('..', import.meta.url)
+  const tag = `agent-board--v${version}`
+  assert.equal(execFileSync('git', ['rev-parse', `${tag}^{}`], { cwd, encoding: 'utf8' }).trim(), commit)
+  const source = execFileSync('git', ['show', `${tag}:hooks/board-script.ts`], { cwd, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 })
+  const marker = 'export const BOARD_SCRIPT = '
+  const code = JSON.parse(source.slice(source.indexOf(marker) + marker.length))
+  taggedBoards.set(version, code)
+  return code
+}
+const adoption = (f, code, hasPriorOwnership = false) => {
+  const board = join(f.home, 'data-a', 'agent-board.mjs')
+  // This is boardScriptFor's exact header; the installer under test is the
+  // compiled worker, rather than a direct source-module ownership check.
+  const header = `globalThis.AGENT_BOARD = ${JSON.stringify({ path: f.progress, lang: 'en' })}\n`
+  const before = header + code
+  mkdirSync(join(f.home, 'data-a'))
+  writeFileSync(board, before)
+  assert.equal(existsSync(join(f.home, '.agent-board')), false, 'no native ledger, authority or manifest')
+  const guard = join(f.home, 'no-native-hosts.mjs')
+  const attempted = join(f.home, 'forbidden-child-attempts')
+  writeFileSync(guard, `import cp from 'node:child_process'\nimport fs from 'node:fs'\nimport { syncBuiltinESMExports } from 'node:module'\nconst blocked = () => { fs.writeFileSync(${JSON.stringify(attempted)}, 'blocked'); throw Error('NATIVE_HOST_INVOCATION_FORBIDDEN') }\nfor (const key of ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork']) cp[key] = blocked\nsyncBuiltinESMExports()\n`)
+  const env = {}
+  for (const key of ['SystemRoot', 'WINDIR', 'OS', 'PROCESSOR_ARCHITECTURE']) if (process.env[key] !== undefined) env[key] = process.env[key]
+  for (const [key, dir] of Object.entries({ HOME: f.home, USERPROFILE: f.home, APPDATA: join(f.home, 'appdata'), LOCALAPPDATA: join(f.home, 'local-appdata'), XDG_CONFIG_HOME: join(f.home, 'config'), XDG_DATA_HOME: join(f.home, 'data'), XDG_CACHE_HOME: join(f.home, 'cache'), XDG_STATE_HOME: join(f.home, 'state'), CLAUDE_CONFIG_DIR: join(f.home, '.claude'), TEMP: join(f.home, 'temp'), TMP: join(f.home, 'temp'), PATH: join(f.home, 'empty-bin') })) {
+    mkdirSync(dir, { recursive: true })
+    env[key] = dir
+  }
+  env.CLAUDE_PROGRESS_FILE = f.progress
+  const dirs = { codex: join(f.home, '.codex'), grok: join(f.home, '.grok'), hermes: join(f.home, '.hermes'), openclaw: join(f.home, '.openclaw'), opencode: join(f.home, '.config', 'opencode') }
+  const seed = hasPriorOwnership ? { owned: { [board]: createHash('sha256').update(before).digest('hex') } } : undefined
+  const request = f.request('connect', { dirs, ...(seed ? { seed } : {}) })
+  const result = spawnSync(process.execPath, ['--import', pathToFileURL(guard).href, f.script, '--legacy-connect-request', JSON.stringify(request)], { cwd: f.home, env, encoding: 'utf8', windowsHide: true, timeout: 10000 })
+  assert.equal(result.status, 0, result.stderr + result.stdout)
+  assert.equal(existsSync(attempted), false, 'no native host discovery or invocation')
+  assert.equal(JSON.parse(readFileSync(f.config)).private, f.foreign.private)
+  assert.ok(readFileSync(f.config, 'utf8').includes('foreign-command'))
+  return { board, before, after: readFileSync(board, 'utf8'), expected: header + bundle, output: JSON.parse(result.stdout) }
+}
+
+for (const [version, commit] of [['0.23.3', '5610ce6a051ba772ee074ac50bdcbc22c6195f6f'], ['0.23.2', 'b0bb351462158b80ae29161c37054f4549901ac0']]) test(`bundled tagged board adoption: exact ${version} without prior ownership updates and becomes owned`, () => fixture(async f => {
+  const result = adoption(f, taggedBoard(version, commit))
+  assert.equal(result.output.result.problems.some(problem => problem.key === `preserved:${result.board}`), false, 'a byte-exact published board is recognized without prior ownership')
+  assert.notEqual(result.before, result.expected)
+  assert.equal(result.after, result.expected)
+  assert.equal(result.output.state.owned[result.board], createHash('sha256').update(result.after).digest('hex'))
+}))
+
+test('bundled tagged board adoption: a modified published board stays preserved and unowned', () => fixture(async f => {
+  const modified = taggedBoard('0.23.3', '5610ce6a051ba772ee074ac50bdcbc22c6195f6f') + '\n// Synthetic personal modification\n'
+  const result = adoption(f, modified)
+  assert.equal(result.after, result.before)
+  assert.equal(result.output.state.owned[result.board], undefined)
+  assert.ok(result.output.result.problems.some(problem => problem.key === `preserved:${result.board}`))
+}))
+
+test('bundled tagged board adoption: exact seeded prior ownership still updates the published board', () => fixture(async f => {
+  const result = adoption(f, taggedBoard('0.23.3', '5610ce6a051ba772ee074ac50bdcbc22c6195f6f'), true)
+  assert.equal(result.after, result.expected)
+  assert.equal(result.output.state.owned[result.board], createHash('sha256').update(result.after).digest('hex'))
+  assert.ok(!result.output.result.problems.some(problem => problem.key === `preserved:${result.board}`))
+}))
 
 const waitFor = async file => {
   const until = Date.now() + 8000
