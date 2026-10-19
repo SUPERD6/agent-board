@@ -63,3 +63,11 @@ Codex hook trust/readiness (#102) remains separate: managed instruction cleanup
 still follows configured hook output in `connectLegacy`. Setup status does not
 prove native hook approval or execution. Root retains integration, CI, release and
 #93/#94 closure decisions.
+
+PR137's first exact-head run passed both plugin jobs and both Windows Node jobs,
+but Linux Node22/24 failed the generated-worker error assertion. The uncaught
+data-URL module stack was unbounded; a new large-module fixture reproduces that
+output problem locally. The launcher now catches execution failures and prints a
+short native code before ownership-checked cleanup. The complete affected
+worker/transaction batch passes24/24; Linux confirmation remains with the next
+exact-head CI run. No buffer limit, timeout or assertion was relaxed.
