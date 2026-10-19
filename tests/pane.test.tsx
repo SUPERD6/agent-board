@@ -175,6 +175,13 @@ let workerStageSequence = 0
 
 // Everything a session's engine answers beneath the plugin, with files kept in memory.
 const engineBeneath = (on: On, world: World): MockClock => {
+  const files = world.files
+  Object.defineProperty(files, 'set', { configurable: true, writable: true, value: (path: string, text: string) => {
+    // Reinstalling this fixture must not wrap an earlier instance override.
+    Map.prototype.set.call(files, path, text)
+    if (path !== FILE) (world.mtimes ??= {})[path] = Math.max(world.mtimes?.[path] ?? world.mtime, world.mtime) + 1
+    return files
+  } })
   world.setupDone = new Promise<void>(done => { world.finishSetup = done })
   // Exercise the hourly archive without thousands of unrelated polls consuming
   // the mock hook's budget. Other tests retain every timer; the archive keeps its
@@ -335,12 +342,14 @@ const engineBeneath = (on: On, world: World): MockClock => {
   })
   on('fs.stat', ($, e) => {
     world.stats?.push(e.path)
-    const text = world.files.get(posix(e.path))
-    const isDir = [...world.files.keys()].some(path => path.startsWith(`${posix(e.path)}/`))
-    if (text === undefined && isDir) return { value: { kind: 'dir' as const, size: 0, mtimeMs: world.mtime, isLink: false } }
+    const path = posix(e.path)
+    const text = world.files.get(path)
+    const isDir = [...world.files.keys()].some(file => file.startsWith(`${path}/`))
+    const mtimeMs = path === FILE ? world.mtime : world.mtimes?.[path] ?? world.mtime
+    if (text === undefined && isDir) return { value: { kind: 'dir' as const, size: 0, mtimeMs, isLink: false } }
     return text === undefined
       ? { deny: 'ENOENT' }
-      : { value: { kind: 'file' as const, size: text.length, mtimeMs: world.mtime, isLink: false } }
+      : { value: { kind: 'file' as const, size: text.length, mtimeMs, isLink: false } }
   })
   on('fs.exists', ($, e) => ({ value: world.dirs?.has(posix(e.path)) || world.files.has(posix(e.path)) || [...world.files.keys()].some(path => path.startsWith(`${posix(e.path)}/`)) }))
   on('fs.list', ($, e) => {
@@ -376,7 +385,7 @@ const engineBeneath = (on: On, world: World): MockClock => {
       await hold.release
     }
     world.files.set(path, e.text)
-    world.mtime += 1
+    if (path === FILE) world.mtime += 1
     if (path.includes('-journal-')) world.afterJournalWrite?.()
     // Another session's write, made from what it read before this one, lands right after.
     const stale = world.afterWrite
@@ -400,6 +409,49 @@ const engineBeneath = (on: On, world: World): MockClock => {
 
   return clock
 }
+
+test('mock file timestamps isolate sidecar writes and preserve explicit progress renewals', async ($, on) => {
+  const world: World = { files: new Map([[FILE, '# Progress\n']]), mtime: 10, hasTasks: true }
+  expect(Map.prototype.get.call(world.files, FILE)).toBe('# Progress\n')
+  const handlers = new Map<string, Function>()
+  const capture = ((...args: Parameters<On>) => {
+    if (['fs.stat', 'fs.write', 'fs.list'].includes(String(args[0]))) handlers.set(String(args[0]), args.at(-1) as Function)
+    return Reflect.apply(on, undefined, args)
+  }) as On
+  engineBeneath(capture, world)
+  // Invoke the exact registered in-memory FS handlers; no session or native FS runs.
+  const call = async (name: string, event: unknown): Promise<{ value: unknown }> => Reflect.apply(handlers.get(name)!, undefined, [$, event, () => undefined])
+  const stamp = async (path: string): Promise<number> => ((await call('fs.stat', { path })).value as { mtimeMs: number }).mtimeMs
+  const dashboard = FILE.replace('.md', '.html')
+  const metadata = FILE.replace('.md', '-questions.json')
+  const before = await stamp(FILE)
+  await call('fs.write', { path: dashboard, text: '<p>Board</p>' })
+  expect(await stamp(FILE)).toBe(before)
+  const dashboardAt = await stamp(dashboard)
+  expect(dashboardAt).toBeGreaterThan(before)
+  await call('fs.write', { path: metadata, text: '{}' })
+  expect(await stamp(FILE)).toBe(before)
+  expect(await stamp(dashboard)).toBe(dashboardAt)
+  expect(await stamp(metadata)).toBeGreaterThan(before)
+  const listed = (await call('fs.list', { path: '/home/me/.claude' })).value as Array<{ name: string; mtimeMs: number }>
+  expect(listed.find(file => file.name === 'progress.html')?.mtimeMs).toBe(dashboardAt)
+  await call('fs.write', { path: FILE, text: '# Updated progress\n' })
+  expect(await stamp(FILE)).toBe(before + 1)
+  expect(await stamp(dashboard)).toBe(dashboardAt)
+  world.mtime += 1
+  expect(await stamp(FILE)).toBe(before + 2)
+  await call('fs.write', { path: dashboard, text: '<p>Updated board</p>' })
+  expect(await stamp(FILE)).toBe(before + 2)
+  expect(await stamp(dashboard)).toBeGreaterThan(dashboardAt)
+  const metadataAt = await stamp(metadata)
+  const progressAt = await stamp(FILE)
+  expect(world.files.set(metadata, '[]')).toBe(world.files)
+  expect(Map.prototype.get.call(world.files, metadata)).toBe('[]')
+  expect(await stamp(metadata)).toBeGreaterThan(metadataAt)
+  expect(await stamp(FILE)).toBe(progressAt)
+  world.mtime += 1
+  expect(await stamp(FILE)).toBe(progressAt + 1)
+})
 
 const start = async ($: Engine, text: string): Promise<void> => {
   await $.session.start({ cwd: '/work/persona_framework', surface: 'terminal', isInteractive: true })
@@ -4508,7 +4560,8 @@ test('a file that cannot be read is named as unreadable, not as unwritable', { o
   for (const s of Object.values(STRINGS)) {
     await $.command.run({ ...TIDY, args: `lang ${s.lang}` })
     for (const file of [board, reporter, command, config, old]) {
-      world.files = new Map([['/home/me/.gemini/settings.json', '{}'], ['/home/me/.grok/config.toml', ''], [file, 'unreadable bytes']])
+      world.files.clear()
+      for (const [path, text] of [['/home/me/.gemini/settings.json', '{}'], ['/home/me/.grok/config.toml', ''], [file, 'unreadable bytes']]) world.files.set(path!, text!)
       world.unreadable = new Set([file])
       const connected = await $.command.run({ ...TIDY, args: 'connect' })
       const expected = file === config ? s.connectReadFailed('Cursor', file) : file === old ? s.connectReadFailed('Grok Build', file) : s.connectBoardReadFailed(file)
@@ -4523,7 +4576,8 @@ test('a file that cannot be read is named as unreadable, not as unwritable', { o
       expect(status.text.split(expected)).toHaveLength(2)
     }
     world.unreadable = new Set()
-    world.files = new Map([[config, 'invalid json']])
+    world.files.clear()
+    world.files.set(config, 'invalid json')
     const connected = await $.command.run({ ...TIDY, args: 'connect' })
     expect(connected.text.split(s.connectSkipped('Cursor', config))).toHaveLength(2)
     expect(connected.text).toContain(s.setupHookUnreadable)
