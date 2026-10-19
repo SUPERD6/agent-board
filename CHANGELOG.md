@@ -1,5 +1,11 @@
 # Changelog
 
+Agent-assisted Codex hook trust previews six owned declarations and, after explicit user
+consent, merges their exact hashes through Codex's config API. It preserves unrelated
+settings and reads trust back; native host execution remains a separate acceptance step
+(tests: `Codex trust requires an owned installation and an explicit host binary`,
+`the installed Codex host grants only six reviewed hashes and preserves unrelated config`).
+
 ## Unreleased
 
 - **Wait for the test agent to start before counting it.** The existing newer-serve
