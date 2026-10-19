@@ -192,7 +192,7 @@ export const withoutSection = (text: string): string => {
 // Where each agent keeps what `/progress connect` changes, and how. `dir` says the agent is
 // installed (its folder under the home directory); `edit` turns the file's text into the
 // new text, or null when the file cannot be read as JSON and is left alone.
-export type ConnectContext = { home: string; sep: string; isWindows: boolean; script: string; inbox: string; codexHome: string; grokHome: string; hermesHome: string; openclawHome: string; board?: string; s?: Strings }
+export type ConnectContext = { home: string; sep: string; isWindows: boolean; script: string; inbox: string; codexHome: string; grokHome: string; hermesHome: string; openclawHome: string; opencodeHome?: string; board?: string; s?: Strings }
 
 export type AgentHook = {
   agent: string
@@ -348,6 +348,7 @@ export const withHermesHooks = (text: string, events: Array<[string, string]>): 
 }
 
 export const agentHooks = (ctx: ConnectContext): AgentHook[] => {
+  const opencodeHome = ctx.opencodeHome ?? join(ctx, '.config', 'opencode')
   const turn = (agent: string): string => reportCommand(ctx.script, agent, 'turn', ctx.isWindows)
   const end = (agent: string): string => reportCommand(ctx.script, agent, 'end', ctx.isWindows)
 
@@ -458,9 +459,9 @@ export const agentHooks = (ctx: ConnectContext): AgentHook[] => {
     {
       agent: 'opencode',
       label: 'OpenCode',
-      dir: join(ctx, '.config', 'opencode'),
-      file: join(ctx, '.config', 'opencode', 'plugin', 'agent-board.js'),
-      old: join(ctx, '.config', 'opencode', 'plugin', 'progress-pane.js'),
+      dir: opencodeHome,
+      file: [opencodeHome, 'plugin', 'agent-board.js'].join(ctx.sep),
+      old: [opencodeHome, 'plugin', 'progress-pane.js'].join(ctx.sep),
       generated: true,
       edit: generatedFile(opencodePlugin(ctx)),
     },
@@ -767,8 +768,8 @@ export const setupProblemText = (problem: SetupProblem, s: Strings = ZH_TW): str
     case 'connectTooOld': return s[problem.message](...problem.args)
     case 'connectReadFailed':
     case 'connectSkipped':
-    case 'connectFailed': return s[problem.message](...problem.args)
-    default: return s[problem.message](...problem.args)
+    case 'connectFailed': return s[problem.message](problem.args[0], problem.args[1])
+    default: return s[problem.message](problem.args[0])
   }
 }
 
@@ -845,6 +846,7 @@ const SKILL = 'agent-board'
 
 export const boardCommands = (ctx: ConnectContext): AgentHook[] => {
   if (ctx.board === undefined) return []
+  const opencodeHome = ctx.opencodeHome ?? join(ctx, '.config', 'opencode')
   const run = `node "${ctx.board}"`
   // JSON is YAML too, so a description with a colon in it stays one value.
   const contents = (s: Strings) => {
@@ -871,13 +873,13 @@ export const boardCommands = (ctx: ConnectContext): AgentHook[] => {
       agent: 'skills',
       label: '',
       dir: ctx.codexHome,
-      dirs: [ctx.codexHome, join(ctx, '.cursor'), ...grokSigns(ctx), ctx.openclawHome, join(ctx, '.gemini'), join(ctx, '.config', 'opencode'), join(ctx, '.config', 'muse')],
+      dirs: [ctx.codexHome, join(ctx, '.cursor'), ...grokSigns(ctx), ctx.openclawHome, join(ctx, '.gemini'), opencodeHome, join(ctx, '.config', 'muse')],
       file: join(ctx, '.agents', 'skills', SKILL, 'SKILL.md'),
       generated: true,
       edit: file('skill'),
     },
     { agent: 'gemini', label: '', dir: join(ctx, '.gemini'), file: join(ctx, '.gemini', 'commands', 'board.toml'), generated: true, edit: file('gemini') },
-    { agent: 'opencode', label: '', dir: join(ctx, '.config', 'opencode'), file: join(ctx, '.config', 'opencode', 'commands', 'board.md'), generated: true, edit: file('opencode') },
+    { agent: 'opencode', label: '', dir: opencodeHome, file: [opencodeHome, 'commands', 'board.md'].join(ctx.sep), generated: true, edit: file('opencode') },
     { agent: 'hermes', label: '', dir: ctx.hermesHome, file: [ctx.hermesHome, 'skills', SKILL, 'SKILL.md'].join(ctx.sep), generated: true, edit: file('hermes') },
     {
       // Antigravity reads its skills here; it has no turn-end hook of its own, so it only shows
