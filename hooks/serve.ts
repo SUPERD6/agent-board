@@ -402,7 +402,7 @@ export const requestProblem = (request: PageRequest, hosts: readonly string[], t
 
 // The words the page's script fills in itself, each with its blanks as \u0001 and \u0002.
 const PAGE_WORDS = [
-  'messagesTitle', 'messagesHint', 'messagesDisabled', 'messagesNone', 'messagesChoose',
+  'messagesTitle', 'messagesHint', 'messagesDisabled', 'messagesNone', 'messagesChoose', 'messagesSessionScope',
   'messagesPlaceholder', 'messagesSend', 'messagesQueued', 'messagesUncertain',
   'messagesAccepted', 'messagesAcknowledged', 'messagesRejected', 'messagesFailed', 'messagesConflict', 'messagesTimeout',
   'countWaiting',
@@ -809,7 +809,7 @@ const PAGE_SCRIPT = String.raw`
     placeholder.value = '';
     target.appendChild(placeholder);
     messageTargets.forEach(function (one) {
-      var option = el('option', '', one.agent + ' · ' + one.surface + ' · ' + one.session + ' · ' + one.turn);
+      var option = el('option', '', one.agent + ' · ' + one.surface + ' · ' + one.session + ' · ' + (one.scope === 'session' ? w('messagesSessionScope') : one.turn));
       option.value = one.id;
       target.appendChild(option);
     });

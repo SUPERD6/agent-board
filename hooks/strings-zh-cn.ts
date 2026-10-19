@@ -9,6 +9,7 @@ export const ZH_CN: Strings = {
   messagesDisabled: '此看板尚未启用跨 agent 传信。',
   messagesNone: '没有在线的收信 session',
   messagesChoose: '选择目标 session',
+  messagesSessionScope: '空闲 session，可接收新回合',
   messagesPlaceholder: '传给此 session 的消息',
   messagesSend: '发送消息',
   messagesQueued: '队列中，尚未送达',

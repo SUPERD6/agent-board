@@ -8,6 +8,7 @@ import { BOARD_SCRIPT } from '../hooks/board-script.ts'
 import { claimMessages, disconnectMessages, messageReceipt, queueMessage } from '../hooks/messaging.ts'
 import { boardClient } from '../scripts/message-client.mjs'
 import { connectCodexProxy } from '../scripts/codex-message-connector.mjs'
+import { attachCodexSession } from '../scripts/codex-session-connector.mjs'
 
 const pause = ms => new Promise(done => setTimeout(done, ms))
 const target = { id: 'binding1', agent: 'codex', session: 'session1', turn: 'turn1', surface: 'fixture', expires: 2000 }
@@ -190,4 +191,52 @@ setTimeout(()=>emit({method:'item/completed',params:{threadId:${JSON.stringify(t
     await pause(2200)
     assert.equal(readFileSync(log, 'utf8').split('"method":"turn/steer"').length - 1, 1)
   } finally { await connector.close() }
+}))
+
+test('an owned idle Codex session accepts only its actual new turn ACK and deduplicates self delivery', async () => fixture(async board => {
+  const thread = '11111111-2222-4333-8444-555555555555'
+  let current = { thread, status: 'idle', turn: null }, listener, starts = 0
+  const transport = {
+    listen: one => { listener = one; return () => { listener = null } },
+    request: async (method, params) => {
+      if (method === 'thread/loaded/list') return { data: [thread], nextCursor: null }
+      assert.equal(method, 'turn/start'); assert.equal(params.threadId, thread)
+      assert.equal(params.input[0].text, input.text); starts += 1
+      current = { thread, status: 'active', turn: 'actual-turn' }
+      const emit = (targetThread, turnId, text) => listener({ method: 'item/completed', params: { threadId: targetThread, turnId, item: { type: 'agentMessage', text } } })
+      emit('wrong-thread', 'actual-turn', 'ACK AB-TEST-001 WRONG_THREAD')
+      emit(thread, 'old-turn', 'ACK AB-TEST-001 WRONG_TURN')
+      listener({ id: 999, method: 'item/commandExecution/requestApproval', params: {} })
+      // A native completion may arrive before the turn/start response.
+      emit(thread, 'actual-turn', 'ACK AB-TEST-001')
+      current = { thread, status: 'idle', turn: null }
+      return { turn: { id: 'actual-turn' } }
+    },
+  }
+  const receiver = await attachCodexSession({ boardUrl: board.address, transport, thread, state: () => current, verifyOwner: one => one === transport, surface: 'Mock owned session' })
+  try {
+    const sent = { ...input, target: receiver.id, turn: 'session' }
+    assert.equal((await board.call('/api/board')).body.messaging.connections[0].scope, 'session')
+    await receiver.send(sent)
+    const receipt = await waitFor(async () => { const one = (await board.call('/api/board')).body.messaging.messages[0]; return one?.status === 'acknowledged' && one })
+    assert.equal(receipt.reply, 'ACK AB-TEST-001'); assert.equal(receipt.from, 'codex:' + thread)
+    await receiver.send(sent)
+    await assert.rejects(receiver.send({ ...sent, text: 'Different' }), /ID_CONFLICT/)
+    await pause(2200); assert.equal(starts, 1)
+  } finally { await receiver.close() }
+  assert.equal(listener, null)
+}))
+
+test('an owned Codex session refuses an unverified owner, a busy session and a forged session scope', async () => fixture(async board => {
+  const thread = '11111111-2222-4333-8444-555555555555'
+  let isListening = false
+  const transport = { request: async () => ({ data: [thread] }), listen: () => { isListening = true; return () => { isListening = false } } }
+  const options = { boardUrl: board.address, transport, thread, state: () => ({ thread, status: 'active', turn: 'busy-turn' }), verifyOwner: () => true }
+  await assert.rejects(attachCodexSession({ ...options, verifyOwner: () => false }), /VERIFIED_OWNER_REQUIRED/)
+  assert.equal(isListening, false)
+  await assert.rejects(attachCodexSession(options), /HOST_NOT_CONNECTED/)
+  assert.equal(isListening, false)
+  const result = await board.call('/api/messages/register', { agent: 'codex', session: thread, surface: 'Mock', scope: 'session', turn: 'fabricated-turn' })
+  assert.equal(result.body.error, 'INVALID_CONNECTION_SCOPE')
+  assert.equal((await board.call('/api/board')).body.messaging.connections.length, 0)
 }))

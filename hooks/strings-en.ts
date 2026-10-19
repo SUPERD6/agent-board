@@ -9,6 +9,7 @@ export const EN: Strings = {
   messagesDisabled: 'Cross-agent messaging is not enabled for this board.',
   messagesNone: 'No receiving sessions are online',
   messagesChoose: 'Choose a target session',
+  messagesSessionScope: 'Idle session; receives a new turn',
   messagesPlaceholder: 'Message for this session',
   messagesSend: 'Send message',
   messagesQueued: 'Queued; not delivered',

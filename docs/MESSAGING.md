@@ -1,7 +1,8 @@
 # Connected-session messaging
 
 The interactive web board can route a message to a receiving adapter for an exact agent,
-session and turn. A progress card alone never enables sending. The adapter must verify its
+session and turn, or an explicitly identified idle session owned by its host. A progress
+card alone never enables sending. The adapter must verify its
 existing host connection, register a short-lived lease, and keep it alive. Disconnected
 adapters disappear from the target picker within 15 seconds. Ordinary messages cannot
 approve tools, grant hook trust or merge a PR.
@@ -99,3 +100,49 @@ adapter actually registers.
 Tests: `node --test tests/messaging.test.mjs`. They cover synthetic routing, idempotence,
 conflicts, offline/expired bindings, stale turns, crash uncertainty, fake approvals, and a
 mock Codex proxy. A real `AB-TEST-001` ACK must be verified separately with consent.
+
+## Codex exclusive-owner adapter
+
+An application that already owns a loaded Codex session and receives its native
+notifications can import `attachCodexSession` from `scripts/codex-session-connector.mjs`:
+
+```js
+const receiver = await attachCodexSession({
+  boardUrl: privateBoardUrl, transport, thread: actualThreadId,
+  state: () => ({ thread: actualThreadId, status: owner.status, turn: owner.activeTurn }),
+  verifyOwner: candidate => candidate === transport && owner.isExclusiveAndConnected(),
+  surface: 'Name of the actual hosting application',
+})
+```
+
+`transport.request(method, params)` is the owner's bounded native RPC transport;
+`transport.listen(callback)` subscribes to its native notifications and returns an
+unsubscribe function. The host must serialize ownership of this session: `turn/start`
+has no expected-turn fence, so a connection to a shared server alone is insufficient.
+Do not claim exclusive ownership of someone else's desktop chat or a concurrently
+controlled CLI thread. Attaching creates no server, thread or model call.
+
+This adapter advertises `scope: session`, with the literal binding `turn: session`,
+which is explicitly labelled in the target picker. That literal is not an active turn
+id. A send checks the same loaded thread is idle, starts its new turn, and accepts only
+an ACK from the native response's actual turn id. It retains the ACK line only. A busy,
+unverified or disconnected owner is not registered; changes during delivery are
+conservative uncertainty without replay. The existing-proxy adapter continues to use
+`scope: turn` and `expectedTurnId` for an already active turn.
+
+### Separate acceptance by surface
+
+| Surface | Current evidence | Still required |
+| --- | --- | --- |
+| Disposable Codex app-server, exclusively owned | A real `AB-TEST-001` ACK; one native turn; exact retry caused no second turn; changed contents returned `ID_CONFLICT`; no tool action observed | Product installation of a receiver into each supported host |
+| Codex CLI | Adapter API and mock proxy tests | Real live CLI owner/socket, native ACK and actual TTY acceptance |
+| Codex desktop App | Interactive web controls tested with a labelled synthetic receiver | A supported live connection to that desktop chat; its own native ACK |
+| dot | Generic adapter API only | A supported dot owner connector and actual dot ACK |
+| Claude Code CLI | Existing plugin progress and prompt submission design | Native receiver integration and actual bidirectional ACK |
+| Claude desktop / other AI UIs | No equivalent transport established by this change | Product-specific connection and acceptance |
+
+The real self-test used Codex `0.163.0-alpha.10.2`, a newly created ephemeral session,
+a read-only sandbox and synthetic input, after approval of its exact server/thread
+binding. It did not use or inspect an existing private conversation. Both test servers
+were stopped afterward. This proves the exclusive-owner app-server layer; it is not a
+CLI, desktop or dot acceptance result, nor proof that all agents install a receiver.

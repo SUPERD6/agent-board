@@ -47,6 +47,7 @@ export const ZH_TW = {
   messagesDisabled: '此看板尚未啟用跨 agent 傳訊。',
   messagesNone: '沒有在線的收訊 session',
   messagesChoose: '選擇目標 session',
+  messagesSessionScope: '閒置 session，可接收新回合',
   messagesPlaceholder: '傳給此 session 的訊息',
   messagesSend: '傳送訊息',
   messagesQueued: '佇列中，尚未送達',

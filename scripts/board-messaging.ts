@@ -65,11 +65,13 @@ export const createMessaging = (directory: string) => {
     act: (action: string, body: Record<string, unknown>, now: number) => {
       expire(now)
       if (action === 'register') {
-        messageFields(body, ['agent', 'session', 'surface', 'turn'])
+        messageFields(body, ['agent', 'session', 'surface', 'turn', 'scope'])
         const agent = messageId(body.agent), session = messageId(body.session), turn = messageId(body.turn), surface = messageText(body.surface, 100)
+        const scope = body.scope ?? 'turn'
+        if (scope !== 'turn' && scope !== 'session' || scope === 'session' && turn !== 'session') throw new Error('INVALID_CONNECTION_SCOPE')
         if ([...connections.values()].some(one => one.agent === agent && one.session === session)) throw new Error('SESSION_ALREADY_CONNECTED')
         if (connections.size >= 100) throw new Error('CONNECTION_LIMIT')
-        const one: Live = { id: randomBytes(16).toString('hex'), secret: randomBytes(24).toString('base64url'), agent, session, surface, turn, expires: now + LEASE_MS }
+        const one: Live = { id: randomBytes(16).toString('hex'), secret: randomBytes(24).toString('base64url'), agent, session, surface, turn, scope, expires: now + LEASE_MS }
         connections.set(one.id, one)
         return { ...one, leaseMs: LEASE_MS }
       }

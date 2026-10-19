@@ -1,5 +1,5 @@
 // A connected session is a live lease from a host adapter, never a name in progress.md.
-export type Connection = { id: string; agent: string; session: string; surface: string; turn: string; expires: number }
+export type Connection = { id: string; agent: string; session: string; surface: string; turn: string; scope?: 'turn' | 'session'; expires: number }
 export type Message = {
   id: string
   target: string

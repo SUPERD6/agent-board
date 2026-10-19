@@ -15,9 +15,9 @@ export const boardClient = address => {
   }
   return {
     send: body => call('send', body),
-    attach: async ({ agent, session, surface, turn, verify, deliver, onError = () => undefined }) => {
+    attach: async ({ agent, session, surface, turn, scope = 'turn', verify, deliver, onError = () => undefined }) => {
       if (typeof verify !== 'function' || typeof deliver !== 'function' || !await verify()) throw new Error('HOST_NOT_CONNECTED')
-      const registered = await call('register', { agent, session, surface, turn })
+      const registered = await call('register', { agent, session, surface, turn, scope })
       const credentials = { connection: registered.id, secret: registered.secret }
       let isClosed = false, isPolling = false
       const close = async () => {
