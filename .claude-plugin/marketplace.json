@@ -8,7 +8,7 @@
   "plugins": [
     {
       "name": "agent-board",
-      "description": "A local interactive board for coding agents: shared progress, questions and live-session replies, with an optional Claude Code pane.",
+      "description": "A local board for coding agents: shared progress, persistent questions and live replies. Optional Claude Code pane.",
       "source": "./",
       "category": "productivity",
       "strict": true
