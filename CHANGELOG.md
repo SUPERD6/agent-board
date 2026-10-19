@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.23.2 — 2026-10-19
+
 - **Keep unprocessed reports visible beside prompt metadata.** Read-only previews cannot establish that a prompt was accepted or answered a question. Skip prompts without hiding pending reports, including future/overflow timestamps, missing source clocks and sessions without a board binding. Prompt prose stays excluded. Tests: `pending previews keep reports and questions after future prompts` (also unsafe-order/unknown-source/unbound-session), `--chat keeps unprocessed reports and questions after future prompt metadata` (same variants).
 
 - A known legacy session without a valid stored source clock keeps its questions; heartbeat time cannot establish that a prompt is newer. Tests: `a known agent without a valid stored source clock keeps its questions despite a later heartbeat`, `a known session with no stored source clock keeps its visible question on prompt intake`.
