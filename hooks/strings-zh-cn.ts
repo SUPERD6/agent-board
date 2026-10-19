@@ -312,6 +312,7 @@ export const ZH_CN: Strings = {
   sectionQuestionReminders: '较早的未答问题',
   sectionOlderQuestions: '更早、尚未回答的问题',
   questionAgingHint: '仍未回答；展开可查看。查看不会重设时间，也不代表批准或完成。',
+  questionReviewOnly: '此处仅供查看保留的问题，不会变更原始资料或记录「已回复」。',
   questionAgeUnknown: '提问时间未知',
   boardKeyOlder: 'l 查看较早问题',
   questionRetentionFailed: '无法安全保留完整未答问题，因此未归档。请检查问题记录存储后重试。',

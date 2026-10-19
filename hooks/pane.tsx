@@ -318,9 +318,9 @@ export const drawPane = (ui: PaneUi, model: PaneModel, actions: PaneActions): Re
       {item.note !== '' && <Text wrap="wrap">{item.note}</Text>}
       {item.note === '' && item.context !== '' && muted(s.contextLine(item.context))}
       {item.when !== '' && muted(item.when)}
-      {item.where !== 'manual' && muted(s.archiveLive)}
+      {item.canHide === false ? muted(s.questionReviewOnly) : item.where !== 'manual' && muted(s.archiveLive)}
       {askActions(item)}
-      {item.hideKey !== '' && (
+      {item.hideKey !== '' && item.canHide !== false && (
         <Box marginTop={1}>
           <Button key={`${item.key}::hide`} onPress={() => actions.hide(item)}>
             {s.answeredHide}

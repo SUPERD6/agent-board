@@ -224,7 +224,7 @@ export const serveModel = (view: View, pending: readonly PendingTurn[], s: Strin
         command: ask.command,
         link: ask.link,
         canTick: ask.step !== null,
-        canHide: ask.hideKey !== '',
+        canHide: ask.hideKey !== '' && ask.canHide !== false,
         send,
         session: connection?.session ?? ask.target?.session ?? '',
         fp: fingerprint(item, items),
@@ -358,7 +358,7 @@ const actionOf = (items: readonly BoardItem[], request: ServeRequest, s: Strings
     return ref === null ? { type: 'refuse', note: s.boardTickGone } : { type: 'tick', ref }
   }
   // Marked answered sends nothing: only the hidden list is written.
-  if (request.type === 'hide') return item.type === 'ask' && item.ask.hideKey !== '' ? { type: 'hide', key: item.ask.hideKey, text: item.ask.text } : { type: 'refuse', note: '' }
+  if (request.type === 'hide') return item.type === 'ask' && item.ask.hideKey !== '' && item.ask.canHide !== false ? { type: 'hide', key: item.ask.hideKey, text: item.ask.text } : { type: 'refuse', note: '' }
   if (request.type === 'archive') {
     if (item.type === 'row' && item.row.archive !== null) return { type: 'archive', ref: item.row.archive, title: item.row.title }
     const isLive = item.type === 'row' && (item.row.auto === 'working' || item.row.auto === 'waiting') || item.type === 'ask' && item.ask.where !== 'manual'
@@ -472,6 +472,7 @@ const PAGE_WORDS = [
   'sectionQuestionReminders',
   'sectionOlderQuestions',
   'questionAgingHint',
+  'questionReviewOnly',
   'nothingForYou',
   'empty',
   'boardInbox',
@@ -834,7 +835,7 @@ const PAGE_SCRIPT = String.raw`
       var retained = el('details', 'card');
       retained.open = opened[pair[0] + ':'] === true;
       retained.addEventListener('toggle', function () { opened[pair[0] + ':'] = retained.open; });
-      add(retained, add(el('summary'), el('span', 'quiet', w(pair[1]) + ' (' + questions.length + ')')), el('p', 'quiet', w('questionAgingHint')));
+      add(retained, add(el('summary'), el('span', 'quiet', w(pair[1]) + ' (' + questions.length + ')')), el('p', 'quiet', w('questionAgingHint')), el('p', 'quiet', w('questionReviewOnly')));
       questions.forEach(function (one) {
         add(retained, add(el('div'), el('div', 'where', [one.project, one.agent, one.task, one.when].filter(Boolean).join(' · ')), el('div', 'q', one.text), el('div', '', one.note), el('div', 'quiet', one.context)));
       });

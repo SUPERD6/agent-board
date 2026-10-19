@@ -2094,6 +2094,25 @@ test('explicit Claude ask events renew the hidden question immediately while ano
   await ui.unmount()
 })
 
+for (const lang of ['en', 'zh-TW', 'zh-CN'] as const) for (const days of [4, 8]) test(`aged pane questions hide and restore their exact identity in ${lang} at ${days} days`, async ($, on) => {
+  const firstAt = Date.parse('2026-10-01T12:00:00Z')
+  const board = '## demo\n<!-- auto session=a1b2c3d4 agent=codex state=waiting updated=2026-10-01T12:00:00Z -->\n### Release\n- [?] Publish, OK?\n<!-- /auto session=a1b2c3d4 -->\n'
+  const ledger = observeQuestions(emptyQuestions(), parseProgress(board), null, [], firstAt, true, 'pane-aged:1').ledger
+  const world: World = { files: new Map([[FILE, board], [QUESTIONS, questionsJson(ledger)]]), mtime: 1, hasTasks: true, at: firstAt + days * 86400000, store: { lang, inboxDone: {}, opened: ['reminder', 'older', 'hidden'] } }
+  engineBeneath(on, world)
+  await $.session.start({ cwd: '/work/persona_framework', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop', props: PROPS })
+  await ui.press({ key: 'ask::demo::Release::0' })
+  expect(await ui.find({ type: 'Button', key: 'demo::Release::0::hide' })).toBeDefined()
+  await ui.press({ key: 'demo::Release::0::hide' })
+  expect(JSON.parse(world.files.get(ANSWERED) ?? '{}').answered).toEqual([ledger.records[0]!.id])
+  await ui.press({ key: 'demo::Release::0::unhide' })
+  expect(JSON.parse(world.files.get(ANSWERED) ?? '{}').answered).toEqual([])
+  expect(world.files.get(FILE)).toBe(board)
+  expect(JSON.parse(world.files.get(QUESTIONS) ?? '{}').records.find((row: { id: string }) => row.id === ledger.records[0]!.id)?.firstObserved).toBe(firstAt)
+  await ui.unmount()
+})
+
 test('a pane hide survives step movement and whitespace and a corrupt identity file refuses a new hide', async ($, on) => {
   const board = `## data-pipeline\n<!-- auto session=a1b2c3d4 state=waiting updated=2026-10-16T11:50:00Z -->\n### Ship\n- [x] Read\n- [?] Ship it, OK?\n<!-- /auto session=a1b2c3d4 -->\n`
   const world: World = { files: new Map([[FILE, board]]), mtime: 1, hasTasks: true, store: { opened: ['waiting', 'hidden'] } }

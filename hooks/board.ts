@@ -501,12 +501,12 @@ export const boardKey = (state: BoardState, key: string, items: readonly BoardIt
   if (isGone) return changed
   // A tick, an archive or a copy of what to say acts on the line as the last draw showed it: the
   // same key can now be another session's block, or the same step reworded.
-  if ((key === 'x' || key === 'a' || key === 'd' || key === 'c') && state.seen !== null && state.seen[item.key] !== fingerprint(item, items)) return changed
+  if ((key === 'x' || key === 'a' || key === 'd' || key === 'c' || key === 'h') && state.seen !== null && state.seen[item.key] !== fingerprint(item, items)) return changed
   if (key === 'enter' || key === ' ') return { state: { ...state, selected: at, key: item.key, open: state.open === item.key ? null : item.key, note: '' }, action: null }
   if (item.type === 'ask') {
     const { ask } = item
     if (key === 'x' && ask.step !== null) return { state, action: { type: 'tick', ref: ask.step } }
-    if (key === 'h' && ask.hideKey !== '') return { state, action: { type: 'hide', key: ask.hideKey, text: ask.text } }
+    if (key === 'h' && ask.hideKey !== '' && ask.canHide !== false) return { state, action: { type: 'hide', key: ask.hideKey, text: ask.text } }
     if (key === 'c' && (ask.command ?? ask.link) !== null) return { state, action: { type: 'copy', text: plain((ask.command ?? ask.link) as string) } }
     // Copy an actionable command on demand; a raw session id is not a clipboard action.
     const back = replyHint(ask, s).reopen
@@ -540,7 +540,7 @@ const keysFor = (item: BoardItem | undefined, s: Strings): string[] => {
         : replyHint(ask, s).reopen !== null
           ? [s.boardKeyCopyResume]
           : []),
-      ...(ask.hideKey !== '' ? [s.boardKeyHide] : []),
+      ...(ask.hideKey !== '' && ask.canHide !== false ? [s.boardKeyHide] : []),
     ]
   }
   if (item.type === 'row') {
@@ -583,7 +583,8 @@ export const boardScreen = (view: View, pending: readonly PendingTurn[], state: 
       lines.push(`${mark} ${line(fit(`${s.chip(s.ask[ask.kind])}${ask.text}`, o.width - 4))}`)
       lines.push(`    ${c('project', fit(where + (ask.task ? ` › ${ask.task}` : ''), o.width - 6))}`)
       if (isOpen || isHere) {
-        if (ask.where !== 'manual') lines.push(`    ${c('quiet', fit(s.archiveLive, o.width - 6))}`)
+        if (ask.canHide === false) lines.push(`    ${c('quiet', fit(s.questionReviewOnly, o.width - 6))}`)
+        else if (ask.where !== 'manual') lines.push(`    ${c('quiet', fit(s.archiveLive, o.width - 6))}`)
         if (ask.note) lines.push(`    ${fit(ask.note, o.width - 6)}`)
         answersOf(ask, s).forEach((answer, n) => lines.push(`    ${c('accent', ask.kind === 'confirm' ? (n === 0 ? 'y' : 'n') : String(n + 1))} ${fit(answer, o.width - 8)}`))
         if (ask.command !== null) lines.push(`    ${c('accent', fit(`$ ${ask.command}`, o.width - 6))}`)

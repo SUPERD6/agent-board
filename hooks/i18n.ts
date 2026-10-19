@@ -353,6 +353,7 @@ export const ZH_TW = {
   sectionQuestionReminders: '較早的未答問題',
   sectionOlderQuestions: '更早、尚未回答的問題',
   questionAgingHint: '仍未回答；展開可查看。查看不會重設時間，也不代表核准或完成。',
+  questionReviewOnly: '此處僅供查看保留的問題，不會變更原始資料或記錄「已回覆」。',
   questionAgeUnknown: '提問時間未知',
   boardKeyOlder: 'l 查看較早問題',
   questionRetentionFailed: '無法安全保留完整未答問題，因此未封存。請檢查問題紀錄儲存後重試。',

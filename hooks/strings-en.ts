@@ -313,6 +313,7 @@ export const EN: Strings = {
   sectionQuestionReminders: 'Earlier unanswered questions',
   sectionOlderQuestions: 'Older unanswered questions',
   questionAgingHint: 'Still unanswered; expand to review. Viewing does not reset age, approve or complete anything.',
+  questionReviewOnly: 'Review only here; retained source questions are not changed or marked answered.',
   questionAgeUnknown: 'Ask time unknown',
   boardKeyOlder: 'l review older questions',
   questionRetentionFailed: 'Not archived: the complete unanswered question could not be retained safely. Check question storage and retry.',

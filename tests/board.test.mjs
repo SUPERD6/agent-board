@@ -267,7 +267,7 @@ const chatRun = (args, { file = () => FILE, beside = {}, lang = 'en', isFolder =
     }
     const ran = spawnSync(process.execPath, [script, ...args], { env, encoding: 'utf8', timeout: 20000 })
     const modified = [...unchanged].filter(([name, old]) => !existsSync(join(dirs['.claude'], name)) || !readFileSync(join(dirs['.claude'], name)).equals(old.bytes) || statSync(join(dirs['.claude'], name)).mtimeMs !== old.mtime).map(([name]) => name)
-    return { ...ran, home, path, modified, wrote: readdirSync(dirs['.claude']).filter(name => !before.includes(name)), served: readdirSync(dirs.run) }
+    return { ...ran, home, path, modified, answered: existsSync(join(dirs['.claude'], 'progress-answered.json')) ? readFileSync(join(dirs['.claude'], 'progress-answered.json'), 'utf8') : null, wrote: readdirSync(dirs['.claude']).filter(name => !before.includes(name)), served: readdirSync(dirs.run) }
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -2092,6 +2092,33 @@ const idleRun = (args, beside = { 'progress-seen.json': idleRecord(), 'progress-
   file: () => IDLE_FILE,
   beside,
   change: script => `Date.now = () => ${IDLE_NOW}\n${script}`,
+})
+
+test('Mark read on reminder and older terminal shelves saves the exact identity in every language', () => {
+  const text = `## demo\n<!-- auto session=a1b2c3d4 agent=codex state=waiting updated=2026-10-17T12:00:00Z -->\n### Release\n- [?] Publish, OK?\n<!-- /auto session=a1b2c3d4 -->\n`
+  for (const lang of ['en', 'zh-TW', 'zh-CN']) for (const days of [4, 8]) {
+    const scope = JSON.stringify(['demo', 'codex', 'a1b2c3d4'])
+    const words = 'Publish, OK?', incarnation = 'aged-action:1'
+    const binding = createHash('sha256').update(JSON.stringify([scope, words, 1, 1, incarnation])).digest('hex')
+    const record = { id: `question:${binding}:1`, scope, words, occurrence: 1, copies: 1, isWaiting: true, isPresent: true, firstObserved: IDLE_NOW - days * 86400000, incarnation }
+    const fixture = {
+      file: () => text, lang,
+      beside: { 'progress-questions.json': JSON.stringify({ version: 1, next: 2, records: [record], legacy: {} }) },
+      change: script => `Date.now = () => ${IDLE_NOW}\n${script}`,
+    }
+    const ran = chatRun(['--keys', 'l h'], fixture)
+    assert.equal(ran.status, 0, ran.stderr)
+    assert.ok(ran.wrote.includes('progress-answered.json'), `${lang}/${days}: ${ran.stdout}`)
+    assert.deepEqual(JSON.parse(ran.answered).answered, [record.id])
+    assert.ok(!ran.modified.includes('progress.md'), ran.modified.join(','))
+    const count = lang === 'en' ? '1 answered, hidden' : lang === 'zh-TW' ? '已回覆、隱藏的 1 項' : '已回复、隐藏的 1 项'
+    assert.ok(ran.stdout.includes(count), ran.stdout)
+    const restored = chatRun(['--keys', 'l h u'], fixture)
+    assert.equal(restored.status, 0, restored.stderr)
+    assert.deepEqual(JSON.parse(restored.answered).answered, [])
+    assert.ok(restored.stdout.includes('Publish, OK?'), restored.stdout)
+    assert.ok(!restored.modified.includes('progress.md'), restored.modified.join(','))
+  }
 })
 
 test('the board script leaves idle tasks off the board, names how many, and lists them with --all', () => {

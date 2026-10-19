@@ -448,14 +448,14 @@ const setAnswered = async ($: EngineInterface, item: WaitingItem, isHidden: bool
   if (!(await pollQuestions($, snap.path || (await progressPath($)), snap.projects))) return false
   const ledger = await read($, questionLedger)
   const currentView = buildView(snap.projects, [], await read($, mine), await $.clock.now(), 0, {}, await wordsOf($), await read($, hiddenAsks), {}, ledger, await questionProofsFor($, snap.path || (await progressPath($))), await pendingTurns($))
-  if (![...currentView.waiting, ...currentView.hidden].some(one => one.hideKey === item.hideKey && one.project === item.project && one.text === item.text && one.note === item.note)) return false
+  if (![...currentView.waiting, ...(currentView.reminder ?? []), ...(currentView.older ?? []), ...currentView.hidden].some(one => (!isHidden || one.canHide !== false) && one.hideKey === item.hideKey && one.project === item.project && one.text === item.text && one.note === item.note)) return false
   const file = answeredPath(snap.path || (await progressPath($)))
   const list = await enqueue(async () => {
     const fresh = parseProgress(await readText($, snap.path || (await progressPath($))))
     if (!(await pollQuestions($, snap.path || (await progressPath($)), fresh))) return null
     const latest = await read($, questionLedger)
     const current = buildView(fresh, [], await read($, mine), await $.clock.now(), 0, {}, await wordsOf($), await read($, hiddenAsks), {}, latest, await questionProofsFor($, snap.path || (await progressPath($))), await pendingTurns($))
-    if (![...current.waiting, ...current.hidden].some(one => one.hideKey === item.hideKey && one.project === item.project && one.text === item.text && one.note === item.note)) return null
+    if (![...current.waiting, ...(current.reminder ?? []), ...(current.older ?? []), ...current.hidden].some(one => (!isHidden || one.canHide !== false) && one.hideKey === item.hideKey && one.project === item.project && one.text === item.text && one.note === item.note)) return null
     await rewrite(
       $,
       file,

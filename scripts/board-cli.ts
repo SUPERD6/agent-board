@@ -508,8 +508,8 @@ const act = (action: BoardAction): string => {
       if (proofs === null || (isHidden && keys.some(key => proofs.retired.includes(sha256(key))))) return null
       if (latest === null || persisted === null || (isHidden && keys.some(key => !persisted.records.some(record => record.id === key && record.isWaiting && record.isPresent)))) return null
       const projects = parseProgress(read(path))
-      const fresh = buildView(projects, [], null, now, 0, {}, s, answered ?? [], {}, latest, proofs)
-      if (isHidden && keys.some(key => ![...fresh.waiting, ...fresh.hidden].some(item => item.hideKey === key))) return null
+      const fresh = buildView(projects, [], null, now, 0, {}, s, answered ?? [], {}, latest, proofs, pending())
+      if (isHidden && keys.some(key => ![...fresh.waiting, ...(fresh.reminder ?? []), ...(fresh.older ?? []), ...fresh.hidden].some(item => item.canHide !== false && item.hideKey === key))) return null
       const aliases = observeQuestions(latest, projects, null, answered ?? [], now, true).ledger
       return answered === null ? null : answeredJson(withAnswered(answered, isHidden ? keys : keys.flatMap(key => acknowledgementKeys(aliases, key)), isHidden))
     })

@@ -5,9 +5,9 @@ import { parseProgress } from '../hooks/parse'
 import { applyTaskCreate, applyTaskUpdate, emptyMirror } from '../hooks/mirror'
 import { renderAutoBlock, takeArchivable } from '../hooks/blocks'
 import { buildView } from '../hooks/view'
-import { boardItems, boardText, chatText, peekInbox } from '../hooks/board'
+import { boardItems, boardKey, boardScreen, boardText, chatText, emptyBoardState, peekInbox, pinned } from '../hooks/board'
 import { sha256 } from '../hooks/sha256'
-import { serveModel } from '../hooks/serve'
+import { serveAction, serveModel, servePage } from '../hooks/serve'
 import { dashboardHtml } from '../hooks/dashboard'
 import { STRINGS } from '../hooks/strings'
 
@@ -284,4 +284,37 @@ test('a resolved producer token rejects stale block and own-mirror replay while 
   expect(fresh.records.find(row => row.isUnresolved)?.producer === record.producer).toBe(false)
   const changed = observeQuestions(restored, parseProgress(raw.replaceAll('Keep the exact producer ask?', 'Choose the new substantive question?')), null, [], START + QUESTION_DAY, true, 'writer:5').ledger
   expect(changed.records.filter(row => row.isUnresolved).length).toBe(1)
+})
+
+test('aged shelf hide actions keep identity and stale fingerprints while retained sources are explicitly review only', () => {
+  const projects = parseProgress(board('- [?] Publish?'))
+  const first = observeQuestions(emptyQuestions(), projects, null, [], START, true, 'writer:1').ledger
+  for (const s of Object.values(STRINGS)) for (const days of [4, 8]) {
+    const now = START + days * QUESTION_DAY
+    const view = buildView(projects, [], null, now, 0, {}, s, [], {}, first)
+    const items = boardItems(view, [], false, true)
+    const state = pinned({ ...emptyBoardState, isOlderOpen: true }, items)
+    expect(boardKey(state, 'h', items, s).action).toEqual({ type: 'hide', key: first.records[0]!.id, text: 'Publish?' })
+    const changed = items.map(item => item.type === 'ask' ? { ...item, ask: { ...item.ask, note: 'Changed context' } } : item)
+    expect(boardKey(state, 'h', changed, s).state.note).toBe(s.boardLineChanged)
+    expect(boardKey(state, 'h', changed, s).action).toBe(null)
+    const renewedProjects = parseProgress(board('- [?] Publish to production?'))
+    const renewed = observeQuestions(first, renewedProjects, null, [], now, true, 'writer:2').ledger
+    const newItems = boardItems(buildView(renewedProjects, [], null, now, 0, {}, s, [], {}, renewed), [], false, true)
+    expect(boardKey(state, 'h', newItems, s).action).toBe(null)
+    const retired = observeQuestions(first, parseProgress(board('- [x] Publish?')), null, [], now, true, 'writer:3').ledger
+    const repeated = observeQuestions(retired, projects, null, [], now + 1, true, 'writer:4').ledger
+    const repeatedItems = boardItems(buildView(projects, [], null, now + 1, 0, {}, s, [], {}, repeated), [], false, true)
+    expect(boardKey(state, 'h', repeatedItems, s).action).toBe(null)
+    expect(repeated.records.find(row => row.isWaiting && row.isPresent)?.id === first.records[0]!.id).toBe(false)
+    const captured = withCaptures(emptyQuestions(), [{ version: 1, disposition: 'archived', record: first.records[0]! }])
+    const retained = buildView([], [], null, now, 0, {}, s, [], {}, captured)
+    const retainedItems = boardItems(retained, [], false, true)
+    const selected = pinned({ ...emptyBoardState, isOlderOpen: true }, retainedItems)
+    expect(boardKey(selected, 'h', retainedItems, s).action).toBe(null)
+    expect(boardScreen(retained, [], selected, s, { width: 500, isColor: false }).includes(s.questionReviewOnly)).toBe(true)
+    expect(serveAction(retainedItems, { key: retainedItems[0]!.key, type: 'hide' }, s).type).toBe('refuse')
+    expect(serveModel(retained, [], s).older.length).toBe(1)
+    expect(servePage(s, 'synthetic-nonce').includes(s.questionReviewOnly)).toBe(true)
+  }
 })

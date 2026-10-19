@@ -151,3 +151,4 @@ Full source captures also live beside the board in content-addressed progress-qu
 Exact producer revisions remain attached after processing and resolution, so retrying an old raw file does not renew an answered question; a new producer revision remains observable.
 Explicit archive keeps its complete unresolved copy in the older shelf. Unexpected source disappearance keeps the normal age policy, with unknown clocks prominent.
 A stale report cannot revive an already resolved question with the same known producer revision and words. An explicit renewed revision or a substantively changed question can appear again.
+Live questions on the terminal and native pane reminder/older shelves support Already answered, hide and Show again without changing the source or its age. Retained copies whose producer source has gone are labeled review only; the served page's reminder/older sections are also review only and expose no hide control.
