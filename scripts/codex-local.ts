@@ -11,6 +11,7 @@ import { antigravityHooks, cursorEvent, cursorEvents, lifecycleCapability, local
 import type { LocalAgent } from '../hooks/local-agents'
 import { deepseekLocalPlugin, deepseekPatch, openclawLocalPlugin } from '../hooks/portable-agents'
 import { trustCodex } from './codex-host'
+import { withLocalLock } from './local-lock'
 
 type Json = Record<string, unknown>
 type Manifest = { files: Record<string, string>; groups: Record<string, unknown> }
@@ -40,23 +41,6 @@ const atomic = (file: string, text: string): void => {
     if (isOpen) closeSync(fd)
     if (existsSync(temporary)) unlinkSync(temporary)
   }
-}
-const locked = <T>(file: string, action: () => T): T => {
-  mkdirSync(dirname(file), { recursive: true })
-  const started = Date.now()
-  let fd: number
-  for (;;) {
-    try { fd = openSync(file, 'wx', 0o600); break } catch (error) {
-      const code = (error as { code?: string }).code
-      // Windows may report a delete-pending lock as EPERM before its last handle
-      // closes. Retry only exclusive creation, with the same bound; never remove it.
-      if (!(code === 'EEXIST' || process.platform === 'win32' && code === 'EPERM') || Date.now() - started > 2000) throw error
-      // Different agents share a board. Wait briefly for its writer, but never remove
-      // a lock whose owning process we cannot verify.
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
-    }
-  }
-  try { return action() } finally { closeSync(fd); unlinkSync(file) }
 }
 const input = async (): Promise<Json> => {
   let text = ''
@@ -149,7 +133,7 @@ export const runCodexLocal = async (args: string[], boardPath: string, s: String
         return true
       }
     }
-    locked(`${progress}.agent-board-lock`, () => {
+    withLocalLock(`${progress}.agent-board-lock`, () => {
       // Read both records again under the common board lock: separate sessions cannot
       // clobber each other's blocks and two processes for one session cannot race.
       if (readLocal(recordFile) !== saved) throw new Error('CONCURRENT_REPORT')
@@ -299,7 +283,7 @@ export const runCodexLocal = async (args: string[], boardPath: string, s: String
   }
   if (!args.includes('--apply')) { output(plan); return true }
   if (conflicts.length) { output(plan); throw new Error('INSTALL_CONFLICT') }
-  locked(join(root, 'install.lock'), () => {
+  withLocalLock(join(root, 'install.lock'), () => {
     // Compare the bytes used to build the plan, not a fresh snapshot taken after
     // planning: another installer or host may have changed them in that interval.
     for (const [file, expected] of before) if (readLocal(file) !== expected) throw new Error('INSTALL_CHANGED')
