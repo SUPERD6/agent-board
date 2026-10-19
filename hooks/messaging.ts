@@ -45,13 +45,14 @@ export const claimMessages = (state: MessageState, target: Connection, now: numb
   return { state: { messages: state.messages.map(one => messages.includes(one) ? { ...one, status: 'uncertain', updated: now } : one) }, messages }
 }
 export const messageReceipt = (state: MessageState, target: Connection, input: Record<string, unknown>, now: number): MessageState => {
-  messageFields(input, ['id', 'status', 'reply'])
+  messageFields(input, ['id', 'status', 'reply', 'error'])
   const id = messageId(input.id)
   const one = state.messages.find(message => message.id === id)
   if (!one || one.target !== target.id || one.turn !== target.turn) throw new Error('TARGET_MISMATCH')
-  if (!['accepted', 'acknowledged', 'rejected'].includes(String(input.status))) throw new Error('INVALID_RECEIPT')
+  if (!['uncertain', 'accepted', 'acknowledged', 'rejected'].includes(String(input.status))) throw new Error('INVALID_RECEIPT')
   const status = input.status as Message['status']
   const reply = input.reply === undefined ? '' : messageText(input.reply)
+  const error = input.error === undefined ? '' : messageId(input.error)
   if (status === 'acknowledged' && !reply) throw new Error('REPLY_REQUIRED')
   if (status === 'acknowledged' && reply !== `ACK ${id}` && !reply.startsWith(`ACK ${id} `) && !reply.startsWith(`ACK ${id}\n`)) throw new Error('ACK_REQUIRED')
   if (one.status === 'acknowledged' || one.status === 'rejected') {
@@ -60,7 +61,7 @@ export const messageReceipt = (state: MessageState, target: Connection, input: R
   }
   if (one.status === 'queued') throw new Error('CLAIM_REQUIRED')
   if (one.status === 'accepted' && status === 'accepted' && one.reply === reply) return state
-  return { messages: state.messages.map(message => message === one ? { ...one, status, reply, updated: now } : message) }
+  return { messages: state.messages.map(message => message === one ? { ...one, status, reply, error, updated: now } : message) }
 }
 export const disconnectMessages = (state: MessageState, target: string, now: number): MessageState => ({
   messages: state.messages.map(one => one.target !== target || ['rejected', 'acknowledged'].includes(one.status) ? one : {

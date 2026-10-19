@@ -35,6 +35,8 @@ disconnects its receivers; they must reconnect explicitly to the new board URL.
 An ACK proves receipt, not successful completion of the requested task. An adapter must
 never manufacture an ACK from an RPC success or a file write. Synthetic adapters in tests
 are labelled synthetic. No live model or desktop acceptance is inferred from those tests.
+An adapter timeout after transport acceptance is persisted as `uncertain` with a bounded
+error code (for example `ACK_TIMEOUT`); it does not stay indefinitely labelled accepted.
 
 IDs are scoped to this message store. An exact retry returns the existing receipt, even
 after restart. Reusing an id with different text, source, binding or turn fails with

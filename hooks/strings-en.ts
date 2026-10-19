@@ -13,6 +13,7 @@ export const EN: Strings = {
   messagesSend: 'Send message',
   messagesQueued: 'Queued; not delivered',
   messagesUncertain: 'Claimed; delivery is uncertain',
+  messagesTimeout: 'Reply timed out; delivery is uncertain and will not be retried automatically',
   messagesAccepted: 'Transport accepted; waiting for a session reply',
   messagesAcknowledged: 'Session replied with ACK',
   messagesRejected: 'Rejected / not sent',

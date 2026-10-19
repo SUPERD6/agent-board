@@ -13,6 +13,7 @@ export const ZH_CN: Strings = {
   messagesSend: '发送消息',
   messagesQueued: '队列中，尚未送达',
   messagesUncertain: '已取走，送达结果待确认',
+  messagesTimeout: '等候回复超时，送达结果待确认；不会自动重发',
   messagesAccepted: '传输已接受，等待 session 回复',
   messagesAcknowledged: 'session 已回复 ACK',
   messagesRejected: '已拒绝／未发送',

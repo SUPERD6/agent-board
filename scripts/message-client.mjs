@@ -26,7 +26,7 @@ export const boardClient = address => {
         clearInterval(timer)
         await call('disconnect', { ...credentials, turn }).catch(() => undefined)
       }
-      const receipt = (message, status, reply) => call('receipt', { ...credentials, id: message.id, status, ...(reply === undefined ? {} : { reply }) })
+      const receipt = (message, status, reply, error) => call('receipt', { ...credentials, id: message.id, status, ...(reply === undefined ? {} : { reply }), ...(error === undefined ? {} : { error }) })
       const processMessage = async message => {
         let hasStarted = false
         try {
@@ -37,6 +37,7 @@ export const boardClient = address => {
           if (typeof reply === 'string' && reply.trim()) await receipt(message, 'acknowledged', reply)
         } catch (error) {
           if (!hasStarted) await receipt(message, 'rejected').catch(() => undefined)
+          else await receipt(message, 'uncertain', undefined, /^[A-Z][A-Z0-9_]{0,63}$/.test(error?.message) ? error.message : 'DELIVERY_UNCERTAIN').catch(() => undefined)
           // After delivery begins, a timeout or exception never authorizes redelivery.
           onError(error)
         }

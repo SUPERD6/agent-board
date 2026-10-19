@@ -404,7 +404,7 @@ export const requestProblem = (request: PageRequest, hosts: readonly string[], t
 const PAGE_WORDS = [
   'messagesTitle', 'messagesHint', 'messagesDisabled', 'messagesNone', 'messagesChoose',
   'messagesPlaceholder', 'messagesSend', 'messagesQueued', 'messagesUncertain',
-  'messagesAccepted', 'messagesAcknowledged', 'messagesRejected', 'messagesFailed', 'messagesConflict',
+  'messagesAccepted', 'messagesAcknowledged', 'messagesRejected', 'messagesFailed', 'messagesConflict', 'messagesTimeout',
   'countWaiting',
   'countActive',
   'countDue',
@@ -824,7 +824,7 @@ const PAGE_SCRIPT = String.raw`
     receipts.textContent = '';
     var labels = { queued: 'messagesQueued', uncertain: 'messagesUncertain', accepted: 'messagesAccepted', acknowledged: 'messagesAcknowledged', rejected: 'messagesRejected' };
     (data && data.messages || []).slice(-20).reverse().forEach(function (one) {
-      add(receipts, el('p', 'small', one.id + ' · ' + one.from + ' → ' + one.to + ' · ' + w(labels[one.status]) + (one.reply ? ' · ' + one.reply : '')));
+      add(receipts, el('p', 'small', one.id + ' · ' + one.from + ' → ' + one.to + ' · ' + w(one.status === 'uncertain' && /TIMEOUT/.test(one.error) ? 'messagesTimeout' : labels[one.status]) + (one.reply ? ' · ' + one.reply : '')));
     });
   }
   var messageSend = document.getElementById('message-send');

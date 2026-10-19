@@ -81,7 +81,7 @@ export const createMessaging = (directory: string) => {
         save(queued.state)
         return queued.message
       }
-      messageFields(body, action === 'receipt' ? ['connection', 'secret', 'id', 'status', 'reply'] : ['connection', 'secret', 'turn'])
+      messageFields(body, action === 'receipt' ? ['connection', 'secret', 'id', 'status', 'reply', 'error'] : ['connection', 'secret', 'turn'])
       const one = authenticated(body.connection, body.secret, now)
       if (action === 'receipt') {
         const { connection: _id, secret: _secret, ...receipt } = body

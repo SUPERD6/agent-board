@@ -51,6 +51,7 @@ export const ZH_TW = {
   messagesSend: '傳送訊息',
   messagesQueued: '佇列中，尚未送達',
   messagesUncertain: '已取走，送達結果待確認',
+  messagesTimeout: '等候回覆逾時，送達結果待確認；不會自動重送',
   messagesAccepted: '傳輸已接受，等待 session 回覆',
   messagesAcknowledged: 'session 已回覆 ACK',
   messagesRejected: '已拒絕／未送出',

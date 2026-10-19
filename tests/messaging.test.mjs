@@ -78,7 +78,10 @@ const fixture = async fn => {
   try { await fn(board, dir) } finally { await board.close().catch(() => undefined); rmSync(dir, { recursive: true, force: true }) }
 }
 const waitFor = async fn => {
-  for (let i = 0; i < 80; i++) { const found = await fn(); if (found) return found; await pause(100) }
+  // Poll + preflight + steer each have their own bounded request. The aggregate
+  // must allow those deadlines on a busy Windows host without retrying delivery.
+  const until = Date.now() + 20000
+  while (Date.now() < until) { const found = await fn(); if (found) return found; await pause(100) }
   throw new Error('condition timed out')
 }
 
@@ -134,6 +137,26 @@ test('an expired connector disappears and cannot take a queued message', { timeo
   assert.equal((await board.call('/api/messages/poll', { connection: connected.id, secret: connected.secret, turn: 'turn1' })).status, 409)
 }))
 
+test('an adapter timeout becomes explicit uncertainty and never triggers another delivery', async () => fixture(async board => {
+  let deliveries = 0
+  const receiver = await boardClient(board.address).attach({
+    agent: 'fixture', session: 'timeout-session', turn: 'turn1', surface: 'Synthetic timeout adapter', verify: async () => true,
+    deliver: async (_message, accepted) => { deliveries += 1; await accepted(); throw new Error('ACK_TIMEOUT') },
+  })
+  try {
+    const sent = { ...input, target: receiver.id }
+    await board.call('/api/messages/send', sent)
+    const uncertain = await waitFor(async () => {
+      const one = (await board.call('/api/board')).body.messaging.messages[0]
+      return one?.status === 'uncertain' && one.error === 'ACK_TIMEOUT' && one
+    })
+    assert.equal(uncertain.error, 'ACK_TIMEOUT')
+    await board.call('/api/messages/send', sent)
+    await pause(2200)
+    assert.equal(deliveries, 1)
+  } finally { await receiver.close() }
+}))
+
 test('a mock Codex proxy keeps steering and native ACK separate and never answers approval RPCs', async () => fixture(async (board, dir) => {
   const thread = '11111111-2222-4333-8444-555555555555'
   const fake = join(dir, 'proxy.mjs'), log = join(dir, 'rpc.log')
@@ -148,7 +171,14 @@ setTimeout(()=>emit({method:'item/completed',params:{threadId:${JSON.stringify(t
   const connector = await connectCodexProxy({ boardUrl: board.address, executable: fake, thread, turn: 'turn1', surface: 'Mock proxy' })
   try {
     await board.call('/api/messages/send', { ...input, target: connector.id })
-    const receipt = await waitFor(async () => { const one = (await board.call('/api/board')).body.messaging.messages[0]; return one?.status === 'acknowledged' && one })
+    let receipt
+    try {
+      receipt = await waitFor(async () => { const one = (await board.call('/api/board')).body.messaging.messages[0]; return one?.status === 'acknowledged' && one })
+    } catch (error) {
+      error.message += '\nSynthetic receipt: ' + JSON.stringify((await board.call('/api/board')).body.messaging)
+      error.message += '\nSynthetic RPC log: ' + readFileSyncSafe(log)
+      throw error
+    }
     assert.equal(receipt.reply, 'ACK AB-TEST-001')
     const calls = readFileSync(log, 'utf8').trim().split('\n').map(JSON.parse)
     assert.equal(calls.filter(one => one.method === 'turn/steer').length, 1)

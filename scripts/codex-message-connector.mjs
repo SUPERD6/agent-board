@@ -5,7 +5,7 @@ import { boardClient } from './message-client.mjs'
 
 // Connects only to an already-running Codex control socket. `proxy` does not start,
 // resume or search saved threads. No credential file or transcript is opened here.
-export const connectCodexProxy = async ({ boardUrl, executable, thread, turn, surface = 'Codex local proxy', socket }) => {
+export const connectCodexProxy = async ({ boardUrl, executable, thread, turn, surface = 'Codex local proxy', socket, onError }) => {
   if (!isAbsolute(executable) || !/^[a-f0-9-]{36}$/i.test(thread) || !/^[A-Za-z0-9_-]{1,128}$/.test(turn)) throw new Error('EXPLICIT_BINDING_REQUIRED')
   const args = ['app-server', 'proxy', ...(socket ? ['--sock', socket] : [])]
   const child = /\.m?js$/i.test(executable) ? spawn(process.execPath, [executable, ...args], { windowsHide: true }) : spawn(executable, args, { windowsHide: true })
@@ -80,7 +80,7 @@ export const connectCodexProxy = async ({ boardUrl, executable, thread, turn, su
     await request('initialize', { clientInfo: { name: 'agent-board-message-connector', version: '1' } })
     child.stdin.write(JSON.stringify({ method: 'initialized', params: {} }) + '\n')
     session = await boardClient(boardUrl).attach({
-      agent: 'codex', session: thread, turn, surface, verify,
+      agent: 'codex', session: thread, turn, surface, verify, onError,
       deliver: async (message, accepted) => {
         if (message.turn !== turn || !await verify()) throw new Error('TARGET_MISMATCH')
         let ackEntry
