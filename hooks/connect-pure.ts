@@ -766,6 +766,7 @@ export const PROBLEM_ARGS = {
   connectSkipped: ['string', 'string'],
   connectFailed: ['string', 'string'],
   connectTooOld: ['string', 'string', 'string'],
+  setupCodexApproval: [],
   setupNodeMissing: ['number'],
   setupNodeOld: ['string', 'number'],
 } as const satisfies Partial<ProblemArgs<Strings>>
@@ -773,7 +774,7 @@ export type SetupNotice = {
   [K in keyof typeof PROBLEM_ARGS]: { message: K; args: Parameters<Strings[K]> }
 }[keyof typeof PROBLEM_ARGS]
 export type SetupProblem = { key: string } & (SetupNotice | { text: string })
-export type SetupState = { agents: AgentSetup[]; problems: SetupProblem[]; node: string | null }
+export type SetupState = { agents: AgentSetup[]; problems: SetupProblem[]; node: string | null; codexTrusted?: boolean }
 type StoredSetupState = Omit<SetupState, 'problems'> & { problems: unknown[] }
 
 const isSetupProblem = (value: unknown): value is SetupProblem => {
@@ -791,6 +792,7 @@ export const setupProblemText = (problem: SetupProblem, s: Strings = ZH_TW): str
   if ('text' in problem) return problem.text
   // The repeated branches exist only so the type checker sees each call's argument types.
   switch (problem.message) {
+    case 'setupCodexApproval': return s[problem.message]()
     case 'setupNodeMissing': return s[problem.message](...problem.args)
     case 'setupNodeOld': return s[problem.message](...problem.args)
     case 'connectTooOld': return s[problem.message](...problem.args)
@@ -838,7 +840,7 @@ export const setupLines = (state: StoredSetupState, s: Strings = ZH_TW, withProb
   const hookWords = (one: AgentSetup): string[] => {
     if (one.hook === null) return []
     if (one.hook !== 'configured') return [one.hook === 'unreadable' ? s.setupHookUnreadable : one.hook === 'tooOld' ? s.setupHookTooOld : s.setupHookFailed]
-    const needs = one.agent === 'codex' ? [s.setupCodexTrust] : one.agent === 'hermes' ? [s.setupHermesTrust] : one.agent === 'openclaw' ? [s.setupOpenclawRestart] : []
+    const needs = one.agent === 'codex' ? (state.codexTrusted === true ? [] : [s.setupCodexTrust]) : one.agent === 'hermes' ? [s.setupHermesTrust] : one.agent === 'openclaw' ? [s.setupOpenclawRestart] : []
     return [s.setupHookConfigured, ...needs]
   }
   const boardWords = (one: AgentSetup): string[] =>

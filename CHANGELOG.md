@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Keep Codex reporting instructions until current hooks are approved.** Wire bounded read-only trust observation into native setup, recheck exact source bytes under the lock, preserve managed fallback and effective override content, and project fresh read-only status in all three languages. Tests: `new or untrusted Codex hooks keep fallback and exact approval retires it in en` (also zh-TW/zh-CN), `lost or unsupported Codex trust restores effective override fallback while status writes no instructions`, `a trusted observation invalidated before the lock cannot retire fallback or overwrite foreign groups`, `managed fallback edits preserve outside bytes and refuse ambiguous owned markers`. Integrated acceptance remains pending at the implementation checkpoint.
+
 - Preserve the existing Codex hook group positions and foreign entries on reconnect. Add a read-only current-definition trust query for legacy hooks; partial, changed, disabled, duplicate or unavailable discovery cannot establish approval. Foundation tests: 17 synthetic control-query cases and two pure hook-position cases. Keeping/restoring fallback instructions and readiness notices still requires the canonical installer integration before #102 is complete.
 - Bound native worker failures to a short code so Node cannot flood the process output with the full verified data URL before reporting the error. Cleanup still checks the exact stage owner. Test: `a large verified module reports a bounded failure without embedding its data URL`.
 

@@ -148,3 +148,5 @@ Before 0.10 the optional plugin was `project-progress@claude-progress-pane`. Rem
 ### Reporting a problem safely
 
 Give the Agent Board version, affected host/version, CLI/App/IDE surface, OS and a synthetic reproduction. Include Claude's version only for its optional plugin. Never upload raw progress, inbox, archive, journal or session logs, credentials, or board tokens. [Security reports](../SECURITY.md#reporting-a-problem).
+
+Until current Codex hooks are approved in /hooks, the optional connector keeps managed reporting instructions; unknown/lost trust restores them on connect. Status checks trust without editing instructions.

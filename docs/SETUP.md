@@ -160,3 +160,5 @@ block, then retry. A successful write must produce one visible task for that ses
 
 See the [2026-10-19 native acceptance record](validation/2026-10-19-native-hooks.md)
 for the observed CLI events, cross-host ACKs, the Windows failure and its retest.
+
+Codex hook installation is separate from current native approval. The optional connector retains managed reporting fallback until its exact current definitions are approved in /hooks, using bounded read-only control discovery outside the install lock. Unknown/disabled/changed observations retain or restore fallback on connect; status projects current readiness without modifying AGENTS. Existing nonempty AGENTS.override.md is treated as the effective instruction file. Only positively owned board scripts can become generated fallback commands.

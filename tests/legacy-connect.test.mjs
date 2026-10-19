@@ -22,7 +22,7 @@ const fixture = async fn => {
   const foreign = { private: 'NEVER_STAGE_SECRET', hooks: { Stop: [{ hooks: [{ type: 'command', command: 'foreign-command' }] }] } }
   writeFileSync(config, JSON.stringify(foreign))
   writeFileSync(script, bundle)
-  const request = (mode, extra = {}) => ({ mode, home, progress, lang: 'en', node: process.version, ...extra })
+  const request = (mode, extra = {}) => ({ mode, home, progress, lang: 'en', node: process.version, codexExecutable: join(home, 'missing-control.exe'), ...extra })
   const command = (value, options = {}) => spawnSync(process.execPath, [script, '--legacy-connect-request', JSON.stringify(value)], { encoding: 'utf8', windowsHide: true, timeout: 10000, ...options })
   const run = value => {
     const result = command(value)
@@ -297,7 +297,9 @@ test('initial native status migrates only recognized display metadata and ignore
   const setup = { agents: [{ agent: 'codex', label: 'Codex', hook: 'configured', board: 'ready', unknown: 'ignored' }], problems: [{ key: 'node:missing', message: 'setupNodeMissing', args: [18], unknown: 'ignored' }, { key: 'unknown', message: 'notAStringKey', args: [] }, { key: 'old', text: 'old unstructured prose' }], node: null, unknown: 'ignored' }
   const before = readFileSync(f.config, 'utf8')
   const initial = f.run(f.request('status', { seed: { setup } }))
-  assert.deepEqual(initial.state.setup, { agents: [{ agent: 'codex', label: 'Codex', hook: 'configured', board: 'ready' }], problems: [{ key: 'node:missing', message: 'setupNodeMissing', args: [18] }], node: null })
+  assert.deepEqual(JSON.parse(readFileSync(f.control)).setup, { agents: [{ agent: 'codex', label: 'Codex', hook: 'configured', board: 'ready' }], problems: [{ key: 'node:missing', message: 'setupNodeMissing', args: [18] }], node: null })
+  assert.equal(initial.state.setup.codexTrusted, false)
+  assert.ok(initial.state.setup.problems.some(one => one.key === 'codex:approval'))
   assert.equal(readFileSync(f.config, 'utf8'), before)
   assert.deepEqual(f.run(f.request('status', { seed: { setup: { agents: [], problems: [], node: process.version } } })).state.setup, initial.state.setup)
 }))

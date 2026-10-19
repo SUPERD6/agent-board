@@ -1,0 +1,127 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, sep } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { codexFallbackCommand, managedFallback } from '../hooks/codex-fallback.ts'
+
+const source = readFileSync(new URL('../hooks/board-script.ts', import.meta.url), 'utf8')
+const bundle = JSON.parse(source.slice(source.indexOf('export const BOARD_SCRIPT = ') + 'export const BOARD_SCRIPT = '.length))
+const fixture = async action => {
+  const home = mkdtempSync(join(tmpdir(), 'codex-fallback-'))
+  const root = join(home, '.codex'), config = join(root, 'hooks.json'), instructions = join(root, 'AGENTS.md'), override = join(root, 'AGENTS.override.md')
+  const script = join(home, 'worker.mjs'), executable = join(home, 'control.mjs'), options = join(home, 'scenario.json'), log = join(home, 'methods.jsonl'), control = join(home, '.agent-board', 'legacy-connect.json')
+  mkdirSync(root)
+  writeFileSync(config, '{"personal":"keep","hooks":{"Stop":[{"hooks":[{"type":"command","command":"personal-before"}]}]}}\n')
+  writeFileSync(instructions, '# Personal rules\r\nKeep these bytes.\r\n')
+  writeFileSync(options, JSON.stringify({ trust: 'untrusted' }))
+  writeFileSync(script, bundle)
+  writeFileSync(executable, `
+import { createInterface } from 'node:readline'
+import { appendFileSync, readFileSync } from 'node:fs'
+createInterface({input:process.stdin}).on('line', line => {
+  const req=JSON.parse(line);appendFileSync(${JSON.stringify(log)},req.method+'\\n');if(req.id===undefined)return
+  if(req.method==='initialize'){process.stdout.write(JSON.stringify({id:req.id,result:{}})+'\\n');return}
+  if(req.method!=='hooks/list')throw Error('FORBIDDEN_METHOD')
+  const options=JSON.parse(readFileSync(${JSON.stringify(options)},'utf8'))
+  if(options.rejected){process.stdout.write(JSON.stringify({id:req.id,error:{message:'unsupported'}})+'\\n');return}
+  const data=JSON.parse(readFileSync(${JSON.stringify(config)},'utf8'));let n=0
+  const hooks=Object.entries(data.hooks??{}).flatMap(([event,groups])=>groups.flatMap(group=>(group.hooks??[]).map(hook=>({key:'key-'+(++n),currentHash:'sha256:'+'1'.repeat(64),sourcePath:${JSON.stringify(config)},eventName:event[0].toLowerCase()+event.slice(1),command:hook.command,enabled:!options.disabled,trustStatus:options.trust}))))
+  process.stdout.write(JSON.stringify({id:req.id,result:{data:[{hooks,errors:[]}]}})+'\\n')
+})`)
+  const request = (mode, extra = {}) => ({ mode, home, progress: join(home, 'data', 'progress.md'), lang: 'en', node: process.version, codexExecutable: executable, ...extra })
+  const run = (mode, extra = {}, env) => {
+    const result = spawnSync(process.execPath, [script, '--legacy-connect-request', JSON.stringify(request(mode, extra))], { encoding: 'utf8', windowsHide: true, timeout: 10000, ...(env ? { env: { ...process.env, ...env } } : {}) })
+    assert.equal(result.status, 0, result.stderr + result.stdout)
+    return JSON.parse(result.stdout)
+  }
+  try { await action({ home, root, config, instructions, override, options, log, control, request, run }) }
+  finally { rmSync(home, { recursive: true, maxRetries: 5, retryDelay: 100 }) }
+}
+
+test('managed fallback edits preserve outside bytes and refuse ambiguous owned markers', () => {
+  const own = '<!-- agent-board:start -->old bytes<!-- agent-board:end -->'
+  assert.equal(managedFallback('before\r\n' + own + '\r\nafter', 'new'), 'before\r\n' + own + '\r\nafter')
+  assert.equal(managedFallback('before\r\n' + own + '\r\nafter', null), 'before\r\n\r\nafter')
+  for (const text of [own + own, '<!-- agent-board:start -->', '<!--agent-board:start-->', '<!-- agent-board:start --><!-- claude-progress-pane:end -->']) assert.equal(managedFallback(text, null), null)
+  const command = codexFallbackCommand('/synthetic/$bad;`path`/board.mjs', '/synthetic/$(no)/progress.md')
+  assert.doesNotMatch(command, /\$bad|\$\(no\)|`path`/)
+  assert.match(command, /--codex-report/)
+})
+
+for (const lang of ['en', 'zh-TW', 'zh-CN']) test(`new or untrusted Codex hooks keep fallback and exact approval retires it in ${lang}`, () => fixture(async f => {
+  const personal = readFileSync(f.instructions, 'utf8')
+  const first = f.run('connect', { lang })
+  assert.ok(first.result.problems.some(one => one.key === 'codex:approval'))
+  assert.ok(readFileSync(f.instructions, 'utf8').startsWith(personal))
+  assert.match(readFileSync(f.instructions, 'utf8'), /agent-board:start/)
+  assert.match(readFileSync(f.instructions, 'utf8'), /--codex-report/)
+  const config = readFileSync(f.config, 'utf8')
+  writeFileSync(f.options, JSON.stringify({ trust: 'trusted' }))
+  const approved = f.run('connect', { lang })
+  assert.equal(approved.state.setup.codexTrusted, true)
+  assert.doesNotMatch(readFileSync(f.instructions, 'utf8'), /agent-board:start/)
+  assert.equal(readFileSync(f.config, 'utf8'), config)
+  assert.ok(readFileSync(f.instructions, 'utf8').startsWith(personal))
+  const changed = JSON.parse(config)
+  changed.hooks.Stop.at(-1).hooks[0].command += ' changed'
+  writeFileSync(f.config, JSON.stringify(changed))
+  const renewed = f.run('connect', { lang })
+  assert.equal(renewed.state.setup.codexTrusted, false)
+  assert.deepEqual([...new Set(readFileSync(f.log, 'utf8').trim().split('\n'))].sort(), ['hooks/list', 'initialize', 'initialized'])
+}))
+
+test('lost or unsupported Codex trust restores effective override fallback while status writes no instructions', () => fixture(async f => {
+  f.run('connect')
+  writeFileSync(f.options, JSON.stringify({ trust: 'trusted' }))
+  f.run('connect')
+  writeFileSync(f.override, '# Override personal rules\r\n')
+  writeFileSync(f.options, JSON.stringify({ trust: 'untrusted' }))
+  const before = readFileSync(f.instructions, 'utf8'), override = readFileSync(f.override, 'utf8')
+  const status = f.run('status')
+  assert.equal(status.state.setup.codexTrusted, false)
+  assert.equal(readFileSync(f.instructions, 'utf8'), before)
+  assert.equal(readFileSync(f.override, 'utf8'), override)
+  f.run('auto')
+  assert.ok(readFileSync(f.override, 'utf8').startsWith(override))
+  assert.match(readFileSync(f.override, 'utf8'), /agent-board:start/)
+  assert.equal(readFileSync(f.instructions, 'utf8'), before)
+  writeFileSync(f.options, JSON.stringify({ rejected: true }))
+  f.run('connect')
+  assert.match(readFileSync(f.override, 'utf8'), /agent-board:start/)
+  f.run('connect', { codexExecutable: join(f.home, 'missing-control.exe') })
+  assert.match(readFileSync(f.override, 'utf8'), /agent-board:start/)
+  f.run('remove')
+  assert.doesNotMatch(readFileSync(f.override, 'utf8'), /agent-board:start/)
+  assert.ok(readFileSync(f.override, 'utf8').startsWith(override))
+}))
+
+test('a trusted observation invalidated before the lock cannot retire fallback or overwrite foreign groups', () => fixture(async f => {
+  f.run('connect')
+  const before = readFileSync(f.instructions, 'utf8')
+  writeFileSync(f.log, '')
+  writeFileSync(f.options, JSON.stringify({ trust: 'trusted' }))
+  const preload = join(f.home, 'drift.mjs')
+  writeFileSync(preload, `import fs from 'node:fs';import{syncBuiltinESMExports}from'node:module';const read=fs.readFileSync,open=fs.openSync;let changed=false;fs.openSync=(file,...args)=>{if(file===${JSON.stringify(join(f.home, '.agent-board', 'install.lock'))}&&!read(${JSON.stringify(f.log)},'utf8').includes('hooks/list'))throw Error('PROBE_NOT_BEFORE_LOCK');return open(file,...args)};fs.readFileSync=(file,...args)=>{if(!changed&&file===${JSON.stringify(f.control)}){changed=true;fs.appendFileSync(${JSON.stringify(f.config)},' ')}return read(file,...args)};syncBuiltinESMExports()`)
+  f.run('connect', {}, { NODE_OPTIONS: '--import=' + pathToFileURL(preload).href })
+  assert.equal(readFileSync(f.instructions, 'utf8'), before)
+  assert.ok(JSON.parse(readFileSync(f.config, 'utf8')).hooks.Stop[0].hooks.some(one => one.command === 'personal-before'))
+}))
+
+test('disabled definitions and ambiguous instruction markers stay conservative and foreign boards never become fallback commands', () => fixture(async f => {
+  f.run('connect')
+  writeFileSync(f.options, JSON.stringify({ trust: 'trusted', disabled: true }))
+  f.run('connect')
+  assert.match(readFileSync(f.instructions, 'utf8'), /agent-board:start/)
+  const ambiguous = '<!-- agent-board:start -->one<!-- agent-board:end -->\n<!-- agent-board:start -->two<!-- agent-board:end -->'
+  writeFileSync(f.instructions, ambiguous)
+  f.run('connect')
+  assert.equal(readFileSync(f.instructions, 'utf8'), ambiguous)
+  const board = join(f.home, 'data', 'agent-board.mjs')
+  writeFileSync(board, 'foreign executable')
+  writeFileSync(f.instructions, '# Personal only\n')
+  f.run('connect')
+  assert.equal(readFileSync(f.instructions, 'utf8'), '# Personal only\n')
+}))

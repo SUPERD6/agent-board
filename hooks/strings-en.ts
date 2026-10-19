@@ -214,6 +214,8 @@ export const EN: Strings = {
   paneNotOpened: (reason: string): string => `Couldn't open the progress pane: ${reason}`,
   connectDone: (list: string): string => `Connected: ${list}. After you restart them, every turn they finish reports to the pane.`,
   connectNone: 'No agent to connect was found (Codex, Gemini CLI, Cursor, OpenCode, Grok Build, Hermes Agent, Muse Code, OpenClaw).',
+  setupCodexApproval: (): string => "Codex hooks need current approval in /hooks; reporting fallback remains enabled.",
+  codexFallbackInstructions: (command: string): string => "Until these hooks are approved in Codex /hooks, report each meaningful work step as JSON on stdin to:\n\n" + command + "\n\nUse project, title, state (working/waiting/done), and steps with checkbox marks. Keep canceled steps as [-]. Use the host-provided CODEX_THREAD_ID; if absent, do not invent a session binding and tell the person reporting is unavailable.",
   connectCodexTrust: 'Codex runs a new hook only after you approve it once in its /hooks.',
   connectHermesTrust: 'Hermes Agent asks once before it runs a new hook: answer y (or start it with --accept-hooks).',
   connectSkipped: (name: string, path: string): string => `Could not read ${name}'s config, so it was left alone: ${path}`,

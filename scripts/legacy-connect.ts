@@ -2,10 +2,13 @@ import { reporterPs1, reporterSh, agentHooks, boardLangOf, boardScriptFor, COLLI
 import type { AgentSetup, HookState, SetupNotice, SetupProblem, SetupState } from '../hooks/connect-pure'
 import { langOf, STRINGS } from '../hooks/strings'
 import type { ConnectTransaction, LegacyConnectRequest } from './connect-transaction'
+import type { CodexTrustObservation } from './codex-host'
+import { codexFallbackCommand, managedFallback } from '../hooks/codex-fallback'
+import { sha256 } from '../hooks/sha256'
 
 const skillFolder = (file: string): string | null => /[\\/]SKILL\.md$/.test(file) ? file.replace(/[\\/][^\\/]*$/, '') : null
 
-export const connectLegacy = (transaction: ConnectTransaction, request: LegacyConnectRequest, bundle: string, isWin: boolean): { text: string; lines: string[]; done: string[]; problems: SetupProblem[] } => {
+export const connectLegacy = (transaction: ConnectTransaction, request: LegacyConnectRequest, bundle: string, isWin: boolean, observation?: CodexTrustObservation): { text: string; lines: string[]; done: string[]; problems: SetupProblem[] } => {
   const mode = request.mode
   const remove = mode === 'remove'
   const isAuto = mode === 'auto'
@@ -215,7 +218,7 @@ export const connectLegacy = (transaction: ConnectTransaction, request: LegacyCo
       if (hook.label === '' || done.includes(hook.label)) continue
       done.push(hook.label)
       // The old instructions section is only tidied away; the hook is in either way.
-      if (!remove) transaction.dropSection(hook.agent, home, codexHome, opencodeHome, sep)
+      if (!remove && hook.agent !== 'codex') transaction.dropSection(hook.agent, home, codexHome, opencodeHome, sep)
     } catch (error) {
       if (error instanceof Error && error.message === 'RECOVERY_CONFLICT') throw error
       // A board command (no label of its own) that fails leaves the agent's hook
@@ -229,6 +232,29 @@ export const connectLegacy = (transaction: ConnectTransaction, request: LegacyCo
       else warn(`writeFailed:${activeFile}`, hook.label === '' ? { message: 'connectBoardFailed', args: [activeFile] } : { message: 'connectFailed', args: [hook.label, activeFile] })
     }
   }
+  const codexSource = [codexHome, 'hooks.json'].join(sep)
+  const normalized = (value: string): string => value.replace(/\\/g, '/')
+  const codexTrusted = observation?.trusted === true && normalized(observation.source) === normalized(codexSource) && observation.sourceHash === sha256(readLocal(codexSource))
+  const canRetireFallback = codexTrusted && hasReporter && hasBoard && transaction.previous(board) !== undefined
+  if (existsSync(codexHome)) {
+    const instructions = [[codexHome, 'AGENTS.md'].join(sep), [codexHome, 'AGENTS.override.md'].join(sep)]
+    const effective = existsSync(instructions[1]!) && readMaybe(instructions[1]!)?.trim() !== '' ? instructions[1]! : instructions[0]!
+    if (!remove && !codexTrusted) warn('codex:approval', { message: 'setupCodexApproval', args: [] })
+    for (const file of instructions) {
+      try {
+        const before = readLocal(file)
+        const canRestore = !remove && !canRetireFallback && file === effective && transaction.previous(board) !== undefined
+        const after = managedFallback(before, remove || canRetireFallback ? null : canRestore ? s.codexFallbackInstructions(codexFallbackCommand(board, path)) : '')
+        if (after === null) { preserve(file); continue }
+        // An empty content sentinel retains existing text without creating instructions
+        // when the board is foreign or this is the overridden file.
+        if (after !== before && (remove || canRetireFallback || canRestore)) writeFile(file, after)
+      } catch (error) {
+        if (error instanceof Error && error.message === 'RECOVERY_CONFLICT') throw error
+        warn(`fallback:${file}`, { message: remove ? 'connectRemoveFailed' : 'connectBoardFailed', args: [file] })
+      }
+    }
+  }
   if (remove) {
     if (canRemoveBoard) sharedFile(board, boardCode, knownBoards)
     else if (existsSync(board)) warn(`boardRetained:${board}`, { message: 'connectBoardRetained', args: [board] })
@@ -240,7 +266,7 @@ export const connectLegacy = (transaction: ConnectTransaction, request: LegacyCo
   const isNodeReady = node !== null && isNodeSupported(node)
   if (hasBoardCommand && node === null) warn('node:missing', { message: 'setupNodeMissing', args: [NODE_MIN] })
   else if (hasBoardCommand && node !== null && !isNodeReady) warn(`node:old:${node}`, { message: 'setupNodeOld', args: [node, NODE_MIN] })
-  const state: SetupState = { agents: setupAgents([...hookStates.values()], boardFiles, isNodeReady), problems, node }
+  const state: SetupState = { agents: setupAgents([...hookStates.values()], boardFiles, isNodeReady), problems, node, codexTrusted }
   // Kept for `/progress connect status`; taking the hooks out leaves nothing to show, unless
   // the removal could not finish, whose problems stay to be shown.
   if (remove) {
@@ -249,7 +275,7 @@ export const connectLegacy = (transaction: ConnectTransaction, request: LegacyCo
     else transaction.state.setup = { agents: [], problems, node: null }
   } else transaction.state.setup = state
   const completed = done.filter(label => !failedLabels.has(label))
-  const trust = [...(completed.includes('Codex') ? [s.connectCodexTrust] : []), ...(completed.includes('Hermes Agent') ? [s.connectHermesTrust] : [])]
+  const trust = [...(completed.includes('Codex') && !codexTrusted ? [s.connectCodexTrust] : []), ...(completed.includes('Hermes Agent') ? [s.connectHermesTrust] : [])]
   // An agent found but left out is named below it, so "none found" would contradict that.
   const none = problems.length === 0 ? [s.connectNone] : []
   const lines = remove

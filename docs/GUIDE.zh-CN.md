@@ -148,3 +148,5 @@ node ~/.agent-board/agent-board.mjs --codex-remove --agent <name> --apply
 ### 安全地报告问题
 
 提供 Agent Board／host 版本、CLI／App／IDE、OS 与合成复现数据；只有可选 plugin 才需要 Claude 版本。不上传原始进度、inbox、归档、日志、session log、凭证或看板 token。[安全报告](../SECURITY.md#reporting-a-problem)。
+
+当前 Codex hooks 尚未在 /hooks 批准时，可选连接器会保留受管理的报告指示；信任未知或失效会在 connect 恢复。status 查询信任，但不修改指示。

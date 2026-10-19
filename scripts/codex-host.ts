@@ -23,7 +23,7 @@ const matchingHooks = (response: Json, config: string, expected: readonly CodexH
 }
 
 // A control-only app-server process: no thread/read, resume, model call or transcript access.
-const client = (executable: string) => {
+const client = (executable: string, timeoutMs = 5000) => {
   if (!isAbsolute(executable)) throw new Error('ABSOLUTE_CODEX_BINARY_REQUIRED')
   const child = /\.m?js$/i.test(executable) ? spawn(process.execPath, [executable, 'app-server', '--stdio'], { windowsHide: true }) : spawn(executable, ['app-server', '--stdio'], { windowsHide: true })
   let next = 0, buffer = ''
@@ -53,7 +53,7 @@ const client = (executable: string) => {
   })
   const request = (method: string, params: Json): Promise<Json> => new Promise((done, reject) => {
     const id = ++next
-    const timer = setTimeout(() => { pending.delete(id); reject(new Error('CODEX_CONTROL_TIMEOUT')) }, 5000)
+    const timer = setTimeout(() => { pending.delete(id); reject(new Error('CODEX_CONTROL_TIMEOUT')) }, timeoutMs)
     pending.set(id, { resolve: done, reject, timer })
     child.stdin.write(`${JSON.stringify({ id, method, params })}\n`)
   })
@@ -71,10 +71,11 @@ const client = (executable: string) => {
 // installations. Only Codex can report its current hashes/trust; never reproduce
 // its hash algorithm or infer approval from a written hooks.json. The caller must
 // recheck sourceHash before retiring its managed fallback instructions.
-export const inspectCodexHooks = async (executable: string, config: string, expected: readonly CodexHookIdentity[]): Promise<CodexTrustObservation> => {
+export const inspectCodexHooks = async (executable: string, config: string, expected: readonly CodexHookIdentity[], timeoutMs = 5000): Promise<CodexTrustObservation> => {
   if (expected.length === 0 || expected.length > 16 || expected.some(one => !/^[a-z][A-Za-z]+$/.test(one.event) || typeof one.command !== 'string' || one.command.trim() === '') || new Set(expected.map(one => JSON.stringify(one))).size !== expected.length) throw new Error('OWNED_HOOK_IDENTITIES_REQUIRED')
   const before = readFileSync(config)
-  const control = client(executable)
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 5000) throw new Error('INVALID_CONTROL_TIMEOUT')
+  const control = client(executable, timeoutMs)
   try {
     await control.initialize()
     const hooks = matchingHooks(await control.request('hooks/list', { cwds: [process.cwd()] }), config, expected)
