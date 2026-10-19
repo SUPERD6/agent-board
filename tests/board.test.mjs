@@ -498,7 +498,7 @@ test('a press on the board names an answered list it cannot read or replace, wit
     const out = play('')
     assert.equal(out.status, 0, out.stdout + out.stderr)
     const answered = JSON.parse(readFileSync(list, 'utf8')).answered
-    assert.deepEqual([answered.length, answered[0], answered[1].startsWith('a1b2c3d4 2 ')], [2, 'c0ffee12 1 Ship it, OK?', true])
+    assert.deepEqual([answered.length, answered[0], /^question:[a-f0-9]{64}:\d+$/.test(answered[1])], [2, 'c0ffee12 1 Ship it, OK?', true])
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -839,6 +839,7 @@ test('marking a question answered on the page or with h on the board writes only
     const { call, dir, path } = board
     const before = readFileSync(path, 'utf8')
     const hidden = () => JSON.parse(readFileSync(join(dir, 'progress-answered.json'), 'utf8')).answered
+    const question = () => JSON.parse(readFileSync(join(dir, 'progress-questions.json'), 'utf8')).records.find(row => row.words === 'PDF or HTML?' && row.isWaiting).id
     const model = async () => (await call('GET', '/api/board')).json().model
     const ask = (await model()).asks.find(one => one.agent === 'codex')
     assert.equal(ask.canHide, true)
@@ -846,7 +847,7 @@ test('marking a question answered on the page or with h on the board writes only
     const hid = await call('POST', '/api/act', { body: { key: ask.key, type: 'hide' } })
     assert.equal(hid.status, 200, hid.body)
     assert.equal(hid.json().note, 'Hidden: “PDF or HTML?”; it comes back when the question changes.')
-    assert.deepEqual(hidden(), ['d4e5f6a7 1 PDF or HTML?'])
+    assert.deepEqual(hidden(), [question()])
     const after = await model()
     assert.equal(after.asks.some(one => one.agent === 'codex'), false)
     assert.deepEqual(after.hidden.map(one => one.text), ['PDF or HTML?'])
@@ -863,7 +864,7 @@ test('marking a question answered on the page or with h on the board writes only
     const marked = play('h')
     assert.ok(marked.includes('Hidden: “PDF or HTML?”'), marked)
     assert.ok(marked.includes('1 answered, hidden · u show them again'), marked)
-    assert.deepEqual(hidden(), ['d4e5f6a7 1 PDF or HTML?'])
+    assert.deepEqual(hidden(), [question()])
     assert.equal((await model()).hidden.length, 1)
     const again = play('u')
     assert.ok(again.includes('The hidden questions are shown again.'), again)
@@ -880,10 +881,86 @@ test('marking a question answered on the page or with h on the board writes only
     const old = new Date(Date.now() - 60_000)
     utimesSync(list, old, old)
     play('h')
-    assert.deepEqual(hidden(), ['d4e5f6a7 1 PDF or HTML?'])
+    assert.deepEqual(hidden(), [question()])
     // Nothing went to any agent, and every block is as its session wrote it.
     assert.equal(readFileSync(path, 'utf8'), before)
     assert.ok(!existsSync(join(dir, 'grok-ran.json')))
+  } finally {
+    await board.close()
+  }
+})
+
+test('served questions keep hidden identities across reordered reports and a fresh board process in every language', { timeout: 30_000 }, async () => {
+  let board = await page(`\n## billing\n<!-- auto session=d4e5f6a7 agent=codex state=waiting updated=RECENT -->\n### Pick invoice format\n- [x] Read\n- [?] PDF or HTML?\n<!-- /auto session=d4e5f6a7 -->\n`)
+  try {
+    const model = async () => (await board.call('GET', '/api/board')).json().model
+    const ask = (await model()).asks.find(one => one.agent === 'codex')
+    assert.equal((await board.call('POST', '/api/act', { body: { key: ask.key, type: 'hide' } })).status, 200)
+    const original = readFileSync(board.path, 'utf8')
+    const changed = original.replace('- [x] Read\n- [?] PDF or HTML?', '- [?] PDF  or\tHTML?\n- [x] Inserted\n- [x] Read')
+    writeFileSync(board.path, changed)
+    const moved = await model()
+    assert.equal(moved.asks.some(one => one.agent === 'codex'), false)
+    assert.equal(moved.hidden.find(one => one.agent === 'codex')?.text, 'PDF  or\tHTML?')
+    const saved = Object.fromEntries(['progress-answered.json', 'progress-questions.json'].map(name => [name, readFileSync(join(board.dir, name), 'utf8')]))
+    await board.close()
+    board = await page()
+    writeFileSync(board.path, changed)
+    for (const [name, text] of Object.entries(saved)) writeFileSync(join(board.dir, name), text)
+    assert.equal((await model()).asks.some(one => one.agent === 'codex'), false)
+    const script = join(board.dir, 'read-only-board.mjs')
+    writeFileSync(script, `globalThis.AGENT_BOARD = ${JSON.stringify({ path: board.path, lang: 'en' })}\n${BOARD_SCRIPT.replace('openInBrowser(html,', '((target, done) => done(false))(html,')}`)
+    for (const lang of ['en', 'zh-TW', 'zh-CN']) {
+      const run = flag => execFileSync(process.execPath, [script, flag, '--lang', lang], { encoding: 'utf8', env: { ...process.env, CLAUDE_PROGRESS_FILE: board.path, NO_COLOR: '1' } })
+      const chat = run('--chat')
+      assert.ok(!chat.includes('PDF  or') && !chat.includes('PDF or HTML?'), chat)
+      run('--html')
+      const html = readFileSync(join(board.dir, 'progress.html'), 'utf8')
+      assert.ok(!html.includes('class="ask"') && !html.includes('data-key="section:waiting"'), html)
+      assert.match(html, /● 0<\/span>/)
+      assert.equal(readFileSync(join(board.dir, 'progress-answered.json'), 'utf8'), saved['progress-answered.json'])
+      assert.equal(readFileSync(join(board.dir, 'progress-questions.json'), 'utf8'), saved['progress-questions.json'])
+    }
+    const restored = await model()
+    const hidden = restored.hidden.find(one => one.agent === 'codex')
+    assert.equal((await board.call('POST', '/api/act', { body: { key: hidden.key, type: 'unhide' } })).status, 200)
+    assert.equal((await model()).asks.some(one => one.agent === 'codex'), true)
+  } finally {
+    await board.close()
+  }
+})
+
+test('a restarted served board applies immutable retirement evidence after stale active ledger replay', { timeout: 30_000 }, async () => {
+  let board = await page(`\n## billing\n<!-- auto session=d4e5f6a7 agent=codex state=waiting updated=RECENT -->\n### Ship invoice\n- [?] Publish invoice?\n<!-- /auto session=d4e5f6a7 -->\n`)
+  try {
+    const model = async () => (await board.call('GET', '/api/board')).json().model
+    const first = (await model()).asks.find(one => one.agent === 'codex')
+    assert.equal((await board.call('POST', '/api/act', { body: { key: first.key, type: 'hide' } })).status, 200)
+    const oldLedger = readFileSync(join(board.dir, 'progress-questions.json'), 'utf8')
+    const oldHide = readFileSync(join(board.dir, 'progress-answered.json'), 'utf8')
+    const waiting = readFileSync(board.path, 'utf8')
+    writeFileSync(board.path, waiting.replace('- [?] Publish invoice?', '- [x] Publish invoice?'))
+    await model()
+    writeFileSync(board.path, waiting)
+    const renewed = (await model()).asks.find(one => one.agent === 'codex')
+    assert.ok(renewed)
+    assert.equal((await board.call('POST', '/api/act', { body: { key: renewed.key, type: 'hide' } })).status, 200)
+    const proofs = Object.fromEntries(readdirSync(board.dir).filter(name => /^progress-questions-retired-/.test(name)).map(name => [name, readFileSync(join(board.dir, name), 'utf8')]))
+    assert.ok(Object.keys(proofs).length > 0)
+    await board.close()
+    board = await page()
+    writeFileSync(board.path, waiting)
+    writeFileSync(join(board.dir, 'progress-questions.json'), oldLedger)
+    writeFileSync(join(board.dir, 'progress-answered.json'), oldHide)
+    for (const [name, text] of Object.entries(proofs)) writeFileSync(join(board.dir, name), text)
+    assert.equal((await model()).asks.some(one => one.agent === 'codex'), true)
+    const proof = Object.keys(proofs)[0]
+    writeFileSync(join(board.dir, proof), '{')
+    const visible = (await model()).asks.find(one => one.agent === 'codex')
+    assert.ok(visible)
+    const refused = await board.call('POST', '/api/act', { body: { key: visible.key, type: 'hide' } })
+    assert.equal(refused.status, 409)
+    assert.equal(readFileSync(join(board.dir, proof), 'utf8'), '{')
   } finally {
     await board.close()
   }

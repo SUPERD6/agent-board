@@ -9,6 +9,8 @@ import { doingTask, fallbackTitle, isAnswered, waitsOnYou } from './mirror'
 import type { Tone } from './palette'
 import { countSteps, currentStepIndex, doneKey, isHereProject, isStale, isTaskComplete, RESUME } from './parse'
 import { sha256 } from './sha256'
+import { observeQuestions, questionScope, questionSlot } from './questions'
+import type { QuestionLedger, QuestionProofs } from './questions'
 
 // What the pane shows, worked out from the file and this session's own list, so the
 // drawing code only lays it out.
@@ -453,7 +455,7 @@ const rowSteps = (task: ProgressTask, s: Strings): ViewStep[] => {
 }
 
 // This session's own steps that wait on the person: answered right from the pane.
-const ownWaiting = (mine: ProgressMirror): WaitingItem[] => {
+const ownWaiting = (mine: ProgressMirror, stable?: Readonly<Record<string, string>>): WaitingItem[] => {
   const title = mine.title || fallbackTitle(mine)
   const context = contextFor(mine)
   // Keyed on the steps this session's block marks [?]: a blocked one is written [!], which no
@@ -464,7 +466,7 @@ const ownWaiting = (mine: ProgressMirror): WaitingItem[] => {
   )
 
   return mine.tasks
-    .map((task, index) => ({ task, hideKey: keys[index] ?? '' }))
+    .map((task, index) => ({ task, hideKey: stable?.[questionSlot(questionScope(mine.project, 'claude', shortId(mine.sessionId)), index)] ?? keys[index] ?? '' }))
     .filter(({ task }) => waitsOnYou(mine, task))
     .map(({ task, hideKey }) => ({
       key: `mine::${task.id}`,
@@ -508,8 +510,6 @@ const blockKeys = (task: ProgressTask): string[] =>
 // which stay their sessions' to change.
 export const answeredPath = (path: string): string => `${path.replace(/\.md$/i, '')}-answered.json`
 
-const ANSWERED_MAX = 200
-
 // How long a list that is not JSON is taken for another write caught half-way.
 const HALF_WRITE_MS = 5000
 
@@ -522,7 +522,7 @@ export const parseAnswered = (text: string, age = 0): string[] | null => {
   try {
     const data: unknown = JSON.parse(text)
     const list = data !== null && typeof data === 'object' && 'answered' in data ? data.answered : null
-    return Array.isArray(list) ? list.filter((one): one is string => typeof one === 'string' && one !== '').slice(-ANSWERED_MAX) : []
+    return Array.isArray(list) ? list.filter((one): one is string => typeof one === 'string' && one !== '') : []
   } catch {
     return Math.abs(age) < HALF_WRITE_MS ? null : []
   }
@@ -551,7 +551,7 @@ export const keptAnswered = (answered: readonly string[], projects: readonly Pro
 export const withAnswered = (answered: readonly string[], keys: readonly string[], isHidden: boolean): string[] => {
   const kept = answered.filter(one => !keys.includes(one))
 
-  return (isHidden ? [...kept, ...keys] : kept).slice(-ANSWERED_MAX)
+  return isHidden ? [...kept, ...keys] : kept
 }
 
 export const answeredJson = (answered: readonly string[]): string => `${JSON.stringify({ answered }, null, 2)}\n`
@@ -629,8 +629,11 @@ export const buildView = (
   // on you, its count and the focus, and listed under `hidden` instead.
   answered: readonly string[] = [],
   seen: Readonly<Record<string, number>> = {},
+  questions?: QuestionLedger,
+  proofs: QuestionProofs | null = { retired: [], consumed: [] },
 ): View => {
-  const marked = new Set(answered)
+  const observed = questions === undefined ? null : observeQuestions(questions, projects, mine, answered, now, false, 'preview', proofs ?? { retired: [], consumed: [] })
+  const marked = new Set(proofs === null ? [] : observed?.marked ?? answered)
   const ownId = mine === null ? '' : shortId(mine.sessionId)
   const waiting: WaitingItem[] = []
   const due: Array<TaskRow & { days: number }> = []
@@ -665,7 +668,9 @@ export const buildView = (
       // not in 等你處理, where nobody could answer them.
       const stale = isStale(task.auto, now)
       const isLive = task.auto !== null && task.auto.state !== 'ended' && !stale
-      const keys = blockKeys(task)
+      const keys = task.auto === null || observed === null
+        ? blockKeys(task)
+        : task.steps.map((step, index) => step.status === 'waiting' ? observed.keys[questionSlot(questionScope(project.name, task.auto?.agent ?? '', task.auto?.session ?? ''), index)] ?? '' : '')
       const isAsked = (index: number): boolean => !marked.has(keys[index] ?? '')
 
       task.steps.forEach((step, index) => {
@@ -795,7 +800,7 @@ export const buildView = (
       .join(' · ')
   }
 
-  const all = [...(mine === null ? [] : ownWaiting(mine)), ...waiting].sort(
+  const all = [...(mine === null ? [] : ownWaiting(mine, observed?.keys)), ...waiting].sort(
     (a, b) => whereRank(a) - whereRank(b) || askRank(a.kind) - askRank(b.kind),
   )
   const asks = all.filter(item => item.hideKey === '' || !marked.has(item.hideKey))

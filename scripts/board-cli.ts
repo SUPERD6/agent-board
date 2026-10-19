@@ -10,7 +10,7 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { runCodexLocal } from './codex-local'
 import { chmodSync, closeSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { mergeBlock, takeArchivable, takeManualDone, takeTask, setManualStep } from '../hooks/blocks'
@@ -25,6 +25,9 @@ import { parseProgress } from '../hooks/parse'
 import { qrModules, qrText } from '../hooks/qr'
 import { langOf, STRINGS } from '../hooks/strings'
 import { answeredJson, answeredPath, buildView, parseAnswered, parseSeen, seenJson, seenPath, withAnswered, withSeen } from '../hooks/view'
+import { acknowledgementKeys, emptyQuestions, isQuestionProof, isQuestionSnapshot, migratedAnswered, observeQuestions, parseQuestions, questionProofJson, questionProofOf, questionProofPath, questionsJson, questionsPath } from '../hooks/questions'
+import type { QuestionProofs } from '../hooks/questions'
+import { sha256 } from '../hooks/sha256'
 
 // The line `/progress connect` puts above the bundle sets it.
 const BAKED = (globalThis as { AGENT_BOARD?: { path?: string; lang?: string } }).AGENT_BOARD ?? {}
@@ -130,7 +133,51 @@ const pending = (scrub?: (text: string) => string) => {
 // part way through a write never resets every task's age.
 let lastSeen: Record<string, number> = {}
 let lastStat = { stat: '', at: 0 }
-const view = (projects = parseProgress(read(path)), now = Date.now()) => {
+let lastQuestions = emptyQuestions()
+const questionWriter = randomUUID()
+let questionWrite = 0
+const readQuestions = (file: string, text = read(file)) => {
+  let isMissing = false
+  try {
+    statSync(file)
+  } catch (error) {
+    if ((error as { code?: string } | null)?.code !== 'ENOENT') throw fileError(file, error)
+    isMissing = true
+  }
+  return parseQuestions(text, isMissing)
+}
+const readQuestionProofs = (): QuestionProofs | null => {
+  try {
+    if (pendingQuestionProofs.size > 0) return null
+    const proofs: QuestionProofs = { retired: [], consumed: [] }
+    for (const name of readdirSync(dirname(path))) {
+      const proof = questionProofOf(path, name)
+      if (proof === null) continue
+      if (!isQuestionProof(read(questionProofPath(path, proof.kind, proof.hash)), proof.kind, proof.hash)) return null
+      proofs[proof.kind].push(proof.hash)
+    }
+    return proofs
+  } catch {
+    return null
+  }
+}
+const pendingQuestionProofs = new Map<string, { kind: keyof QuestionProofs; hash: string }>()
+const keepQuestionProof = (kind: keyof QuestionProofs, hash: string): void => {
+  const file = questionProofPath(path, kind, hash)
+  pendingQuestionProofs.set(file, { kind, hash })
+  const text = questionProofJson(kind, hash)
+  try {
+    const fd = openSync(file, 'wx', 0o600)
+    try { writeFileSync(fd, text) } finally { closeSync(fd) }
+  } catch (error) {
+    if ((error as { code?: string } | null)?.code !== 'EEXIST') throw fileError(file, error)
+  }
+  if (!isQuestionProof(read(file), kind, hash)) throw fileError(file, { code: 'EAGAIN' })
+  pendingQuestionProofs.delete(file)
+}
+const view = (source = read(path), now = Date.now()) => {
+  for (const proof of [...pendingQuestionProofs.values()]) keepQuestionProof(proof.kind, proof.hash)
+  const projects = parseProgress(source)
   let stat = ''
   try {
     const one = statSync(path)
@@ -163,8 +210,50 @@ const view = (projects = parseProgress(read(path)), now = Date.now()) => {
     seen = {}
   }
   lastSeen = seen
+  let answered = parseAnswered(read(answeredPath(path))) ?? []
+  const file = questionsPath(path)
+  const record = readQuestions(file)
+  let proofs = readQuestionProofs()
+  if (record !== null) lastQuestions = record
+  const observed = observeQuestions(lastQuestions, projects, null, answered, now, isSettled, 'preview', proofs ?? undefined)
+  let questions = observed.ledger
+  // Chat and a one-shot read never write. Interactive readers persist before accepting hides.
+  if (record !== null && proofs !== null && isQuestionSnapshot(source) && !args.includes('--chat') && args.some(arg => ['--watch', '--serve', '--serve-child', '--keys'].includes(arg))) {
+    const incarnation = `${questionWriter}:${questionWrite++}`
+    const wrote = rewrite(file, before => {
+      if (read(path) !== source) return null
+      const current = readQuestions(file, before)
+      if (current === null) return null
+      let next = observeQuestions(current, projects, null, answered, now, isSettled, incarnation, proofs ?? undefined).ledger
+      for (const old of current.records) {
+        if (old.isPresent && !next.records.some(record => record.id === old.id && record.isPresent && record.isWaiting)) keepQuestionProof('retired', sha256(old.id))
+      }
+      proofs = readQuestionProofs()
+      if (proofs === null) return null
+      next = observeQuestions(current, projects, null, answered, now, isSettled, incarnation, proofs).ledger
+      return questionsJson(next) === questionsJson(current) ? before : questionsJson(next)
+    })
+    if (wrote !== null) {
+      lastQuestions = readQuestions(file, wrote) ?? lastQuestions
+      questions = lastQuestions
+      if (isSettled) {
+        const migrated = rewrite(answeredPath(path), before => {
+          const current = parseAnswered(before, answeredAge(answeredPath(path)))
+          if (current === null) return null
+          const latestProofs = readQuestionProofs()
+          if (latestProofs === null) return null
+          const next = migratedAnswered(current, lastQuestions, latestProofs.consumed)
+          for (const key of current) {
+            if (Object.hasOwn(lastQuestions.legacy, key) && !latestProofs.consumed.includes(sha256(key))) keepQuestionProof('consumed', sha256(key))
+          }
+          return answeredJson(next) === answeredJson(current) ? before : answeredJson(next)
+        })
+        if (migrated !== null) answered = parseAnswered(migrated) ?? answered
+      }
+    }
+  }
   // A question marked answered in a pane on this machine is kept off the board too.
-  return buildView(projects, [basename(process.cwd())], null, now, countDay(read(journalPath(path, now)), now), {}, s, parseAnswered(read(answeredPath(path))) ?? [], seen)
+  return buildView(projects, [basename(process.cwd())], null, now, countDay(read(journalPath(path, now)), now), {}, s, answered, seen, questions, readQuestionProofs())
 }
 
 const pad = (n: number): string => String(n).padStart(2, '0')
@@ -332,14 +421,24 @@ const act = (action: BoardAction): string => {
   }
   if (action.type === 'hide' || action.type === 'unhide') {
     // The list every pane on this machine reads too; nothing goes to the agent that asked.
-    const keys = action.type === 'hide' || action.key !== null ? [action.key ?? ''] : view().hidden.map(item => item.hideKey)
+    const current = view()
+    if (readQuestions(questionsPath(path)) === null) return s.hideFailed
+    const keys = action.type === 'hide' || action.key !== null ? [action.key ?? ''] : current.hidden.map(item => item.hideKey)
     if (keys.length === 0) return ''
     const isHidden = action.type === 'hide'
     const file = answeredPath(path)
     // A list the board cannot read or replace is named with its error, as its other files are.
     const wrote = rewrite(file, before => {
       const answered = parseAnswered(before, answeredAge(file))
-      return answered === null ? null : answeredJson(withAnswered(answered, keys, isHidden))
+      const latest = readQuestions(questionsPath(path))
+      const proofs = readQuestionProofs()
+      if (proofs === null || (isHidden && keys.some(key => proofs.retired.includes(sha256(key))))) return null
+      if (latest === null || (isHidden && keys.some(key => !latest.records.some(record => record.id === key && record.isWaiting && record.isPresent)))) return null
+      const projects = parseProgress(read(path))
+      const fresh = buildView(projects, [], null, now, 0, {}, s, answered ?? [], {}, latest, proofs)
+      if (isHidden && keys.some(key => ![...fresh.waiting, ...fresh.hidden].some(item => item.hideKey === key))) return null
+      const aliases = observeQuestions(latest, projects, null, answered ?? [], now, true).ledger
+      return answered === null ? null : answeredJson(withAnswered(answered, isHidden ? keys : keys.flatMap(key => acknowledgementKeys(aliases, key)), isHidden))
     })
     if (wrote === null) return s.hideFailed
     return action.type === 'hide' ? s.boardHidden(action.text) : s.boardShown
@@ -693,9 +792,9 @@ const chat = (): void => {
     const now = Date.now()
     const home = homeOrNone()
     // A reply is hidden whole, before its question is picked and cut to length.
-    const projects = parseProgress(read(path))
+    const source = read(path)
     const updates = pending(text => redact(text, home, isWin))
-    process.stdout.write(chatText(view(projects, now), updates, doneToday(read(journalPath(path, now)), now, s), s, home, isWin, CHAT_MAX, now))
+    process.stdout.write(chatText(view(source, now), updates, doneToday(read(journalPath(path, now)), now, s), s, home, isWin, CHAT_MAX, now))
   } catch (error) {
     process.exitCode = 1
     const code = (error as { code?: unknown } | null)?.code

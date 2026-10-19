@@ -278,6 +278,13 @@ def placement():
 def parser_parity():
     frag = at_time(block("12345678", title="new"), "2026-10-17T08:00:00Z")
     old = block("12345678", title="old")
+    token = "a" * 64 + ":2"
+    marked = frag.replace("<!-- /auto", f"<!-- question={token} -->\n<!-- /auto")
+    check("producer question revision metadata stays inside a complete visible block",
+          validate_mod.validate_fragment_text(marked) == []
+          and validate_mod.extract_blocks("## a\n" + marked).get("12345678") == marked.strip().splitlines())
+    check("producer question metadata is ignored inside a fenced example",
+          validate_mod.classify(["```", f"<!-- question={token} -->", "```"]) == ["hidden", "hidden", "hidden"])
 
     # --- 9. fenced code and HTML comments are not blocks ---
     fenced = "## a\n\n```md\n" + old + "```\n\n~~~\n" + old + "~~~\n"

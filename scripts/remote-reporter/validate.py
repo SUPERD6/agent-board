@@ -20,6 +20,7 @@ STATES = {"working", "waiting", "done", "ended"}
 # The same shapes as AUTO_START / AUTO_END / FENCE / PROJECT / TASK in hooks/parse.ts.
 START_RE = re.compile(r"^<!--\s*auto\s+(.*?)\s*-->\s*$")
 END_RE = re.compile(r"^<!--\s*/auto\b(.*?)-->\s*$")
+QUESTION_RE = re.compile(r"^<!--\s*question=([a-f0-9]{64}:[1-9]\d*)\s*-->\s*$")
 FENCE_RE = re.compile(r"^\s*(```|~~~)")
 PROJECT_RE = re.compile(r"^##\s+(.+?)\s*#*\s*$")
 TASK_RE = re.compile(r"^###\s+(.+?)\s*#*\s*$")
@@ -79,6 +80,9 @@ def classify(lines):
             continue
         if not in_comment and end_session(raw) is not None:
             kinds.append("end")
+            continue
+        if not in_comment and QUESTION_RE.match(raw):
+            kinds.append("text")
             continue
         line = raw
         if in_comment:
