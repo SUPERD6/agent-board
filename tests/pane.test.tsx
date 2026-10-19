@@ -33,6 +33,7 @@ type World = {
   unlistable?: Set<string>
   mtime: number
   hasTasks: boolean
+  isArchiveClockOnly?: boolean
   at?: number
   env?: Record<string, string>
   stats?: string[]
@@ -94,7 +95,16 @@ const posix = (path: string): string => path.replace(/^[A-Za-z]:\\/, '/').replac
 
 // Everything a session's engine answers beneath the plugin, with files kept in memory.
 const engineBeneath = (on: On, world: World): MockClock => {
-  const clock = mock.clock(on, { now: world.at ?? Date.parse('2026-10-16T12:00:00.000Z') })
+  // Exercise the hourly archive without thousands of unrelated polls consuming
+  // the mock hook's budget. Other tests retain every timer; the archive keeps its
+  // native callback and exact interval.
+  const clockOn = world.isArchiveClockOnly ? ((...args: Parameters<On>) => {
+    if (args[0] !== 'clock.every') return Reflect.apply(on, undefined, args)
+    const callback = args.at(-1)
+    if (typeof callback !== 'function') throw new Error('Invalid clock fixture')
+    return on('clock.every', ($, event, next) => Reflect.apply(callback, undefined, [$, { ...event, ms: event.ms === 3600000 ? event.ms : 7200000 }, next]))
+  }) as On : on
+  const clock = mock.clock(clockOn, { now: world.at ?? Date.parse('2026-10-16T12:00:00.000Z') })
   // The system says Traditional Chinese, so the pane speaks it unless a test says otherwise.
   mock.env(on, world.env ?? { HOME: '/home/me', LANG: 'zh_TW.UTF-8' })
   // A store that has looked at the inbox before, unless a test says otherwise.
@@ -1783,7 +1793,7 @@ test('a hand-kept task done for a day leaves for the archive by itself, and the 
 - [x] 打 tag
 <!-- /auto session=c55e2f10 -->
 `
-  const world: World = { files: new Map([[FILE, file]]), mtime: 1, hasTasks: true, store: { 'done:求職::Google 暑期實習': now - 2 * day } }
+  const world: World = { files: new Map([[FILE, file]]), mtime: 1, hasTasks: true, isArchiveClockOnly: true, store: { 'done:求職::Google 暑期實習': now - 2 * day } }
   const clock = engineBeneath(on, world)
   await $.session.start({ cwd: '/work/persona_framework', surface: 'terminal', isInteractive: true })
   await clock.advance(1)
@@ -3402,7 +3412,8 @@ test('connecting writes the board script and each installed agent’s board comm
   await $.session.start({ cwd: '/work/persona_framework', surface: 'terminal', isInteractive: true })
   const board = world.files.get('/home/me/.claude/agent-board.mjs') ?? ''
   expect(board.split('\n')[0]).toBe('globalThis.AGENT_BOARD = {"path":"/home/me/.claude/progress.md","lang":"zh-TW"}')
-  expect(world.files.get('/home/me/.gemini/commands/board.toml')).toContain('!{node "/home/me/.claude/agent-board.mjs" --serve}')
+  const geminiPrompt = /^prompt = (.*)$/m.exec(world.files.get('/home/me/.gemini/commands/board.toml') ?? '')?.[1] ?? 'null'
+  expect(JSON.parse(geminiPrompt)).toContain('!{node "/home/me/.claude/agent-board.mjs" --serve}')
   expect(world.files.get('/home/me/.agents/skills/agent-board/SKILL.md')).toContain('node "/home/me/.claude/agent-board.mjs"')
   expect(world.files.has('/home/me/.config/opencode/commands/board.md')).toBe(false)
 
@@ -4092,8 +4103,9 @@ const fromEarlierRelease = async ($: Engine, on: On, put: (world: World, written
 }
 
 test('an installation from 0.20.5 with no record upgrades silently: its board script, every agent’s board command and skill, and its reporter, with no agent’s hook passed over', async ($, on) => {
-  // 0.20.5's reporter and its gemini and opencode commands are byte for byte today's. Its skill
-  // is not: today's gained a sentence about chat apps, and Hermes Agent's has its own words.
+  // The reporter and OpenCode command remain unchanged. Gemini now escapes its TOML
+  // prompt; the skills gained chat-app guidance. Select the historical language by
+  // its description rather than assuming every command still matches byte for byte.
   const { world, shared, written, notices } = await fromEarlierRelease($, on, (world, before) => {
     world.files.set(BOARD_SCRIPT_FILE, releasedBoard(RELEASE_0_20_5.board))
     world.files.set(REPORTER_FILE, here(RELEASE_0_20_5.reporterSh))
@@ -4101,9 +4113,9 @@ test('an installation from 0.20.5 with no record upgrades silently: its board sc
     for (const file of BOARD_FILES) {
       const kind = file.endsWith('.toml') ? 'gemini' : file.endsWith('board.md') ? 'opencode' : 'skill'
       const texts = RELEASE_0_20_5[kind].map(here)
-      const text = kind === 'skill' ? texts.find(one => one.includes(JSON.stringify(ZH_TW.boardCommandDescription))) : texts.find(one => one === before.get(file))
+      const text = kind === 'opencode' ? texts.find(one => one === before.get(file)) : texts.find(one => one.includes(JSON.stringify(ZH_TW.boardCommandDescription)))
       expect(text).toBeDefined()
-      if (kind === 'skill') expect(text).not.toBe(before.get(file))
+      if (kind !== 'opencode') expect(text).not.toBe(before.get(file))
       world.files.set(file, text ?? '')
     }
   })

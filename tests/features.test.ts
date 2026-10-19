@@ -5,6 +5,7 @@ import { askOf } from '../hooks/ask'
 import { boardItems, boardKey, boardScreen, boardText, CHAT_MAX, chatText, doneToday, emptyBoardState, fingerprint, fit, peekInbox, pinned, redact } from '../hooks/board'
 import { addManualTask, isArchivable, manualTaskCount, mergeBlock, renderAutoBlock, setManualStep, takeArchivable, takeManualDone, takeTask, upsertAutoBlock } from '../hooks/blocks'
 import { agentHooks, boardCommands, boardScript, COLLISION, DELETE, generatedFile, isNodeSupported, isReleased, isReleasedBoard, isSetupState, isWindowsHost, NODE_MIN, nodeVersionOf, openclawPlugin, openclawPrinted, openclawSavedBy, openclawTooOld, PROBLEM_ARGS, readConfig, RELEASE_PATHS, reportCommand, reporterPs1, reporterSh, setupAgents, setupLines, withFlatHook, withGroupedHook, withHermesHooks, withoutHermesHooks, withoutOurHooks, withoutSection } from '../hooks/connect'
+import { boardRun } from '../hooks/board-commands'
 import { dashboardHtml } from '../hooks/dashboard'
 import { codexReport, putCodexBlock } from '../hooks/codex'
 import { answerKey, blockId, CLAIM_MS, claimAction, isBoardAnswer, isBoardTurn, isInboxFile, isTakenFile, isTextLog, isTranscriptPath, keepInboxDone, keepInboxFailed, MAX_TRIES, promptKey, readClaim, readTurn, takenName, transcriptTail, turnsToDigest } from '../hooks/inbox'
@@ -1712,7 +1713,7 @@ test('each agent gets a board command in the form it reads, and a missing report
   const gemini = String(files['/h/.gemini/commands/board.toml']?.edit('', false))
   // A TOML literal string, so a Windows path's backslashes stay as they are.
   // Both print the board and then open its page, whose address is the last line.
-  expect(gemini).toContain(`prompt = '''${STRINGS.en.boardCommandPrompt}\n\n!{node "/h/.claude/agent-board.mjs" --serve}\n'''`)
+  expect(JSON.parse(/^prompt = (.*)$/m.exec(gemini)?.[1] ?? 'null')).toBe(`${STRINGS.en.boardCommandPrompt}\n\n!{node "/h/.claude/agent-board.mjs" --serve}\n`)
   expect(String(files['/h/.config/opencode/commands/board.md']?.edit('', false))).toContain('!`node "/h/.claude/agent-board.mjs" --serve`')
   const skill = String(files['/h/.agents/skills/agent-board/SKILL.md']?.edit('', false))
   // The description has a colon in it; quoted, it stays one YAML value.
@@ -1741,6 +1742,27 @@ test('OpenCode generated paths use the exact Windows config root with spaces and
   expect(command?.dir).toBe(root)
   expect(command?.file).toBe(`${root}\\commands\\board.md`)
   expect(boardCommands(ctx).find(hook => hook.agent === 'skills')?.dirs).toContain(root)
+})
+
+test('every legacy board skill uses the literal-path command and adopts only exact historical output', () => {
+  const board = "/h/$literal/'quotes'/\u0060ticks\u0060/agent-board.mjs"
+  const ctx = { home: '/h', sep: '/', isWindows: false, script: '/h/progress-report.sh', inbox: '/h/progress-inbox', codexHome: '/h/.codex', grokHome: '/h/.grok', hermesHome: '/h/.hermes', openclawHome: '/h/.openclaw', board, s: STRINGS.en }
+  const command = boardRun(board)
+  const hooks = boardCommands(ctx)
+  expect(command).not.toContain(board)
+  for (const hook of hooks) {
+    const current = String(hook.edit('', false))
+    const content = hook.agent === 'gemini' ? JSON.parse(/^prompt = (.*)$/m.exec(current)?.[1] ?? 'null') : current
+    expect(content).toContain(command)
+  }
+  for (const [agent, kind] of [['skills', 'skill'], ['gemini', 'gemini'], ['opencode', 'opencode']] as const) {
+    const hook = hooks.find(one => one.agent === agent)
+    for (const template of RELEASE_0_20_5[kind]) {
+      const old = template.split(RELEASE_PATHS.board).join(board)
+      expect(hook?.edit(old, false)).toBe(hook?.edit('', false))
+      expect(hook?.edit(old + '\n# Personal edit\n', false)).toBe(COLLISION)
+    }
+  }
 })
 
 test('generated files require exact current or recorded bytes, never a familiar name or header', () => {
