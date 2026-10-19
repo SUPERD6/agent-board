@@ -282,9 +282,15 @@ test('OpenCode metadata adapter and task tool work without reading messages or C
     const testPlugin = join(home, 'adapter-test.mjs')
     writeFileSync(testPlugin, source.replace("import { tool } from '@opencode-ai/plugin'", stub))
     const { AgentBoardLocal } = await import(pathToFileURL(testPlugin))
-    const instance = await AgentBoardLocal({ client: { session: { get: async ({ path }) => ({ data: { id: path.id } }) } } })
-    await instance.event({ event: { type: 'session.status', properties: { sessionID: 'opencode-session-123', status: { type: 'busy' } } } })
     const progress = join(home, '.agent-board', 'progress.md')
+    const nativeEvent = { event: { type: 'session.status', properties: { sessionID: 'opencode-session-123', status: { type: 'busy' } } } }
+    for (const metadata of [{}, {error:true}, {data:{id:'foreign-session'}}, {data:{id:'opencode-session-123',parentID:'parent-session'}}]) {
+      const refused = await AgentBoardLocal({client:{session:{get:async()=>metadata}}})
+      await refused.event(nativeEvent)
+      assert.equal(readFileSync(progress, 'utf8'), '')
+    }
+    const instance = await AgentBoardLocal({ client: { session: { get: async ({ path }) => ({ data: { id: path.id } }) } } })
+    await instance.event(nativeEvent)
     assert.match(readFileSync(progress, 'utf8'), /agent=opencode .*state=working/)
     await instance.tool.agent_board_progress.execute({ title: 'Actual tool context', project: 'OpenCode fixture', state: 'done', steps: ['- [x] Verified adapter'] }, { sessionID: 'opencode-session-123' })
     await instance.event({ event: { type: 'session.idle', properties: { sessionID: 'opencode-session-123' } } })
