@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Preserve the existing Codex hook group positions and foreign entries on reconnect. Add a read-only current-definition trust query for legacy hooks; partial, changed, disabled, duplicate or unavailable discovery cannot establish approval. Foundation tests: 17 synthetic control-query cases and two pure hook-position cases. Keeping/restoring fallback instructions and readiness notices still requires the canonical installer integration before #102 is complete.
+
 ## 0.23.2 — 2026-10-19
 
 - **Keep unprocessed reports visible beside prompt metadata.** Read-only previews cannot establish that a prompt was accepted or answered a question. Skip prompts without hiding pending reports, including future/overflow timestamps, missing source clocks and sessions without a board binding. Prompt prose stays excluded. Tests: `pending previews keep reports and questions after future prompts` (also unsafe-order/unknown-source/unbound-session), `--chat keeps unprocessed reports and questions after future prompt metadata` (same variants).

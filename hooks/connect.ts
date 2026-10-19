@@ -107,10 +107,19 @@ const commandOf = (entry: unknown): string => {
 export const withGroupedHook = (config: Json, event: string, command: string, extra: Json = {}): Json => {
   const hooks = isRecord(config.hooks) ? config.hooks : {}
   const groups = Array.isArray(hooks[event]) ? (hooks[event] as unknown[]) : []
-  const kept = groups.filter(group => !(isRecord(group) && Array.isArray(group.hooks) && group.hooks.some(one => OURS.test(commandOf(one)))))
   const ours = { hooks: [{ ...(typeof extra.name === 'string' ? { name: extra.name } : {}), type: 'command', command, ...extra }] }
+  let placed = false
+  const kept = groups.flatMap(group => {
+    if (!isRecord(group) || !Array.isArray(group.hooks)) return [group]
+    const entries: unknown[] = []
+    for (const entry of group.hooks) {
+      if (!OURS.test(commandOf(entry))) entries.push(entry)
+      else if (!placed) { entries.push(ours.hooks[0]); placed = true }
+    }
+    return entries.length === group.hooks.length && entries.every((entry, index) => entry === group.hooks[index]) ? [group] : entries.length === 0 ? [] : [{ ...group, hooks: entries }]
+  })
 
-  return { ...config, hooks: { ...hooks, [event]: [...kept, ours] } }
+  return { ...config, hooks: { ...hooks, [event]: placed ? kept : [...kept, ours] } }
 }
 
 // Cursor's shape: `{ version: 1, hooks: { <event>: [{ command }] } }`.
@@ -232,11 +241,11 @@ const join = (ctx: ConnectContext, ...parts: string[]): string => [ctx.home, ...
 const grokSigns = (ctx: ConnectContext): string[] => ['config.toml', 'sessions', '.metadata_version', 'agent_id'].map(name => [ctx.grokHome, name].join(ctx.sep))
 
 const jsonEdit =
-  (add: (config: Json) => Json) =>
+  (add: (config: Json) => Json, preservePositions = false) =>
   (text: string, remove: boolean): string | null => {
     const config = readConfig(text)
     if (config === null) return null
-    return writeChanged(text, config, remove ? withoutOurHooks(config) : add(withoutOurHooks(config)))
+    return writeChanged(text, config, remove ? withoutOurHooks(config) : add(preservePositions ? config : withoutOurHooks(config)))
   }
 
 // Hermes Agent keeps its hooks in YAML: `hooks.<event>` is a list of `{ command, timeout }`.
@@ -364,6 +373,7 @@ export const agentHooks = (ctx: ConnectContext): AgentHook[] => {
       file: [ctx.codexHome, 'hooks.json'].join(ctx.sep),
       edit: jsonEdit(config =>
         withGroupedHook(withGroupedHook(withGroupedHook(config, 'Stop', turn('codex'), { timeout: 10 }), 'SessionEnd', end('codex'), { timeout: 3 }), 'UserPromptSubmit', prompt('codex'), { timeout: 3 }),
+        true,
       ),
     },
     {
