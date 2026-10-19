@@ -9,7 +9,7 @@ export const attachAntigravitySession = async ({ boardUrl, transport, session, s
     const current = state()
     const isOwned = !isClosed && await verifyOwner(transport) && current.session === session && ['idle', 'active'].includes(current.status) && Number.isSafeInteger(current.turns) && current.turns >= 0 && Number.isSafeInteger(current.step) && current.step >= -1
     if (!isOwned) { pending?.reject(new Error('OWNER_DISCONNECTED')); return false }
-    return pending ? current.turns >= pending.before && current.turns <= pending.before + 1 : current.status === 'idle'
+    return pending ? current.turns >= pending.before && current.turns <= pending.before + 1 : true
   }
   const unlisten = transport.listen(value => {
     if (value.event === 'init') { isClosed = true; pending?.reject(new Error('OWNER_REINITIALIZED')); void receiver?.close(); return }
@@ -30,6 +30,7 @@ export const attachAntigravitySession = async ({ boardUrl, transport, session, s
   })
   try { receiver = await boardClient(boardUrl).attach({
     agent: 'antigravity', session, scope: 'session', turn: 'session', surface, verify, onError,
+    canReceive: () => !pending && state().status === 'idle',
     deliver: async (message, accepted) => {
       if (!await verify()) throw new Error('HOST_NOT_CONNECTED')
       const current = state()
