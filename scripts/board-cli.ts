@@ -516,9 +516,10 @@ const ping = async (running: Running, waitMs = 1500): Promise<Record<string, unk
 
 const serveChild = (): void => {
   startServer({
+    messagesDirectory: flag('--messages-dir'),
     s,
     port: Number(flag('--port') ?? 0) || 0,
-    ping: { path, built },
+    ping: { path, built, messagesDirectory: flag('--messages-dir') ? resolve(flag('--messages-dir')!) : null },
     view,
     pending,
     act,
@@ -591,7 +592,7 @@ const runningPage = async (): Promise<{ page: Running; isKept: boolean } | null>
   // as gone and a second one starts.
   const first = await ping(running)
   const answer = first !== null && first !== 'silent' ? first : isRunning(running.pid) ? await ping(running, 5000) : first
-  if (answer !== null && answer !== 'silent' && typeof answer.path === 'string' && board(answer.path) === board(path) && answer.built === built) return { page: running, isKept: false }
+  if (answer !== null && answer !== 'silent' && typeof answer.path === 'string' && board(answer.path) === board(path) && answer.built === built && (flag('--messages-dir') === undefined || answer.messagesDirectory === resolve(flag('--messages-dir')!))) return { page: running, isKept: false }
   return (await stays(running, serveFile())) ? { page: running, isKept: true } : null
 }
 
@@ -635,7 +636,7 @@ const serveBoard = async (): Promise<void> => {
   if (old !== null && (await stays(old, oldServeFile))) return show(old.url, true)
   const found = await runningPage()
   if (found !== null) return show(found.page.url, found.isKept)
-  const rest = ['--lang', '--port'].flatMap(name => {
+  const rest = ['--lang', '--port', '--messages-dir'].flatMap(name => {
     const value = flag(name)
     return value === undefined ? [] : [name, value]
   })

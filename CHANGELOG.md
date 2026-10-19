@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Route messages through live session adapters.** An opt-in loopback message hub and
+  web target picker bind a receiver to its agent/session/turn, expire disconnected
+  leases, persist message ids before delivery and distinguish queue, claim, transport
+  acceptance and an actual ACK. The shared adapter API supports authenticated forwarding;
+  a Codex existing-proxy adapter steers only a loaded exact thread/turn and ignores
+  approval RPCs. Native desktop, other-agent and real-model ACK acceptance remain
+  unverified; progress cards do not imply connectivity. See `docs/MESSAGING.md`.
+  Tests: `AB-TEST-001 deduplicates exact retries and rejects conflicting contents or
+  sources`, `the served message API authenticates connectors and persists claims across
+  a server restart`, `a mock Codex proxy keeps steering and native ACK separate and never
+  answers approval RPCs` and the other `tests/messaging.test.mjs` cases.
+
 - **Wait for the test agent to start before counting it.** The existing newer-serve
   in-flight-reply test could see zero launches on a busy Windows host immediately after
   HTTP acceptance. It now waits for the launch while retaining the one-launch assertion.

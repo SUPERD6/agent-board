@@ -46,7 +46,7 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - name: Synthetic file exchange and mock owner tests
-        run: node --test tests/exchange.test.mjs
+        run: node --test tests/exchange.test.mjs tests/messaging.test.mjs
 
       # The board script other agents run, on plain Node.
       - name: Board script tests

@@ -208,3 +208,7 @@ This PR is a common foundation and does not close the full multi-agent acceptanc
 
 Progress sharing is local file interoperability. It does not imply active-session messaging,
 remote synchronization, a real dot connection, or tool/merge approval from ordinary replies.
+
+The opt-in [connected-session messaging](MESSAGING.md) feature provides a separate web
+target picker and host-adapter API. Its live connection and ACK acceptance are independent
+of this progress integration. No receiving target is inferred from an agent name or card.

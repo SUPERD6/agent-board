@@ -1213,6 +1213,7 @@ const serveIn = () => {
   const served = servedAt(run, path)
   // Closes every page it was given and waits for each to take its address file away.
   const end = async urls => {
+    const pid = existsSync(served) ? JSON.parse(readFileSync(served, 'utf8')).pid : null
     for (const url of new Set(urls.filter(Boolean))) {
       const { port, searchParams } = new URL(url)
       await new Promise(done => {
@@ -1222,6 +1223,13 @@ const serveIn = () => {
       })
     }
     for (let tries = 0; existsSync(served) && tries < 50; tries++) await new Promise(done => setTimeout(done, 100))
+    // Windows can still hold the process's working folder after its address file is
+    // removed. Wait for that owned server to exit before deleting the fixture.
+    const alive = () => { try { process.kill(pid, 0); return true } catch { return false } }
+    if (typeof pid === 'number' && pid !== process.pid) {
+      for (let tries = 0; alive() && tries < 50; tries++) await new Promise(done => setTimeout(done, 100))
+      assert.ok(!alive(), 'the fixture server must exit before cleanup')
+    }
     rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   }
   return { dir, path, script, env, serve, urlOf, served, end }
