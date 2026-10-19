@@ -16,7 +16,7 @@ const fixture = fn => {
   const progress = join(root, 'progress.md')
   const hooks = join(home, '.codex', 'hooks.json')
   const skill = join(home, '.agents', 'skills', 'agent-board', 'SKILL.md')
-  const env = { ...process.env, CLAUDE_PROGRESS_FILE: '', CODEX_THREAD_ID: session, NO_COLOR: '1' }
+  const env = { ...process.env, CLAUDE_PROGRESS_FILE: '', CODEX_THREAD_ID: session, NO_COLOR: '1', OPENCODE_CONFIG_DIR: '', XDG_CONFIG_HOME: '', OPENCLAW_STATE_DIR: '', DSH_HOME: '' }
   const run = (file, args, input) => spawnSync(process.execPath, [file, ...args], { env, input: input === undefined ? undefined : JSON.stringify(input), encoding: 'utf8', windowsHide: true, timeout: 15000 })
   const isolated = ['--home', home, '--codex-dir', join(home, '.codex'), '--grok-dir', join(home, '.grok'), '--hermes-dir', join(home, '.hermes')]
   const install = (...args) => run(setup, [...isolated, ...args])
@@ -274,7 +274,7 @@ test('OpenCode metadata adapter and task tool work without reading messages or C
     const testPlugin = join(home, 'adapter-test.mjs')
     writeFileSync(testPlugin, source.replace("import { tool } from '@opencode-ai/plugin'", stub))
     const { AgentBoardLocal } = await import(pathToFileURL(testPlugin))
-    const instance = await AgentBoardLocal({ client: { session: { get: async () => ({ data: {} }) } } })
+    const instance = await AgentBoardLocal({ client: { session: { get: async ({ path }) => ({ data: { id: path.id } }) } } })
     await instance.event({ event: { type: 'session.status', properties: { sessionID: 'opencode-session-123', status: { type: 'busy' } } } })
     const progress = join(home, '.agent-board', 'progress.md')
     assert.match(readFileSync(progress, 'utf8'), /agent=opencode .*state=working/)
@@ -288,6 +288,191 @@ test('OpenCode metadata adapter and task tool work without reading messages or C
 test('an unsupported bootstrap target is refused without installing anything', () => fixture(f => {
   assert.notEqual(f.install('--agent', 'imaginary', '--apply').status, 0)
   assert.ok(!existsSync(f.root))
+}))
+
+test('setup refuses a config change after planning instead of overwriting another writer', () => fixture(f => {
+  assert.equal(f.install('--apply').status, 0)
+  const loaded = JSON.parse(readFileSync(f.hooks))
+  loaded.hooks.UserPromptSubmit.push({hooks:[{type:'command',command:'user-first'}]})
+  f.save(f.hooks, JSON.stringify(loaded))
+  const preload = join(f.home, 'concurrent-writer.mjs')
+  f.save(preload, `import fs from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
+const original = fs.readFileSync
+let changed = false
+fs.readFileSync = (file, ...args) => {
+  const result = original(file, ...args)
+  if (file === ${JSON.stringify(f.skill)} && !changed) {
+    changed = true
+    const config = JSON.parse(original(${JSON.stringify(f.hooks)}, 'utf8'))
+    config.hooks.UserPromptSubmit.push({hooks:[{type:'command',command:'user-concurrent'}]})
+    fs.writeFileSync(${JSON.stringify(f.hooks)}, JSON.stringify(config))
+  }
+  return result
+}
+syncBuiltinESMExports()
+`)
+  const result = spawnSync(process.execPath, ['--import', pathToFileURL(preload).href, f.script, '--codex-setup', '--home', f.home, '--codex-dir', join(f.home,'.codex'), '--apply'], {env:f.env, encoding:'utf8', windowsHide:true})
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /INSTALL_CHANGED/)
+  assert.match(readFileSync(f.hooks, 'utf8'), /user-concurrent/)
+}))
+
+test('OpenCode honors its config override for installation, doctor and removal', () => fixture(f => {
+  f.env.XDG_CONFIG_HOME = join(f.home, 'xdg')
+  f.env.OPENCODE_CONFIG_DIR = join(f.home, 'native config')
+  assert.equal(f.install('--agent', 'opencode', '--apply').status, 0)
+  const plugin = join(f.env.OPENCODE_CONFIG_DIR, 'plugins', 'agent-board-local.js')
+  assert.ok(existsSync(plugin))
+  assert.ok(existsSync(join(f.env.OPENCODE_CONFIG_DIR, 'commands', 'board.md')))
+  assert.ok(!existsSync(join(f.home, '.config', 'opencode')))
+  assert.equal(JSON.parse(f.command(['--codex-doctor', '--agent', 'opencode']).stdout).installed, true)
+  f.env.OPENCODE_CONFIG_DIR = join(f.home, 'changed-root')
+  assert.notEqual(f.install('--agent', 'opencode', '--apply').status, 0)
+  assert.ok(existsSync(plugin))
+  f.env.OPENCODE_CONFIG_DIR = join(f.home, 'native config')
+  assert.equal(f.command(['--codex-remove', '--agent', 'opencode', '--apply']).status, 0)
+  assert.ok(!existsSync(plugin))
+}))
+
+test('auto setup detects overridden host directories without scanning sessions', () => fixture(f => {
+  f.env.OPENCODE_CONFIG_DIR = join(f.home, 'opencode-dir')
+  f.env.OPENCLAW_STATE_DIR = join(f.home, 'openclaw-dir')
+  f.env.DSH_HOME = join(f.home, 'deepseek-dir')
+  for (const file of [f.env.OPENCODE_CONFIG_DIR, f.env.OPENCLAW_STATE_DIR, f.env.DSH_HOME]) mkdirSync(file)
+  const preview = spawnSync(process.execPath, [resolve('scripts/setup-agent.mjs'), '--home', f.home, '--codex-dir', join(f.home, '.codex'), '--grok-dir', join(f.home, '.grok'), '--hermes-dir', join(f.home, '.hermes')], {env:f.env, encoding:'utf8', windowsHide:true})
+  assert.equal(preview.status, 0, preview.stderr)
+  assert.deepEqual(JSON.parse(preview.stdout).targets, ['opencode', 'openclaw', 'deepseek'])
+  assert.ok(!existsSync(f.root))
+}))
+
+test('OpenClaw metadata setup preserves other plugins and refuses edited or disabled definitions', () => fixture(f => {
+  const file = join(f.home, '.openclaw', 'openclaw.json')
+  const other = { enabled: true, config: { keep: true } }
+  f.save(file, JSON.stringify({ plugins: { allow: ['other'], entries: { other }, load: { paths: ['other.mjs'] } } }))
+  assert.equal(f.install('--agent', 'openclaw', '--apply').status, 0)
+  const loaded = JSON.parse(readFileSync(file))
+  assert.equal(loaded.plugins.entries['agent-board-local'].hooks.allowConversationAccess, false)
+  assert.deepEqual(loaded.plugins.entries.other, other)
+  assert.deepEqual(loaded.plugins.allow, ['other', 'agent-board-local'])
+  assert.deepEqual(JSON.parse(f.install('--agent', 'openclaw').stdout).changes, [])
+  loaded.plugins.entries['agent-board-local'].enabled = false
+  f.save(file, JSON.stringify(loaded))
+  assert.notEqual(f.install('--agent', 'openclaw', '--apply').status, 0)
+  assert.equal(JSON.parse(readFileSync(file)).plugins.entries['agent-board-local'].enabled, false)
+  loaded.plugins.entries['agent-board-local'].enabled = true
+  f.save(file, JSON.stringify(loaded))
+  assert.equal(f.command(['--codex-remove', '--agent', 'openclaw', '--apply']).status, 0)
+  const removed = JSON.parse(readFileSync(file))
+  assert.deepEqual(removed.plugins.entries, { other })
+  assert.deepEqual(removed.plugins.allow, ['other'])
+  assert.deepEqual(removed.plugins.load.paths, ['other.mjs'])
+}))
+
+test('OpenClaw native metadata callbacks fence stale runs and never request conversation access', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'openclaw-status-'))
+  try {
+    const env = { ...process.env, CLAUDE_PROGRESS_FILE: '', OPENCLAW_STATE_DIR: join(home, '.openclaw') }
+    const result = spawnSync(process.execPath, [setup, '--home', home, '--agent', 'openclaw', '--apply'], { env, encoding: 'utf8', windowsHide: true })
+    assert.equal(result.status, 0, result.stderr)
+    const folder = join(home, '.agent-board', 'adapters', 'openclaw')
+    assert.equal(JSON.parse(readFileSync(join(folder, 'openclaw.plugin.json'))).id, 'agent-board-local')
+    const plugin = (await import(pathToFileURL(join(folder, 'agent-board-local.mjs')))).default
+    const hooks = new Map()
+    let subscription
+    plugin.register({ on: (name, fn) => hooks.set(name, fn), agent: { events: { registerAgentEventSubscription: value => { subscription = value } } } })
+    assert.deepEqual([...hooks.keys()], ['session_start', 'session_end'])
+    assert.equal(subscription.payload, 'metadata')
+    assert.deepEqual(subscription.streams, ['lifecycle'])
+    const sessionId = 'openclaw-native-session-123'
+    const read = () => readFileSync(join(home, '.agent-board', 'progress.md'), 'utf8')
+    hooks.get('session_start')({ sessionId, get messages() { throw Error('PRIVATE_DATA_READ') } })
+    const emit = (phase, runId) => subscription.handle({ stream: 'lifecycle', sessionId, runId, data: { phase } })
+    emit('start', 'native-run-1')
+    assert.match(read(), /agent=openclaw .*state=working/)
+    emit('end', 'native-run-1')
+    assert.match(read(), /state=waiting/)
+    emit('start', 'native-run-2')
+    assert.throws(() => emit('end', 'native-run-1'), /AGENT_BOARD_REPORT_FAILED/)
+    assert.match(read(), /state=working/)
+    emit('error', 'native-run-2')
+    assert.match(read(), /state=waiting/)
+    hooks.get('session_end')({ sessionId, reason: 'restart' })
+    assert.match(read(), /state=waiting/)
+    hooks.get('session_end')({ sessionId, reason: 'shutdown' })
+    assert.match(read(), /state=ended/)
+    assert.throws(() => plugin.register({}), /HOST_API_UNSUPPORTED/)
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+test('DeepSeek setup appends an owned native patch and preserves other YAML on removal', () => fixture(f => {
+  f.env.DSH_HOME = join(f.home, '.dsh')
+  const file = join(f.env.DSH_HOME, 'cordis.patch.yml')
+  const other = '# Personal configuration\n- id: another-plugin\n  config:\n    enabled: true\n'
+  f.save(file, other)
+  assert.equal(f.install('--agent', 'deepseek', '--apply').status, 0)
+  const text = readFileSync(file, 'utf8')
+  assert.ok(text.startsWith(other))
+  assert.match(text, /- insert:\n    - id: agent-board-local/)
+  assert.match(text, /name: "file:/)
+  assert.deepEqual(JSON.parse(f.install('--agent', 'deepseek').stdout).changes, [])
+  assert.equal(f.command(['--codex-remove', '--agent', 'deepseek', '--apply']).status, 0)
+  assert.equal(readFileSync(file, 'utf8'), other)
+}))
+
+test('DeepSeek setup refuses complex or edited YAML without changing it', () => fixture(f => {
+  f.env.DSH_HOME = join(f.home, '.dsh')
+  const file = join(f.env.DSH_HOME, 'cordis.patch.yml')
+  for (const text of ['---\n- id: other\n...\n', '{"plugins": []}\n', '# agent-board-local:start\n- insert: []\n']) {
+    f.save(file, text)
+    assert.notEqual(f.install('--agent', 'deepseek', '--apply').status, 0)
+    assert.equal(readFileSync(file, 'utf8'), text)
+  }
+}))
+
+test('DeepSeek native callbacks report their own identity and preserve task completion', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'deepseek-status-'))
+  try {
+    const env = { ...process.env, CLAUDE_PROGRESS_FILE: '', DSH_HOME: join(home, '.dsh') }
+    const installed = spawnSync(process.execPath, [setup, '--home', home, '--agent', 'deepseek', '--apply'], { env, encoding: 'utf8', windowsHide: true })
+    assert.equal(installed.status, 0, installed.stderr)
+    const { apply } = await import(pathToFileURL(join(home, '.agent-board', 'adapters', 'deepseek.mjs')))
+    const hooks = new Map(), warnings = []
+    apply({ on: (name, fn) => hooks.set(name, fn), logger: {warn: code => warnings.push(code)} })
+    assert.doesNotThrow(() => hooks.get('agent/created')({agent: {session: {header: {id:'bad?'}}, status: 'idle'}}))
+    assert.deepEqual(warnings, ['AGENT_BOARD_REPORT_FAILED'])
+    const agent = { session: { header: { id: 'deepseek-native-session-123' } }, status: 'idle', get messages() { throw Error('PRIVATE_DATA_READ') } }
+    const read = () => readFileSync(join(home, '.agent-board', 'progress.md'), 'utf8')
+    hooks.get('agent/created')({ agent })
+    hooks.get('agent/status')({ agent, status: 'running' })
+    assert.match(read(), /agent=deepseek .*state=working/)
+    assert.ok(!read().includes('agent=codex'))
+    const report = spawnSync(process.execPath, [join(home, '.agent-board', 'agent-board.mjs'), '--codex-report', '--agent', 'deepseek', '--session', agent.session.header.id], { env, encoding: 'utf8', windowsHide: true, input: JSON.stringify({ title: 'Synthetic native task', state: 'done', steps: ['- [x] Complete'] }) })
+    assert.equal(report.status, 0, report.stderr)
+    hooks.get('agent/status')({ agent, status: 'idle' })
+    assert.match(read(), /state=done/)
+    hooks.get('agent/status')({ agent, status: 'running' })
+    assert.match(read(), /state=working/)
+    hooks.get('agent/disposed')({ agent })
+    assert.match(read(), /state=ended/)
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+test('Grok prompt hooks return a waiting session to working through the native shell shape', () => fixture(f => {
+  assert.equal(f.install('--agent', 'grok', '--apply').status, 0)
+  const hooks = JSON.parse(readFileSync(join(f.home, '.grok', 'hooks', 'agent-board-local.json'))).hooks
+  const states = { SessionStart: 'waiting', UserPromptSubmit: 'working', Stop: 'waiting', SessionEnd: 'ended' }
+  for (const [name, state] of Object.entries(states)) {
+    const command = hooks[name][0].hooks[0].command
+    const isWindows = process.platform === 'win32'
+    const result = spawnSync(isWindows ? process.env.ComSpec || 'cmd.exe' : '/bin/sh', isWindows ? ['/d', '/s', '/c', `"${command}"`] : ['-c', command], {
+      env: f.env, input: JSON.stringify({ sessionId: 'grok-native-session-123', hookEventName: name, prompt: 'PRIVATE_PAYLOAD' }),
+      encoding: 'utf8', windowsHide: true, windowsVerbatimArguments: isWindows,
+    })
+    assert.equal(result.status, 0, result.stderr)
+    assert.ok(readFileSync(f.progress, 'utf8').includes(`state=${state}`))
+  }
+  assert.ok(!readFileSync(f.progress, 'utf8').includes('PRIVATE_PAYLOAD'))
 }))
 
 test('auto setup does not mistake an Antigravity profile or the shared gemini directory for Gemini CLI', () => fixture(f => {
@@ -307,9 +492,10 @@ test('all targets initialize one shared board and explicitly name unfinished nat
   const result = spawnSync(process.execPath, [installer, '--agent', 'all', '--home', f.home, '--codex-dir', join(f.home, '.codex'), '--grok-dir', join(f.home, '.grok'), '--hermes-dir', join(f.home, '.hermes'), '--apply'], { env: { ...process.env, CLAUDE_PROGRESS_FILE: '' }, encoding: 'utf8', windowsHide: true, timeout: 30000 })
   assert.equal(result.status, 0, result.stderr)
   const plans = JSON.parse(result.stdout).plans
-  assert.equal(plans.length, 9)
+  assert.equal(plans.length, 10)
   assert.equal(new Set(plans.map(plan => plan.progress)).size, 1)
-  for (const agent of ['hermes', 'openclaw']) assert.equal(plans.find(plan => plan.agent === agent).capabilities.lifecycle, 'adapter-pending')
+  assert.equal(plans.find(plan => plan.agent === 'hermes').capabilities.lifecycle, 'adapter-pending')
+  for (const agent of ['openclaw', 'deepseek']) assert.equal(plans.find(plan => plan.agent === agent).capabilities.lifecycle, 'adapter-installed-unverified')
   assert.equal(plans.find(plan => plan.agent === 'antigravity').capabilities.lifecycle, 'adapter-installed-unverified')
   assert.ok(existsSync(join(f.home, '.gemini', 'commands', 'board.toml')))
   assert.ok(existsSync(join(f.home, '.hermes', 'skills', 'agent-board', 'SKILL.md')))

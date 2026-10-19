@@ -43,13 +43,15 @@ Put logic in pure `hooks/` modules; engine calls stay in `hooks/register.tsx`. U
 
 Record progress, native hook execution, UI controls, transport acceptance and actual model ACKs separately. Identify the native host and surface; an owned app-server is not a CLI TTY or a desktop chat. A mock, tagged file or accepted RPC cannot prove live delivery. Never use a normal reply as tool/merge approval. Real model tests require an authorized disposable binding and a bounded prompt budget; stop only your own test processes afterward.
 
+For optional OpenCode SDK/DeepSeek loader checks, use the pinned packages and disposable prefix in the [portable acceptance record](docs/validation/2026-10-19-portable-hosts.md). `scripts/check-host-contracts.mjs --runtime-dir <prefix>` uses the actual packages with synthetic host objects; it is not native model acceptance. Normal installation adds no npm dependencies.
+
 ## The file format is versioned
 
 [FORMAT.md](docs/FORMAT.md) is a public interface shared with other writers. Preserve every valid older shape. Add optional marker attributes compatibly; a new mark, state or line shape needs a format-version decision first. Change parser, writer, tests and the format specification and translated guides together when behavior changes. Keep the three rule languages and `scripts/claude-md-rule.md` synchronized if changing the Claude rule.
 
 ## Images
 
-The README and guides have no screenshot gallery. Historical assets remain in `docs/images/`. Generated SVGs come from `bun docs/preview/render.ts`; never hand-edit them. `node docs/preview/png.mjs` renders social previews; its fonts/tool requirements are documented in the preview sources. A synthetic render is not native acceptance evidence. Keep bearer URLs, conversations and private identifiers out of public images.
+The READMEs share one English screenshot of the current interactive board, labelled synthetic. Keep it short; there is no gallery in the guides. Historical assets remain in `docs/images/`. Generated SVGs come from `bun docs/preview/render.ts`; never hand-edit them. `node docs/preview/png.mjs` renders social previews; its fonts/tool requirements are documented in the preview sources. A synthetic render is not native acceptance evidence. Keep bearer URLs, conversations and private identifiers out of public images.
 
 ## Releases
 

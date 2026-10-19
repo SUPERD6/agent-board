@@ -48,7 +48,8 @@ Setup detects configuration targets, not running sessions. It installs the board
 | Codex | Independent setup, six hooks and own-thread reports. Native owned app-server hooks and ACKs tested; CLI TTY and desktop App automatic hooks/receiving need separate acceptance. |
 | Antigravity CLI | Independent setup, four native hooks and owned-stream messaging tested on Windows. App/IDE acceptance remains separate. |
 | Cursor, OpenCode, Grok Build, Muse Code | Independent hooks or plugin generated. Native execution and receiving vary by host; installation alone is not acceptance. |
-| Hermes Agent, OpenClaw | Board and skill; independent lifecycle adapters pending. |
+| OpenClaw, DeepSeek Harness | Independent native metadata plugins and skills; isolated callback/loader checks passed. Native applications and receiving remain unverified. |
+| Hermes Agent | Board and skill; independent lifecycle adapter pending. |
 | Claude Code | Optional native pane, Task mirroring and its plugin connector flow. |
 | dot and other web agents | Explicit progress relay; no native receiver verified. |
 
@@ -76,6 +77,10 @@ Use the exact paths printed by setup on Windows or with a custom install. `--wat
 `--serve` opens the interactive web board. It can tick manual steps, archive tasks, import a valid progress block, copy replies, mark questions read and restore them. It has no general task-editing form. **Send** appears only for an exact live adapter; offline cards keep **Copy** and **Copy resume** where available. [Enable messaging](docs/MESSAGING.md).
 
 Closing the tab leaves the service running. Run the same command to reopen it; **Close the board** stops it. Idle shutdown is off by default; `--idle-minutes 30` opts in. `--lan` is optional and has separate access limits; see [Security](SECURITY.md).
+
+![Interactive board with a question, agent progress and a manual checklist](docs/images/interactive-board-en.jpg)
+
+*Interface example with synthetic data. Send requires a live adapter; this screenshot is not native delivery evidence.*
 
 ## Optional Claude Code pane
 

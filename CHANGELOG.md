@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Initialize more hosts independently.** Add OpenClaw metadata lifecycle subscriptions, a plugin manifest and native skill without conversation access; add DeepSeek Harness's Cordis lifecycle plugin, owned YAML patch and native skill. Grok prompt submission returns idle work to working. Respect OpenCode's config overrides and refuse foreign metadata or a moved installation root. Tests: `OpenClaw native metadata callbacks fence stale runs and never request conversation access`, `DeepSeek native callbacks report their own identity and preserve task completion`, `DeepSeek setup appends an owned native patch and preserves other YAML on removal`, `Grok prompt hooks return a waiting session to working through the native shell shape`, `OpenCode honors its config override for installation, doctor and removal`, `auto setup detects overridden host directories without scanning sessions`.
+- **Check the shared message contract across hosts.** Synthetic adapters use one durable store, exchange in both directions, deduplicate ids and refuse inactive sources/targets. No new native receiver or model-delivery claim. Test: `portable agents share one durable synthetic hub without implicit native delivery or expiry`.
+- **Preserve concurrent setup edits.** Compare the original planning snapshot under the installation lock, including other ownership records, instead of rereading a later snapshot that could hide another writer. Test: `setup refuses a config change after planning instead of overwriting another writer`.
+- **Refresh the interactive board image.** Share one current English UI screenshot across all three READMEs, label its synthetic data, and retain the expanded installation prompt. Manually checked question hiding/restoration, card expansion, manual-step completion and service reuse; no image is claimed as a model-delivery result.
+
 - **Wait for asynchronous progress observation in the regression test.** After writing a fresh exact-session report, poll for the server to observe it, as the real page does. Keep future timestamps and wrong sessions rejected. Test: `handoffs time out visibly until exact fresh progress appears, independently of a live receiver`. No runtime or release-bundle change.
 
 ## 0.23.0 — 2026-10-19

@@ -21,6 +21,8 @@ node scripts/setup-agent.mjs --apply
 
 共用安裝器寫入看板、skill 及已實作的原生 adapter，不需要 Claude Code 或另一個模型。[支援範圍](SETUP.md#native-status-adapters)會區分已安裝與待實作項目。
 
+OpenClaw、DeepSeek Harness 已有獨立狀態 plugin 與原生 skill；Grok 新提示會切回工作中，OpenCode 遵循設定目錄覆寫。[跨 host 驗收](validation/2026-10-19-portable-hosts.md)區分隔離回呼／SDK 檢查與未執行的原生測試。hooks 不會安裝收訊通道；接到同一私有訊息目錄的 agent 共用回執與去重紀錄，任務封存不會清掉訊息 ID。
+
 原生 hooks 回報活動，不推測任務步驟。Codex Stop、Antigravity Stop 代表等待下一回合，不是對話關閉或任務完成。原生新提示／啟動會重新啟用同一區塊。任務標題、步驟、阻擋及完成由 agent 明確回報，且只能綁定自身可證明的 session。缺少 host context 時，不猜 ID、不讀對話來湊回報。
 
 舊進度卡片不能證明程序仍在執行；應用程式開著，也不能證明該 session 已載入 hooks 或註冊傳訊 adapter。[原生驗收紀錄](validation/2026-10-19-native-hooks.md)分別記錄這些能力。

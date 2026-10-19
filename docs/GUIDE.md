@@ -21,6 +21,8 @@ Read back the generated definitions and complete the host's trust/enablement req
 
 The common installer writes the shared board, skills and available native adapters. It needs neither Claude Code nor another model. [Adapter coverage](SETUP.md#native-status-adapters) distinguishes installed adapters from pending ones.
 
+OpenClaw and DeepSeek Harness now have independent metadata plugins and native skills; Grok reports new prompts as working. OpenCode respects its config-directory overrides. [Portable acceptance](validation/2026-10-19-portable-hosts.md) records isolated callback/SDK checks and unrun native surfaces. Hooks do not install receiving transports. Agents attached to one private message directory share its receipts and deduplication history; task archiving does not expire those message ids.
+
 Native hooks report activity, not inferred task steps. Codex Stop and Antigravity Stop mean waiting for another turn, not a closed conversation or completed task. A new native prompt/start reactivates the same block. Task titles, steps, blockers and completion come from explicit reports bound to the agent's own proven session. Without host-provided context, do not guess an id or inspect conversations to manufacture a report.
 
 An old progress card is not proof that a process is running. Equally, an open application is not proof that its session loaded the hooks or registered a message adapter. [Native acceptance evidence](validation/2026-10-19-native-hooks.md) records these separately.
