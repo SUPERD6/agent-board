@@ -10,7 +10,7 @@ export const EN: Strings = {
   codexTask: 'Local Codex task',
   codexProject: 'Codex',
   codexLifecycle: 'Local session activity; Codex explicitly reports task steps',
-  codexTrust: 'Installation does not trust hooks. In CLI review and trust them with /hooks; in desktop use the hook review UI. If it is unavailable, automatic reporting remains unverified.',
+  codexTrust: 'Installation does not trust hooks. List the six installed definitions and their hooks.json source, then ask the user to review and trust them in local Codex CLI /hooks. Do not assume desktop has the same entry. Read trust back and observe real events afterward; without execution keep acceptance unverified. Do not bypass trust globally.',
   codexPrivacy: 'Keeps only session, turn, state and explicit task summaries. Never reads transcripts, stores hook prompts, tool inputs or replies, or sends content to another model.',
   codexDoctor: 'Checks files and hook definitions, not hook trust or execution. Verify CLI and desktop separately.',
   lang: 'en' as Lang,

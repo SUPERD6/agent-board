@@ -39,6 +39,10 @@ test('Codex-only setup previews every persistent change without writing', () => 
 test('Codex-only setup initializes the board and skill without Claude and is idempotent', () => fixture(f => {
   assert.equal(f.install('--apply').status, 0)
   assert.ok(existsSync(f.progress) && existsSync(f.skill))
+  const instructions = readFileSync(f.skill, 'utf8')
+  assert.match(instructions, /ask the user.*\/hooks/)
+  assert.ok(instructions.includes(f.hooks))
+  assert.match(instructions, /SessionStart, UserPromptSubmit, PermissionRequest, Stop, Interrupt, SessionEnd/)
   const again = f.install()
   assert.deepEqual(JSON.parse(again.stdout).changes, [])
   const doctor = f.command(['--codex-doctor', '--home', f.home])
