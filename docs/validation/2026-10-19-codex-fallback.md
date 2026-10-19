@@ -89,6 +89,21 @@ The initial internal-write-only fix left direct sidecar replacements unstamped. 
 
 No full suite was run after this change. The focused regression proves timestamp isolation and direct-replacement compatibility, not the cause or resolution of full-suite timeouts or prior large Node walltime stalls. Final-input hashes are retained in `issue-102-mtime-inputs.json`; all previous full-suite failures remain retained. Parent-owned board timeout guards are outside this scoped commit.
 
+## Adoption fixture integration
+
+The first PR #141 CI head, `7645141`, failed the four actual bundled-adoption
+cases because the shared fixture now supplied an explicit missing control binary.
+The preload correctly blocked that attempted spawn, failing the existing
+no-child-process assertion before any host could execute. These four cases now
+omit that shared option while retaining their own allowlisted home, empty PATH
+and child-process blocker. General trust fixtures still use an explicit synthetic
+or missing executable, and the no-native-attempt assertion is unchanged.
+
+All four adoption cases passed afterward on Node 24.12.0 in 4.514 seconds
+(`issue-102-adoption-guard-green.log`). The initial CI failures are retained in
+the acceptance workspace, not replaced by this focused result. Product code,
+trust and permanent settings are unchanged by this fixture correction.
+
 ## Bounded page fixtures
 
 The next complete 11-file Node attempt on actual-main merge `720a952` was interrupted
