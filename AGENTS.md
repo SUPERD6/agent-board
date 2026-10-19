@@ -21,6 +21,7 @@ tsc -p .                               # type check; needs .claude-plugin/types/
 bash tests/setup.check.sh              # installer checks for scripts/setup.sh (CI: Linux); needs bash and python3
 powershell -NoProfile -ExecutionPolicy Bypass -File tests/setup.check.ps1   # installer checks for scripts/setup.ps1 (CI: Windows)
 node --test tests/exchange.test.mjs    # local exchange scripts; needs Node 22.18+ or 24 (loads .ts files directly)
+node --test tests/messaging.test.mjs   # connected-session API and synthetic owner adapters; no real model calls
 python3 -B scripts/remote-reporter/test_pipeline.py   # remote reporter tests; stdlib Python, runs in a temp folder
 node --test tests/board.test.mjs       # the board script on plain Node; needs Node 22.18+ or 24
 bun scripts/build-board.ts --check     # hooks/board-script.ts matches its sources (CI pins Bun 1.4.2)

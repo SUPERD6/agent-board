@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **Route messages through live session adapters.** An opt-in loopback message hub and
+  web target picker bind a receiver to its agent/session/turn, expire disconnected
+  leases, persist message ids before delivery and distinguish queue, claim, transport
+  acceptance and an actual ACK. The shared adapter API supports authenticated forwarding;
+  a Codex existing-proxy adapter steers only a loaded exact thread/turn, while an
+  exclusive-owner adapter starts a turn on its own idle loaded session and correlates
+  the actual new-turn ACK. Both ignore approval RPCs. A disposable real app-server
+  session passed self-delivery, duplicate suppression and conflict rejection; CLI,
+  desktop and other-agent acceptance remain separate. See `docs/MESSAGING.md`.
+  Tests: `AB-TEST-001 deduplicates exact retries and rejects conflicting contents or
+  sources`, `the served message API authenticates connectors and persists claims across
+  a server restart`, `a mock Codex proxy keeps steering and native ACK separate and never
+  answers approval RPCs`, `an owned idle Codex session accepts only its actual new turn
+  ACK and deduplicates self delivery` and the other `tests/messaging.test.mjs` cases.
+
 Agent-assisted Codex hook trust previews six owned declarations and, after explicit user
 consent, merges their exact hashes through Codex's config API. It preserves unrelated
 settings and reads trust back; native host execution remains a separate acceptance step

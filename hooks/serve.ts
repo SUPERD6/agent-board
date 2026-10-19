@@ -402,6 +402,9 @@ export const requestProblem = (request: PageRequest, hosts: readonly string[], t
 
 // The words the page's script fills in itself, each with its blanks as \u0001 and \u0002.
 const PAGE_WORDS = [
+  'messagesTitle', 'messagesHint', 'messagesDisabled', 'messagesNone', 'messagesChoose', 'messagesSessionScope',
+  'messagesPlaceholder', 'messagesSend', 'messagesQueued', 'messagesUncertain',
+  'messagesAccepted', 'messagesAcknowledged', 'messagesRejected', 'messagesFailed', 'messagesConflict', 'messagesTimeout',
   'countWaiting',
   'countActive',
   'countDue',
@@ -520,6 +523,12 @@ details[open]>summary::before{content:"▾"}
 <header><h1>${esc(s.paneTitle)}</h1><button type="button" id="close">${esc(s.serveClose)}</button></header>
 <section class="counts" id="counts"></section>
 <div id="board"></div>
+${isLan ? '' : `<details class="card paste" id="messages"><summary>${esc(s.messagesTitle)}</summary>
+<p class="quiet small">${esc(s.messagesHint)}</p>
+<select id="message-target" aria-label="${esc(s.messagesChoose)}"></select>
+<textarea id="message-text" placeholder="${esc(s.messagesPlaceholder)}" aria-label="${esc(s.messagesPlaceholder)}"></textarea>
+<button type="button" class="primary" id="message-send" disabled>${esc(s.messagesSend)}</button>
+<p id="message-availability" class="quiet small"></p><div id="message-receipts"></div></details>`}
 <details class="card paste"><summary>${esc(s.servePasteTitle)}</summary>
 <p class="quiet small">${esc(s.servePasteHint)}</p>
 <textarea id="paste" spellcheck="false"></textarea>
@@ -551,6 +560,9 @@ const PAGE_SCRIPT = String.raw`
   var timer = null;
   var isClosed = false;
   var since = null;
+  var messageTargets = [];
+  var lastMessages = '';
+  var messageAttempt = null;
 
   function w(key, a, b) {
     return String(W[key]).split('\u0001').join(a === undefined ? '' : String(a)).split('\u0002').join(b === undefined ? '' : String(b));
@@ -784,6 +796,61 @@ const PAGE_SCRIPT = String.raw`
       }
     });
   }
+  function renderMessages(data) {
+    var target = document.getElementById('message-target');
+    if (!target) return;
+    var snapshot = JSON.stringify(data);
+    if (snapshot === lastMessages) return;
+    lastMessages = snapshot;
+    var selected = target.value;
+    messageTargets = data && data.enabled ? data.connections : [];
+    target.textContent = '';
+    var placeholder = el('option', '', w('messagesChoose'));
+    placeholder.value = '';
+    target.appendChild(placeholder);
+    messageTargets.forEach(function (one) {
+      var option = el('option', '', one.agent + ' · ' + one.surface + ' · ' + one.session + ' · ' + (one.scope === 'session' ? w('messagesSessionScope') : one.turn));
+      option.value = one.id;
+      target.appendChild(option);
+    });
+    target.value = messageTargets.some(function (one) { return one.id === selected; }) ? selected : '';
+    if (selected && !target.value) {
+      document.getElementById('message-text').value = '';
+      messageAttempt = null;
+    }
+    document.getElementById('message-send').disabled = !target.value;
+    document.getElementById('message-availability').textContent = !data || !data.enabled ? w('messagesDisabled') : messageTargets.length ? '' : w('messagesNone');
+    var receipts = document.getElementById('message-receipts');
+    receipts.textContent = '';
+    var labels = { queued: 'messagesQueued', uncertain: 'messagesUncertain', accepted: 'messagesAccepted', acknowledged: 'messagesAcknowledged', rejected: 'messagesRejected' };
+    (data && data.messages || []).slice(-20).reverse().forEach(function (one) {
+      add(receipts, el('p', 'small', one.id + ' · ' + one.from + ' → ' + one.to + ' · ' + w(one.status === 'uncertain' && /TIMEOUT/.test(one.error) ? 'messagesTimeout' : labels[one.status]) + (one.reply ? ' · ' + one.reply : '')));
+    });
+  }
+  var messageSend = document.getElementById('message-send');
+  if (messageSend) {
+    document.getElementById('message-target').addEventListener('change', function () {
+      messageSend.disabled = !this.value;
+      messageAttempt = null;
+      document.getElementById('message-text').value = '';
+    });
+    messageSend.addEventListener('click', function () {
+      var target = document.getElementById('message-target').value;
+      var one = messageTargets.find(function (entry) { return entry.id === target; });
+      var box = document.getElementById('message-text');
+      if (!one || !box.value.trim()) return;
+      var content = JSON.stringify([target, one.turn, box.value]);
+      // A network retry reuses its id; editing the text creates a distinct message.
+      if (!messageAttempt || messageAttempt.content !== content) messageAttempt = { id: 'AB-' + crypto.randomUUID(), content: content };
+      messageSend.disabled = true;
+      call('/api/messages/send', { id: messageAttempt.id, target: target, turn: one.turn, text: box.value }).then(function (data) {
+        messageSend.disabled = !document.getElementById('message-target').value;
+        say(data.ok ? w('messagesQueued') : w(data.error === 'ID_CONFLICT' ? 'messagesConflict' : 'messagesFailed'), data.ok ? 'done' : 'alert');
+        if (data.ok) { box.value = ''; messageAttempt = null; }
+        refresh();
+      }, function () { say(w('messagesFailed'), 'alert'); messageSend.disabled = false; });
+    });
+  }
   function refresh() {
     if (isClosed) return;
     clearTimeout(timer);
@@ -791,6 +858,7 @@ const PAGE_SCRIPT = String.raw`
       if (!data.ok || !data.model) { say(data.note || w('serveOffline'), 'alert'); return; }
       var text = JSON.stringify(data.model);
       if (text !== last) { last = text; render(data.model); }
+      renderMessages(data.messaging);
       // A reply runs in the background; its answer comes with the board once the agent is done.
       if (since === null) since = data.now;
       (data.replies || []).forEach(function (reply) {

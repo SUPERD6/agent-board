@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import { readFileSync } from 'node:fs'
-import { isAbsolute, resolve } from 'node:path'
+import { homedir } from 'node:os'
+import { isAbsolute, join, resolve } from 'node:path'
 
 type Json = Record<string, unknown>
 type Hook = { key: string; currentHash: string; sourcePath: string; eventName: string; command: string; enabled: boolean; trustStatus: string }
@@ -68,7 +69,9 @@ export const trustCodex = async (executable: string, config: string, groups: Rec
     }
     const hooks = await list()
     const values = Object.fromEntries(hooks.map(hook => [hook.key, { trusted_hash: hook.currentHash }]))
-    const plan = { file: resolve(config, '..', 'config.toml'), hooks: hooks.map(hook => ({ event: hook.eventName, key: hook.key, hash: hook.currentHash, trust: hook.trustStatus })), changes: hooks.filter(hook => hook.trustStatus !== 'trusted').length }
+    // Hook state is a user preference even when the definitions are project-local.
+    // Codex ignores project-level trust state, so never write it next to that source.
+    const plan = { file: join(resolve(process.env.CODEX_HOME || join(homedir(), '.codex')), 'config.toml'), hooks: hooks.map(hook => ({ event: hook.eventName, key: hook.key, hash: hook.currentHash, trust: hook.trustStatus })), changes: hooks.filter(hook => hook.trustStatus !== 'trusted').length }
     if (!apply || plan.changes === 0) return { ...plan, applied: false }
     if (readFileSync(config, 'utf8') !== before || JSON.stringify((await list()).map(hook => [hook.key, hook.currentHash])) !== JSON.stringify(hooks.map(hook => [hook.key, hook.currentHash]))) throw new Error('HOOK_DEFINITION_CHANGED')
     // Codex performs the TOML merge. Only the reviewed declarations receive trust;

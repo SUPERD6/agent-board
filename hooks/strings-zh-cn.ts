@@ -4,6 +4,22 @@ import type { Lang, Strings } from './i18n'
 // Simplified Chinese strings for the pane. Same keys, same order as ZH_TW in i18n.ts.
 
 export const ZH_CN: Strings = {
+  messagesTitle: '传话给已连接的 session',
+  messagesHint: '只列出正在报告的收信连接器。进度卡片不代表可传话；一般消息不批准工具或合并。',
+  messagesDisabled: '此看板尚未启用跨 agent 传信。',
+  messagesNone: '没有在线的收信 session',
+  messagesChoose: '选择目标 session',
+  messagesSessionScope: '空闲 session，可接收新回合',
+  messagesPlaceholder: '传给此 session 的消息',
+  messagesSend: '发送消息',
+  messagesQueued: '队列中，尚未送达',
+  messagesUncertain: '已取走，送达结果待确认',
+  messagesTimeout: '等候回复超时，送达结果待确认；不会自动重发',
+  messagesAccepted: '传输已接受，等待 session 回复',
+  messagesAcknowledged: 'session 已回复 ACK',
+  messagesRejected: '已拒绝／未发送',
+  messagesFailed: '未能发送；目标可能已离线或绑定已改变。',
+  messagesConflict: '相同消息编号已有不同内容，已拒绝重发。',
   localAgentTask: (agent: string): string => `${agent} 本地任务`,
   localAgentSkillDescription: '打开本地交互看板，跟踪 Codex、Cursor 或 OpenCode 当前 session 的实际任务进度。',
   localAgentSkill: (command: string): string => `执行 \`${command} --serve\`，显示最后一行的交互看板链接；桌面有打开网址工具时就在面板打开。这是网页 UI，不是原生 pane。CLI 也可在另一个终端执行 \`${command} --watch\`。\n\n用户要求跟踪当前工作时，在每个实际步骤或状态改变后自行报告最少任务摘要，不传原始对话或机密。OpenCode 使用 agent_board_progress 工具，由工具 context 绑定当前 session；Codex 用当前 CODEX_THREAD_ID，执行 \`${command} --codex-report\`；Cursor 只有在 hooks 注入 AGENT_BOARD_AGENT=cursor 和 AGENT_BOARD_SESSION_ID 后才执行 \`${command} --codex-report --agent cursor\`。没有可证明的绑定就明示未接通，不扫描对话或猜 session，也不指定其他 session。命令以 stdin 接受 JSON：{\"title\":\"任务摘要\",\"project\":\"项目\",\"state\":\"working\",\"steps\":[\"- [x] 已完成\",\"- [~] 当前步骤\"]}。等用户用 waiting 与 [?]；阻挡用 [!]；所有步骤完成才用 done。hooks 只更新活动状态，语义步骤由你明确报告。不要以写文件、mock 或 RPC 接受宣称自动 hooks 或反向送达已验收。一般回复不批准工具或 PR 合并。`,

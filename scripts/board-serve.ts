@@ -18,8 +18,10 @@ import type { Strings } from '../hooks/i18n'
 import { lanAddress, localHosts, pagePolicy, requestProblem, sendKey, sendPlan, serveAction, serveModel, servePage } from '../hooks/serve'
 import type { SendPlan } from '../hooks/serve'
 import type { AgentTarget, View } from '../hooks/view'
+import { createMessaging } from './board-messaging'
 
 export type ServeOptions = {
+  messagesDirectory?: string
   s: Strings
   port: number
   // What the server answers a second `--serve` with, so it can tell it is the same board.
@@ -219,6 +221,7 @@ const run = (plan: SendPlan, s: Strings, label: string): Promise<Result> =>
   })
 
 export const startServer = (o: ServeOptions): void => {
+  const messaging = o.messagesDirectory ? createMessaging(o.messagesDirectory) : null
   const token = randomBytes(24).toString('base64url')
   const sending = new Set<string>()
   // The last answer of each session the page sent to, until the next send to that session. One
@@ -242,6 +245,7 @@ export const startServer = (o: ServeOptions): void => {
   const stop = (): void => {
     if (isStopping) return
     isStopping = true
+    messaging?.close()
     closeLan()
     server.close()
     server.closeAllConnections()
@@ -340,7 +344,7 @@ export const startServer = (o: ServeOptions): void => {
       if (url.pathname === '/api/board') {
         // A file the board cannot read is named on the page, which would otherwise say it is offline.
         try {
-          return json(res, 200, { model: serveModel(o.view(), o.pending(), o.s, sending, isLan), replies: [...replies.values()], now: Date.now() })
+          return json(res, 200, { model: serveModel(o.view(), o.pending(), o.s, sending, isLan), replies: [...replies.values()], messaging: isLan ? undefined : messaging?.snapshot(Date.now()) ?? { enabled: false, connections: [], messages: [] }, now: Date.now() })
         } catch (error) {
           const note = o.failure(error, isLan)
           if (note === null) throw error
@@ -353,6 +357,14 @@ export const startServer = (o: ServeOptions): void => {
     }
     const body = await readBody(req)
     if (body === null) return json(res, 400, {})
+    if (url.pathname.startsWith('/api/messages/')) {
+      if (isLan || !messaging) return json(res, 403, {})
+      const action = url.pathname.slice('/api/messages/'.length)
+      // A browser can send a message, but cannot impersonate a receiving host adapter.
+      if (action !== 'send' && req.headers.origin !== undefined) return json(res, 403, {})
+      try { return json(res, 200, messaging.act(action, body, Date.now())) }
+      catch (error) { return json(res, 409, { error: error instanceof Error ? error.message : 'MESSAGE_FAILED' }) }
+    }
     // A press that met a file the board could not read or write is answered with why; any other
     // error stays a bare server error.
     try {
@@ -403,7 +415,7 @@ export const startServer = (o: ServeOptions): void => {
       if (!res.headersSent) json(res, 500, {})
     })
   })
-  server.on('error', () => o.onStop())
+  server.on('error', () => { messaging?.close(); o.onStop() })
   // The page asks every 3 seconds while it is open; the server goes once nobody has asked for
   // `idleMs` and no reply is on its way.
   const idle = setInterval(() => {

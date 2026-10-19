@@ -4,6 +4,22 @@ import type { Lang, Strings } from './i18n'
 // English strings for the pane. Same keys, same order as ZH_TW in i18n.ts.
 
 export const EN: Strings = {
+  messagesTitle: 'Message a connected session',
+  messagesHint: 'Only live receiving connectors appear. A progress card does not imply messaging access. Ordinary messages cannot approve tools or merges.',
+  messagesDisabled: 'Cross-agent messaging is not enabled for this board.',
+  messagesNone: 'No receiving sessions are online',
+  messagesChoose: 'Choose a target session',
+  messagesSessionScope: 'Idle session; receives a new turn',
+  messagesPlaceholder: 'Message for this session',
+  messagesSend: 'Send message',
+  messagesQueued: 'Queued; not delivered',
+  messagesUncertain: 'Claimed; delivery is uncertain',
+  messagesTimeout: 'Reply timed out; delivery is uncertain and will not be retried automatically',
+  messagesAccepted: 'Transport accepted; waiting for a session reply',
+  messagesAcknowledged: 'Session replied with ACK',
+  messagesRejected: 'Rejected / not sent',
+  messagesFailed: 'Could not send; the target may be offline or its binding changed.',
+  messagesConflict: 'This message id already has different contents; resend refused.',
   localAgentTask: (agent: string): string => `Local ${agent} task`,
   localAgentSkillDescription: 'Open the local interactive board and track real task progress for the current Codex, Cursor or OpenCode session.',
   localAgentSkill: (command: string): string => `Run \`${command} --serve\` and show the interactive link on its last line. On desktop open it in a panel when a URL-opening tool is available. This is a web UI, not a native pane. CLI users may run \`${command} --watch\` in another terminal.\n\nWhen asked to track current work, report minimal task summaries after each real step or state change; never raw chat or secrets. In OpenCode use agent_board_progress, bound by the tool context. In Codex use current CODEX_THREAD_ID with \`${command} --codex-report\`. In Cursor, only after hooks inject AGENT_BOARD_AGENT=cursor and AGENT_BOARD_SESSION_ID, use \`${command} --codex-report --agent cursor\`. Without a proven binding say it is disconnected. Never scan transcripts, guess ids or specify another session. Commands accept JSON on stdin: {\"title\":\"Task summary\",\"project\":\"Project\",\"state\":\"working\",\"steps\":[\"- [x] Finished\",\"- [~] Current step\"]}. Use waiting and [?] for user input, [!] for a blocker, done only when every step is complete. Hooks update activity only; you explicitly report semantic steps. Files, mocks or RPC acceptance do not prove live hooks or reverse delivery. Ordinary replies cannot approve tools or PR merges.`,
