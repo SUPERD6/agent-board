@@ -67,10 +67,13 @@ Mark read, Show again and manual-step completion. The shared English README scre
 is from that board, with synthetic tasks and a simulated receiving adapter. It has no
 real task content, native session identifiers or bearer URL. It is UI evidence only.
 
-Full local Node checks before the final safeguards: 157 passed, 2 platform/opt-in skips.
-Offline optional plugin: 383 passed; Windows legacy installer: 40 passed. Final metadata
-failure handling and setup snapshot changes also passed their targeted adapter/race tests
-and the packaged SDK/Loader check.
+Full local Node checks: 158 passed, 2 platform/opt-in skips. Offline optional plugin:
+383 passed; Windows legacy installer: 40 passed. Final metadata failure handling and
+setup snapshot changes also passed the packaged SDK/Loader check.
 Strict standalone TypeScript and generated-bundle checks passed. Full plugin SDK typing
 remains unrun because the host-generated `.claude-plugin/types/` SDK is unavailable.
 CI verifies the final PR head separately on Node 22/24 and Linux/Windows.
+
+The first PR run exposed inherited XDG paths in three Linux fixtures. Every synthetic
+home now overrides all host config roots, so tests cannot write into caller settings.
+This changes test isolation, not the installer's intentional environment-override support.

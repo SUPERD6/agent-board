@@ -9,6 +9,14 @@ import { pathToFileURL } from 'node:url'
 
 const setup = resolve('scripts/setup-codex.mjs')
 const session = 'test-codex-session-123'
+// A runner may set XDG/host overrides. No synthetic home may inherit those and
+// write into another test or the account's actual native configuration.
+const isolatedEnv = home => ({
+  ...process.env, CLAUDE_PROGRESS_FILE: '',
+  CODEX_HOME: join(home, '.codex'), GROK_HOME: join(home, '.grok'), HERMES_HOME: join(home, '.hermes'),
+  XDG_CONFIG_HOME: join(home, '.config'), OPENCODE_CONFIG_DIR: join(home, '.config', 'opencode'),
+  OPENCLAW_STATE_DIR: join(home, '.openclaw'), DSH_HOME: join(home, '.dsh'),
+})
 const fixture = fn => {
   const home = mkdtempSync(join(tmpdir(), 'codex local-'))
   const root = join(home, '.agent-board')
@@ -16,7 +24,7 @@ const fixture = fn => {
   const progress = join(root, 'progress.md')
   const hooks = join(home, '.codex', 'hooks.json')
   const skill = join(home, '.agents', 'skills', 'agent-board', 'SKILL.md')
-  const env = { ...process.env, CLAUDE_PROGRESS_FILE: '', CODEX_THREAD_ID: session, NO_COLOR: '1', OPENCODE_CONFIG_DIR: '', XDG_CONFIG_HOME: '', OPENCLAW_STATE_DIR: '', DSH_HOME: '' }
+  const env = { ...isolatedEnv(home), CODEX_THREAD_ID: session, NO_COLOR: '1' }
   const run = (file, args, input) => spawnSync(process.execPath, [file, ...args], { env, input: input === undefined ? undefined : JSON.stringify(input), encoding: 'utf8', windowsHide: true, timeout: 15000 })
   const isolated = ['--home', home, '--codex-dir', join(home, '.codex'), '--grok-dir', join(home, '.grok'), '--hermes-dir', join(home, '.hermes')]
   const install = (...args) => run(setup, [...isolated, ...args])
@@ -263,7 +271,7 @@ test('a shared installation retains its chosen progress path when another agent 
 test('OpenCode metadata adapter and task tool work without reading messages or Claude', async () => {
   const home = mkdtempSync(join(tmpdir(), 'opencode-adapter-'))
   try {
-    const env = { ...process.env, CLAUDE_PROGRESS_FILE: '' }
+    const env = isolatedEnv(home)
     const installed = spawnSync(process.execPath, [setup, '--home', home, '--agent', 'opencode', '--apply'], { env, encoding: 'utf8', windowsHide: true })
     assert.equal(installed.status, 0, installed.stderr)
     const plugin = join(home, '.config', 'opencode', 'plugins', 'agent-board-local.js')
@@ -372,7 +380,7 @@ test('OpenClaw metadata setup preserves other plugins and refuses edited or disa
 test('OpenClaw native metadata callbacks fence stale runs and never request conversation access', async () => {
   const home = mkdtempSync(join(tmpdir(), 'openclaw-status-'))
   try {
-    const env = { ...process.env, CLAUDE_PROGRESS_FILE: '', OPENCLAW_STATE_DIR: join(home, '.openclaw') }
+    const env = isolatedEnv(home)
     const result = spawnSync(process.execPath, [setup, '--home', home, '--agent', 'openclaw', '--apply'], { env, encoding: 'utf8', windowsHide: true })
     assert.equal(result.status, 0, result.stderr)
     const folder = join(home, '.agent-board', 'adapters', 'openclaw')
@@ -433,7 +441,7 @@ test('DeepSeek setup refuses complex or edited YAML without changing it', () => 
 test('DeepSeek native callbacks report their own identity and preserve task completion', async () => {
   const home = mkdtempSync(join(tmpdir(), 'deepseek-status-'))
   try {
-    const env = { ...process.env, CLAUDE_PROGRESS_FILE: '', DSH_HOME: join(home, '.dsh') }
+    const env = isolatedEnv(home)
     const installed = spawnSync(process.execPath, [setup, '--home', home, '--agent', 'deepseek', '--apply'], { env, encoding: 'utf8', windowsHide: true })
     assert.equal(installed.status, 0, installed.stderr)
     const { apply } = await import(pathToFileURL(join(home, '.agent-board', 'adapters', 'deepseek.mjs')))
@@ -478,7 +486,7 @@ test('Grok prompt hooks return a waiting session to working through the native s
 test('auto setup does not mistake an Antigravity profile or the shared gemini directory for Gemini CLI', () => fixture(f => {
   mkdirSync(join(f.home, '.gemini', 'antigravity-cli'), { recursive: true })
   const args = [resolve('scripts/setup-agent.mjs'), '--home', f.home, '--codex-dir', join(f.home, '.codex')]
-  const run = () => spawnSync(process.execPath, args, { env: { ...process.env, CLAUDE_PROGRESS_FILE: '' }, encoding: 'utf8', windowsHide: true })
+  const run = () => spawnSync(process.execPath, args, { env: f.env, encoding: 'utf8', windowsHide: true })
   const result = run()
   assert.equal(result.status, 0, result.stderr)
   assert.deepEqual(JSON.parse(result.stdout).targets, ['antigravity'])
@@ -489,7 +497,7 @@ test('auto setup does not mistake an Antigravity profile or the shared gemini di
 
 test('all targets initialize one shared board and explicitly name unfinished native adapters', () => fixture(f => {
   const installer = resolve('scripts/setup-agent.mjs')
-  const result = spawnSync(process.execPath, [installer, '--agent', 'all', '--home', f.home, '--codex-dir', join(f.home, '.codex'), '--grok-dir', join(f.home, '.grok'), '--hermes-dir', join(f.home, '.hermes'), '--apply'], { env: { ...process.env, CLAUDE_PROGRESS_FILE: '' }, encoding: 'utf8', windowsHide: true, timeout: 30000 })
+  const result = spawnSync(process.execPath, [installer, '--agent', 'all', '--home', f.home, '--codex-dir', join(f.home, '.codex'), '--grok-dir', join(f.home, '.grok'), '--hermes-dir', join(f.home, '.hermes'), '--apply'], { env: f.env, encoding: 'utf8', windowsHide: true, timeout: 30000 })
   assert.equal(result.status, 0, result.stderr)
   const plans = JSON.parse(result.stdout).plans
   assert.equal(plans.length, 10)
@@ -572,7 +580,7 @@ test('an edited Antigravity definition is a conflict rather than an automatic tr
 test('concurrent agents preserve every shared progress block and foreign manual text', async () => {
   const home = mkdtempSync(join(tmpdir(), 'shared-board-'))
   try {
-    const env = { ...process.env, CLAUDE_PROGRESS_FILE: '' }
+    const env = isolatedEnv(home)
     const installed = spawnSync(process.execPath, [setup, '--home', home, '--codex-dir', join(home, '.codex'), '--apply'], { env, encoding: 'utf8', windowsHide: true })
     assert.equal(installed.status, 0, installed.stderr)
     const progress = join(home, '.agent-board', 'progress.md')
