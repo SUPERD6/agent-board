@@ -10,7 +10,7 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { runCodexLocal } from './codex-local'
 import { legacyConnect } from './connect-transaction'
-import { chmodSync, closeSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { createHash, randomUUID } from 'node:crypto'
 import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
@@ -27,8 +27,8 @@ import { parseProgress } from '../hooks/parse'
 import { qrModules, qrText } from '../hooks/qr'
 import { langOf, STRINGS } from '../hooks/strings'
 import { answeredJson, answeredPath, buildView, parseAnswered, parseSeen, seenJson, seenPath, withAnswered, withSeen } from '../hooks/view'
-import { acknowledgementKeys, emptyQuestions, isQuestionProof, isQuestionSnapshot, migratedAnswered, observeQuestions, parseQuestions, questionProofJson, questionProofOf, questionProofPath, questionsJson, questionsPath } from '../hooks/questions'
-import type { QuestionProofs } from '../hooks/questions'
+import { acknowledgementKeys, archiveQuestionsKept, captureHashOf, captureJson, capturePath, emptyQuestions, parseCapture, withCaptures, isQuestionProof, isQuestionSnapshot, migratedAnswered, observeQuestions, parseQuestions, questionProofJson, questionProofOf, questionProofPath, questionsJson, questionsPath } from '../hooks/questions'
+import type { QuestionCapture, QuestionProofs, QuestionRecord } from '../hooks/questions'
 import { sha256 } from '../hooks/sha256'
 
 // The line `/progress connect` puts above the bundle sets it.
@@ -146,7 +146,35 @@ const readQuestions = (file: string, text = read(file)) => {
     if ((error as { code?: string } | null)?.code !== 'ENOENT') throw fileError(file, error)
     isMissing = true
   }
-  return parseQuestions(text, isMissing)
+  const parsed = parseQuestions(text, isMissing)
+  const captures = readQuestionCaptures()
+  return parsed === null || captures === null ? null : withCaptures(parsed, captures)
+}
+const readQuestionCaptures = (): QuestionCapture[] | null => {
+  try {
+    const captures: QuestionCapture[] = []
+    for (const name of readdirSync(dirname(path))) {
+      const hash = captureHashOf(path, name)
+      if (hash === null) continue
+      const capture = parseCapture(read(capturePath(path, hash)), hash)
+      if (capture === null) return null
+      captures.push(capture)
+    }
+    return captures
+  } catch {
+    return null
+  }
+}
+const keepQuestionCapture = (record: QuestionRecord, disposition: QuestionCapture['disposition']): void => {
+  const text = captureJson(record, disposition)
+  const file = capturePath(path, sha256(text))
+  try {
+    const fd = openSync(file, 'wx', 0o600)
+    try { writeFileSync(fd, text) } finally { closeSync(fd) }
+  } catch (error) {
+    if ((error as { code?: string } | null)?.code !== 'EEXIST') throw fileError(file, error)
+  }
+  if (read(file) !== text) throw fileError(file, { code: 'EAGAIN' })
 }
 const readQuestionProofs = (): QuestionProofs | null => {
   try {
@@ -180,6 +208,7 @@ const keepQuestionProof = (kind: keyof QuestionProofs, hash: string): void => {
 const view = (source = read(path), now = Date.now()) => {
   for (const proof of [...pendingQuestionProofs.values()]) keepQuestionProof(proof.kind, proof.hash)
   const projects = parseProgress(source)
+  const turns = pending(text => redact(text, homeOrNone(), process.platform === 'win32'))
   let stat = ''
   try {
     const one = statSync(path)
@@ -217,7 +246,7 @@ const view = (source = read(path), now = Date.now()) => {
   const record = readQuestions(file)
   let proofs = readQuestionProofs()
   if (record !== null) lastQuestions = record
-  const observed = observeQuestions(lastQuestions, projects, null, answered, now, isSettled, 'preview', proofs ?? undefined)
+  const observed = observeQuestions(lastQuestions, projects, null, answered, now, isSettled, 'preview', proofs ?? undefined, turns)
   let questions = observed.ledger
   // Chat and a one-shot read never write. Interactive readers persist before accepting hides.
   if (record !== null && proofs !== null && isQuestionSnapshot(source) && !args.includes('--chat') && args.some(arg => ['--watch', '--serve', '--serve-child', '--keys'].includes(arg))) {
@@ -226,14 +255,22 @@ const view = (source = read(path), now = Date.now()) => {
       if (read(path) !== source) return null
       const current = readQuestions(file, before)
       if (current === null) return null
-      let next = observeQuestions(current, projects, null, answered, now, isSettled, incarnation, proofs ?? undefined).ledger
+      let next = observeQuestions(current, projects, null, answered, now, isSettled, incarnation, proofs ?? undefined, turns).ledger
+      const captures = readQuestionCaptures()
+      if (captures === null) return null
+      for (const record of next.records) {
+        if (record.source === undefined) continue
+        if (record.isUnresolved && !captures.some(capture => captureJson(capture.record, capture.disposition) === captureJson(record, 'unresolved'))) keepQuestionCapture(record, 'unresolved')
+        if (record.isUnresolved === false && current.records.some(old => old.id === record.id && old.isUnresolved === true)) keepQuestionCapture(record, 'resolved')
+      }
       for (const old of current.records) {
         if (old.isPresent && !next.records.some(record => record.id === old.id && record.isPresent && record.isWaiting)) keepQuestionProof('retired', sha256(old.id))
       }
       proofs = readQuestionProofs()
       if (proofs === null) return null
-      next = observeQuestions(current, projects, null, answered, now, isSettled, incarnation, proofs).ledger
-      return questionsJson(next) === questionsJson(current) ? before : questionsJson(next)
+      next = observeQuestions(current, projects, null, answered, now, isSettled, incarnation, proofs, turns).ledger
+      const raw = parseQuestions(before, !existsSync(file))
+      return raw !== null && questionsJson(next) === questionsJson(raw) ? before : questionsJson(next)
     })
     if (wrote !== null) {
       lastQuestions = readQuestions(file, wrote) ?? lastQuestions
@@ -255,7 +292,7 @@ const view = (source = read(path), now = Date.now()) => {
     }
   }
   // A question marked answered in a pane on this machine is kept off the board too.
-  return buildView(projects, [basename(process.cwd())], null, now, countDay(read(journalPath(path, now)), now), {}, s, answered, seen, questions, readQuestionProofs())
+  return buildView(projects, [basename(process.cwd())], null, now, countDay(read(journalPath(path, now)), now), {}, s, answered, seen, questions, readQuestionProofs(), turns)
 }
 
 const pad = (n: number): string => String(n).padStart(2, '0')
@@ -431,7 +468,26 @@ const act = (action: BoardAction): string => {
     return s.boardTicked(action.ref.step)
   }
   if (action.type === 'archive') {
-    const count = archiveOut(text => takeTask(text, action.ref, now, s), now)
+    view()
+    const projects = parseProgress(read(path))
+    const ledger = readQuestions(questionsPath(path))
+    const hasQuestions = projects.some(project => project.name === action.ref.project && project.tasks.some(task => (action.ref.session === null ? task.title === action.ref.title : task.auto?.session === action.ref.session) && task.steps.some(step => step.status === 'waiting')))
+    if (hasQuestions && (ledger === null || !archiveQuestionsKept(projects, action.ref, ledger))) return s.questionRetentionFailed
+    let retentionFailed = false
+    const count = archiveOut(text => {
+      const current = parseProgress(text)
+      const latest = readQuestions(questionsPath(path))
+      const asking = current.some(project => project.name === action.ref.project && project.tasks.some(task => (action.ref.session === null ? task.title === action.ref.title : task.auto?.session === action.ref.session) && task.steps.some(step => step.status === 'waiting')))
+      if (asking && (latest === null || !archiveQuestionsKept(current, action.ref, latest))) {
+        retentionFailed = true
+        return { text, entries: [] }
+      }
+      if (asking && latest !== null) for (const record of latest.records) {
+        if (record.isUnresolved && record.source?.project === action.ref.project && record.source.task === action.ref.title) keepQuestionCapture(record, 'archived')
+      }
+      return takeTask(text, action.ref, now, s)
+    }, now)
+    if (retentionFailed) return s.questionRetentionFailed
     if (count === null) return s.boardWriteFailed
     if (count === 0) return s.archiveGone
     return s.archivedOne(action.title)
@@ -448,12 +504,13 @@ const act = (action: BoardAction): string => {
     const wrote = rewrite(file, before => {
       const answered = parseAnswered(before, answeredAge(file))
       const latest = readQuestions(questionsPath(path))
+      const persisted = parseQuestions(read(questionsPath(path)))
       const proofs = readQuestionProofs()
       if (proofs === null || (isHidden && keys.some(key => proofs.retired.includes(sha256(key))))) return null
-      if (latest === null || (isHidden && keys.some(key => !latest.records.some(record => record.id === key && record.isWaiting && record.isPresent)))) return null
+      if (latest === null || persisted === null || (isHidden && keys.some(key => !persisted.records.some(record => record.id === key && record.isWaiting && record.isPresent)))) return null
       const projects = parseProgress(read(path))
-      const fresh = buildView(projects, [], null, now, 0, {}, s, answered ?? [], {}, latest, proofs)
-      if (isHidden && keys.some(key => ![...fresh.waiting, ...fresh.hidden].some(item => item.hideKey === key))) return null
+      const fresh = buildView(projects, [], null, now, 0, {}, s, answered ?? [], {}, latest, proofs, pending())
+      if (isHidden && keys.some(key => ![...fresh.waiting, ...(fresh.reminder ?? []), ...(fresh.older ?? []), ...fresh.hidden].some(item => item.canHide !== false && item.hideKey === key))) return null
       const aliases = observeQuestions(latest, projects, null, answered ?? [], now, true).ledger
       return answered === null ? null : answeredJson(withAnswered(answered, isHidden ? keys : keys.flatMap(key => acknowledgementKeys(aliases, key)), isHidden))
     })
@@ -497,7 +554,7 @@ const failureNote = (error: unknown): string => {
 }
 
 const press = (state: BoardState, key: string): { state: BoardState; isQuit: boolean; isHtml: boolean; isWrite: boolean } => {
-  const items = boardItems(view(), pending(), state.isIdleOpen ?? false)
+  const items = boardItems(view(), pending(), state.isIdleOpen ?? false, state.isOlderOpen ?? false)
   const { state: next, action } = boardKey(state, key, items, s)
   if (action === null) return { state: next, isQuit: false, isHtml: false, isWrite: false }
   if (action.type === 'quit') return { state: next, isQuit: true, isHtml: false, isWrite: false }
@@ -516,7 +573,7 @@ const press = (state: BoardState, key: string): { state: BoardState; isQuit: boo
 const screen = (state: BoardState): string => boardScreen(view(), pending(), state, s, options())
 
 // What the screen shows is what the next key acts on.
-const pin = (state: BoardState): BoardState => pinned(state, boardItems(view(), pending(), state.isIdleOpen ?? false))
+const pin = (state: BoardState): BoardState => pinned(state, boardItems(view(), pending(), state.isIdleOpen ?? false, state.isOlderOpen ?? false))
 
 // A block pasted into the page from a web chat, merged the way the remote reporter's merge
 // does: read, change only that block, write, read back.
@@ -858,7 +915,7 @@ const run = async (): Promise<void> => {
       try {
         const shown = view()
         const turns = pending()
-        state = pinned(state, boardItems(shown, turns, state.isIdleOpen ?? false))
+        state = pinned(state, boardItems(shown, turns, state.isIdleOpen ?? false, state.isOlderOpen ?? false))
         process.stdout.write(`\u001b[2J\u001b[H${boardScreen(shown, turns, state, s, options())}`)
       } catch (error) {
         process.stdout.write(`\u001b[2J\u001b[H${failureNote(error)}\n`)

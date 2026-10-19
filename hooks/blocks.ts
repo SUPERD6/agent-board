@@ -372,7 +372,8 @@ export const confirmTask = (text: string, ref: ConfirmRef, now: number, s: Strin
 // ready to append to progress-archive.md.
 export const takeArchivable = (text: string, now: number, keep?: string, s: Strings = ZH_TW, isNow = false): Archived => {
   const lines = linesOf(text)
-  const spans = scanBlocks(lines).filter(span => span.isClosed && span.session !== keep && isArchivable(span, now, isNow))
+  const visible = readable(lines)
+  const spans = scanBlocks(lines).filter(span => span.isClosed && span.session !== keep && isArchivable(span, now, isNow) && !visible.slice(span.start, span.end + 1).some(line => STEP.exec(line ?? '')?.[2] === '?'))
   if (spans.length === 0) return { text, entries: [] }
   const entries = spans.map(span => {
     const body = lines.slice(span.start + 1, span.end)

@@ -212,7 +212,13 @@ A task with all steps done is shown as finished whatever its `state` says, but o
 
 ### Stopped sessions
 
-A block in state `working` or `waiting` whose `updated` is more than 12 hours old is treated as `ended`: the pane says the session stopped, and no longer raises its `[?]` steps as questions. Nothing in the file changes. Writing the block again (new `updated`) brings it back. This covers agents that crash or whose terminal closes before they can write `state=ended`.
+A block in state `working` or `waiting` whose `updated` is more than 12 hours old is treated as `ended`: the pane says the session stopped. Its unresolved `[?]` steps follow their own observation age rather than connection freshness. Nothing in the file changes. Writing the block again (new `updated`) brings it back. This covers agents that crash or whose terminal closes before they can write `state=ended`.
+
+### Unanswered question visibility
+
+Question identities and full source snapshots live in the additive `progress-questions.json` sidecar. Through exactly 3 days after durable first observation, unresolved questions stay prominent; after 3 days through exactly 7 days they move to a grouped reminder; after 7 days they leave main actionable counts and remain discoverable in the older unanswered shelf. Opening that shelf never resets age. Own, external/cloud, manual and pending inbox sources share this policy. Heartbeats, duplicate imports, reconnects, whitespace and unrelated updates never refresh the baseline. Explicit producer renewal or a substantively new ask gets a fresh incarnation. An unknown/future observation clock stays conservatively visible; block `updated` and inbox file time never stand in for ask age. Manual hidden state remains separate from automatic aging. No visibility change answers, approves, completes, cancels or sends anything.
+
+Complete source snapshots and immutable retired/consumed proof files are retained without age pruning. Read-only readers do not create baselines. Duplicate manual task titles without producer identities remain ambiguous and visible. Explicit archival requires a complete durable source copy; failed storage leaves the source intact. Archived unresolved questions remain recoverable with their original age.
 
 ### Archive
 
@@ -230,7 +236,7 @@ Old work moves out of `progress.md` into a monthly file in the same folder, so t
 | A block in any other state (`working`, `waiting`, `ended`) | More than 3 days after `updated` |
 | A hand-kept task whose steps are all done | 24 hours after the pane first saw every step done (the pane keeps that time itself, not in the file) |
 
-Only blocks with their end marker move. A block without one stays until someone fixes it. A block whose `updated` is missing or unreadable never moves. The session that is running the sweep never moves its own block.
+Automatic sweeps never move a block containing a visible unresolved `[?]` step, including a block labelled done. Only blocks with their end marker move. A block without one stays until someone fixes it. A block whose `updated` is missing or unreadable never moves. The session that is running the sweep never moves its own block.
 
 The sweep runs when a Claude Code session with the mod starts, once an hour while it stays open, on `/progress 整理` (also `/progress tidy` and `/progress archive`) and when the person presses "Archive now" in the pane. If no such session is running, nothing is archived and nothing is lost.
 
@@ -432,3 +438,8 @@ If you cannot write markers, write a plain hand-kept task (a `###` with steps) u
 This is version 1. The file carries no version field. What the version means is the set of rules above, as read by the parser in `hooks/parse.ts` (and, for the notes of a task, by `hooks/view.ts` and `hooks/ask.ts`).
 
 A change to this page must keep every file that is valid today valid and read the same way. New metadata goes on the start marker or in an optional standalone hidden comment, where readers that do not know it ignore it. New visible marks, states and line shapes are not backward-compatible and need a new version. Contributors: see [CONTRIBUTING.md](../CONTRIBUTING.md).
+
+Full-source evidence is additive companion storage: progress-questions-source-<SHA-256-of-exact-bytes>.json contains version 1, an unresolved/resolved/archived disposition and the full scoped question incarnation/source record. Resolved receipts apply only to that exact ID. Writers keep and read back the immutable content-addressed copy before inbox cleanup or explicit archive; readers enumerate the full family without completeness caching and merge captures with the mutable index. End events are connection evidence, never answer evidence, including same-batch/end-only questions and multiple asks per owner. Keep this entire family with identity, acknowledgement and retired/consumed proofs in backups; never age-prune it. Corrupt/unreadable captures refuse cleanup and new hides. FORMAT v1 progress.md is unchanged.
+Exact producer provenance uses opaque SHA-256 hashes of the original filename plus exact input bytes, with complete redacted producer payload retained separately in the record. Resolution receipts keep these revisions through projection; replaying an already resolved raw revision cannot create a new question. A new file/content revision remains observable independently of heartbeat time.
+An immutable archived disposition records explicit user intent to move the retained source aside; unexpected source loss retains its normal age partition, including prominent unknown/future clocks. Neither disposition resolves the question.
+A known producer token and normalized question words bind a resolved incarnation. Replaying that exact token/content cannot create another unanswered incarnation or a current waiting action. An explicit renewed producer revision or substantively changed question remains observable; unknown producers are never resolved by text alone.

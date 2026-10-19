@@ -17,7 +17,7 @@ import { completionKey, completionOverlay, emptyMirror } from '../hooks/mirror'
 import { applyDigest } from '../hooks/digest'
 import { upsertAutoBlock } from '../hooks/blocks'
 
-import { migrationKey, questionProofPath } from '../hooks/questions'
+import { emptyQuestions, migrationKey, observeQuestions, questionProofPath, questionsJson } from '../hooks/questions'
 import { sha256 } from '../hooks/sha256'
 import { RELEASE_0_18_1, RELEASE_0_20_5 } from './fixtures/released'
 import { memoryConnect } from './fixtures/connect-memory'
@@ -154,6 +154,7 @@ type World = {
   // Paths a write to fails (a read-only file, a folder that is not there).
   unwritable?: Set<string>
   ignoreQuestionWrites?: boolean
+  failQuestionCapture?: 'read' | 'write'
   failStore?: (operation: 'get' | 'set', key: string) => boolean
   beforeStoreSet?: (key: string) => void
   ignoreStore?: (key: string) => boolean
@@ -361,12 +362,12 @@ const engineBeneath = (on: On, world: World): MockClock => {
       return { deny: 'EIO' }
     }
     const text = world.files.get(path)
-    if (world.unreadable?.has(path)) return { deny: 'EFBIG' }
+    if (world.unreadable?.has(path) || (world.failQuestionCapture === 'read' && path.includes('-questions-source-'))) return { deny: 'EFBIG' }
     return text === undefined ? { deny: 'ENOENT' } : { value: text }
   })
   on('fs.write', async ($, e) => {
     const path = posix(e.path)
-    if (world.unwritable?.has(path)) return { deny: 'EACCES' }
+    if (world.unwritable?.has(path) || (world.failQuestionCapture === 'write' && path.includes('-questions-source-'))) return { deny: 'EACCES' }
     if (world.ignoreQuestionWrites && path.endsWith('-questions.json')) return { value: undefined }
     const hold = world.hold
     if (hold !== undefined && path === FILE) {
@@ -1745,7 +1746,8 @@ for (const [language, words] of [['en', EN], ['zh-TW', ZH_TW], ['zh-CN', ZH_CN]]
       expect(await ui.find({ type: 'Text', text: words.journalFailed })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: words.question(words.journalNoticeTitle) })).toBeDefined()
 
-      await clock.advance(2 * 60 * 1000)
+      // One ordinary poll verifies notice deduplication; the retry is triggered by turn.start.
+      await clock.advance(2000)
       world.unreadable?.clear()
       world.unwritable?.clear()
       await $.turn.start({ text: 'Continue demo', turnId: 'journal-retry' })
@@ -2134,6 +2136,25 @@ test('explicit Claude ask events renew the hidden question immediately while ano
   await ui.unmount()
 })
 
+for (const lang of ['en', 'zh-TW', 'zh-CN'] as const) for (const days of [4, 8]) test(`aged pane questions hide and restore their exact identity in ${lang} at ${days} days`, async ($, on) => {
+  const firstAt = Date.parse('2026-10-01T12:00:00Z')
+  const board = '## demo\n<!-- auto session=a1b2c3d4 agent=codex state=waiting updated=2026-10-01T12:00:00Z -->\n### Release\n- [?] Publish, OK?\n<!-- /auto session=a1b2c3d4 -->\n'
+  const ledger = observeQuestions(emptyQuestions(), parseProgress(board), null, [], firstAt, true, 'pane-aged:1').ledger
+  const world: World = { files: new Map([[FILE, board], [QUESTIONS, questionsJson(ledger)]]), mtime: 1, hasTasks: true, at: firstAt + days * 86400000, store: { lang, inboxDone: {}, opened: ['reminder', 'older', 'hidden'] } }
+  engineBeneath(on, world)
+  await $.session.start({ cwd: '/work/persona_framework', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop', props: PROPS })
+  await ui.press({ key: 'ask::demo::Release::0' })
+  expect(await ui.find({ type: 'Button', key: 'demo::Release::0::hide' })).toBeDefined()
+  await ui.press({ key: 'demo::Release::0::hide' })
+  expect(JSON.parse(world.files.get(ANSWERED) ?? '{}').answered).toEqual([ledger.records[0]!.id])
+  await ui.press({ key: 'demo::Release::0::unhide' })
+  expect(JSON.parse(world.files.get(ANSWERED) ?? '{}').answered).toEqual([])
+  expect(world.files.get(FILE)).toBe(board)
+  expect(JSON.parse(world.files.get(QUESTIONS) ?? '{}').records.find((row: { id: string }) => row.id === ledger.records[0]!.id)?.firstObserved).toBe(firstAt)
+  await ui.unmount()
+})
+
 test('a pane hide survives step movement and whitespace and a corrupt identity file refuses a new hide', async ($, on) => {
   const board = `## data-pipeline\n<!-- auto session=a1b2c3d4 state=waiting updated=2026-10-16T11:50:00Z -->\n### Ship\n- [x] Read\n- [?] Ship it, OK?\n<!-- /auto session=a1b2c3d4 -->\n`
   const world: World = { files: new Map([[FILE, board]]), mtime: 1, hasTasks: true, store: { opened: ['waiting', 'hidden'] } }
@@ -2285,7 +2306,7 @@ test('a question marked answered leaves Waiting on you until that session asks s
   world.mtime += 1
   await clock.advance(2100)
   expect(await ui.find({ type: 'Button', key: `${key}::hide` })).toBeDefined()
-  expect(await ui.find({ type: 'Button', key: 'section::hidden' })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', key: 'section::hidden' })).toBeDefined()
 
   // Another session on this machine marks it answered: this pane follows at its next look.
   world.files.set(ANSWERED, JSON.stringify({ answered: ['a1b2c3d4 1 Keep the old table for a week, OK?'] }))
@@ -2410,6 +2431,7 @@ test('an unmappable historical hide is retained without holding up a later queue
   expect(world.files.get(ANSWERED)).toBe(stale)
   // The next look at the file comes from inside the write queue: /progress tidy, nothing to archive.
   expect((await $.command.run(TIDY)).text).toBe(ZH_TW.tidyNothing)
+  await clock.advance(2100)
   // The mark went, and a press queued after it still lands.
   const item = "data-pipeline::Backfill last year's events::0"
   await ui.press({ key: `${item}::hide` })
@@ -2679,10 +2701,9 @@ test('progress.html shows unprocessed inbox questions before a digest and drops 
   const clock = engineBeneath(on, world)
   await $.session.start({ cwd: '/work/persona_framework', surface: 'terminal', isInteractive: true })
   const page = world.files.get('/home/me/.claude/progress.html') ?? ''
-  expect(page).toContain('data-key="section:inbox" open')
-  expect(page).toContain('收件匣裡還沒整理的回合')
-  expect(page.split(question)).toHaveLength(2)
-  expect(page).toContain('這個頁面不能傳送回覆')
+  expect(page).toContain('data-key="section:waiting" open')
+  expect(page.split(question)).toHaveLength(3)
+  expect(page).toContain('codex')
   expect(page).not.toContain('{ broken')
   await clock.advance(5000)
   await $.command.run({ ...TIDY, args: 'open' })
@@ -2721,11 +2742,11 @@ test('progress.html is still written and reminders run when inboxDone is malform
   const page = world.files.get('/home/me/.claude/progress.html') ?? ''
   expect(page).toContain('Google 暑期實習')
   // With no readable record of processed turns, every inbox file counts as not processed yet.
-  expect(page).toContain('data-key="section:inbox"')
+  expect(page).toContain('data-key="section:waiting"')
   expect(page).toContain('Ship the demo build, OK?')
   expect(world.storeReads).toContain('told')
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: PROPS })
-  expect(await ui.find({ type: 'Text', text: '● 1' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '● 2' })).toBeDefined()
   await ui.unmount()
 })
 
@@ -2736,11 +2757,11 @@ test('progress.html is still written and reminders run when reading inboxDone is
   const page = world.files.get('/home/me/.claude/progress.html') ?? ''
   expect(page).toContain('Google 暑期實習')
   // With no readable record of processed turns, every inbox file counts as not processed yet.
-  expect(page).toContain('data-key="section:inbox"')
+  expect(page).toContain('data-key="section:waiting"')
   expect(page).toContain('Ship the demo build, OK?')
   expect(world.storeReads).toContain('told')
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: PROPS })
-  expect(await ui.find({ type: 'Text', text: '● 1' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '● 2' })).toBeDefined()
   await ui.unmount()
 })
 
@@ -3266,14 +3287,45 @@ test('a pane button whose answer does not reach Claude leaves its step waiting o
   await $.turn.complete({ answer: '要你決定。', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
   await clock.advance(10)
 
+  const original = storedQuestion(world, '選配色 — 用哪組？')
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop', props: PROPS })
   await ui.press({ key: 'mine::1::Nord' })
   await ui.unmount()
   await clock.advance(10)
   expect(world.files.get(FILE) ?? '').toContain('- [?] 選配色 — 用哪組？\n')
+  expect(storedQuestion(world, '選配色 — 用哪組？')).toBe(original)
+  expect([...world.files].some(([file, text]) => file.includes('-questions-source-') && JSON.parse(text).disposition === 'resolved')).toBe(false)
   const after = await $.ui.mount({ ...PANE, surface: 'desktop', props: PROPS })
   expect(await after.find({ type: 'Button', key: 'mine::1::Nord' })).toBeDefined()
   await after.unmount()
+})
+
+test('an accepted pane reply cannot mark a same-word producer renewal made during submission answered', async ($, on) => {
+  const world: World = { files: new Map(), mtime: 1, hasTasks: true }
+  const clock = engineBeneath(on, world)
+  let release: () => void = () => undefined
+  let reached: () => void = () => undefined
+  const held = new Promise<void>(resolve => { release = resolve })
+  const entered = new Promise<void>(resolve => { reached = resolve })
+  on('prompt.submit', async ($, e) => {
+    if (e.text.startsWith('關於')) { reached(); await held }
+    return { text: e.text }
+  })
+  await start($, '幫我選配色')
+  await $.tool.call({ tool: 'TaskCreate', subject: '選配色', metadata: { waiting: 'you', ask: 'choose', options: ['Nord', '和色'], why: '用哪組？' } })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop', props: PROPS })
+  const pressing = ui.press({ key: 'mine::1::Nord' })
+  await entered
+  await $.tool.call({ tool: 'TaskUpdate', taskId: '1', metadata: { waiting: 'you' } })
+  const renewed = storedQuestion(world, '選配色 — 用哪組？')
+  release()
+  await pressing
+  await clock.advance(10)
+  expect(storedQuestion(world, '選配色 — 用哪組？')).toBe(renewed)
+  expect(world.files.get(FILE) ?? '').toContain('- [?] 選配色 — 用哪組？\n')
+  expect(await ui.find({ type: 'Button', key: 'mine::1::Nord' })).toBeDefined()
+  expect([...world.files].some(([file, text]) => file.includes('-questions-source-') && JSON.parse(text).disposition === 'resolved' && JSON.parse(text).record.id === renewed)).toBe(false)
+  await ui.unmount()
 })
 
 test('your message typed while Claude is still working answers too; a notice delivered into that turn does not', async ($, on) => {
@@ -3740,6 +3792,14 @@ test('an inbox file nested too deep to read strands no taken file, and the turn 
 })
 
 const takenOf = (world: World): string[] => [...world.files.keys()].filter(path => path.endsWith('.taking'))
+const expireTaken = (world: World): void => {
+  const at = world.at ?? Date.parse('2026-10-16T12:00:00Z')
+  for (const path of takenOf(world)) {
+    const expired = path.replace(/\.[^/.]+\.taking$/, `.deadbeef-${(at - 16 * 60 * 1000).toString(36)}-1.taking`)
+    world.files.set(expired, world.files.get(path)!)
+    world.files.delete(path)
+  }
+}
 
 test('an inbox turn the board will not take stays in the inbox and reaches the board on a later look', async ($, on) => {
   const ours = `${INBOX}/codex-turn-1792216380-1.json`
@@ -3883,7 +3943,7 @@ test('an inbox file that cannot be read stays taken for a later look', async ($,
   expect(takenOf(world)).toHaveLength(1)
 
   world.unreadable = new Set()
-  await clock.advance(15 * 60 * 1000)
+  expireTaken(world)
   world.mtime += 1
   await clock.advance(5000)
   expect(world.files.get(FILE) ?? '').toContain('## api-gateway\n')
@@ -5187,11 +5247,47 @@ test('an exact pre-ownership board and command from a release upgrade in the lan
 })
 
 
+for (const failure of ['read', 'write'] as const) {
+  test(`immutable question capture ${failure} failure keeps unseen same-batch end sources unprocessed`, async ($, on) => {
+    const first = `${INBOX}/codex-turn-1792152000-1.json`
+    const end = `${INBOX}/codex-end-1792152000-2.json`
+    const body = (question: string) => JSON.stringify({ session_id: 'one-owner', cwd: '/work/demo', last_assistant_message: question })
+    const world: World = { files: new Map([[FILE, ''], [first, body('Keep the first full original?')], [end, body('Keep the end-only full original?')]]), mtime: 1, hasTasks: true, failQuestionCapture: failure, store: { inboxDone: {}, autoConnectOff: true }, reply: () => 'TITLE: Keep originals\nNEXT: Continue\nASK: Keep the end-only full original?' }
+    const clock = engineBeneath(on, world)
+    await $.session.start({ cwd: '/work/persona_framework', surface: 'terminal', isInteractive: true })
+    await clock.advance(5000)
+    expect(Object.keys(world.store?.inboxDone ?? {})).toEqual([])
+    expect([...world.files.values()].some(text => text === body('Keep the first full original?'))).toBe(true)
+    expect([...world.files.values()].some(text => text === body('Keep the end-only full original?'))).toBe(true)
+    world.failQuestionCapture = undefined
+    expireTaken(world)
+    world.mtime += 1
+    await clock.advance(5000)
+    const captures = [...world.files].filter(([path]) => path.includes('-questions-source-')).map(([, text]) => JSON.parse(text))
+    expect(captures.some(capture => capture.record.source.text === 'Keep the first full original?')).toBe(true)
+    expect(captures.some(capture => capture.record.source.text === 'Keep the end-only full original?')).toBe(true)
+  })
+}
+
+test('question retention failure refuses explicit archive and preserves the original source', async ($, on) => {
+  const board = '## demo\n### Plan\n- [?] Keep the complete question?\n- [ ] Finish\n'
+  const world: World = { files: new Map([[FILE, board]]), mtime: 1, hasTasks: true, unwritable: new Set([QUESTIONS]), store: { opened: ['others', 'waiting'] } }
+  engineBeneath(on, world)
+  await $.session.start({ cwd: '/work/persona_framework', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop', props: PROPS })
+  await ui.press({ key: 'demo::Plan' })
+  await ui.press({ key: 'demo::Plan::archive' })
+  expect(world.files.get(FILE)).toBe(board)
+  expect(await ui.find({ type: 'Text', text: ZH_TW.questionRetentionFailed })).toBeDefined()
+  await ui.unmount()
+})
+
 test('the pane hides idle tasks behind one toggle and shows them with their age when opened', async ($, on) => {
   const at = Date.parse('2026-10-16T12:00:00Z')
   const board = '## demo\n### Old plan\n- [?] Publish, OK?\n- [ ] Finish\n'
   const record = seenJson(withSeen({}, parseProgress(board), at - 9 * 24 * 60 * 60 * 1000))
-  const world: World = { files: new Map([[FILE, board], [seenPath(FILE), record]]), mtime: 1, hasTasks: true }
+  const ledger = observeQuestions(emptyQuestions(), parseProgress(board), null, [], at - 9 * 24 * 60 * 60 * 1000, true, 'fixture:1').ledger
+  const world: World = { files: new Map([[FILE, board], [seenPath(FILE), record], [QUESTIONS, questionsJson(ledger)]]), mtime: 1, hasTasks: true }
   engineBeneath(on, world)
   await $.session.start({ cwd: '/work/persona_framework', surface: 'desktop', isInteractive: true })
   await settledSetup($, world)
@@ -5203,8 +5299,8 @@ test('the pane hides idle tasks behind one toggle and shows them with their age 
   await ui.press({ key: 'section::idle' })
   expect(await ui.find({ type: 'Button', key: 'demo::Old plan' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /9 天前/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: 'Publish, OK?' })).toBeDefined()
   await ui.press({ key: 'demo::Old plan' })
+  expect(await ui.find({ type: 'Text', text: 'Publish, OK?' })).toBeDefined()
   expect(await ui.find({ type: 'Button', key: 'demo::Old plan::tick' })).toBeDefined()
   expect(await ui.find({ type: 'Button', key: 'demo::Old plan::archive' })).toBeDefined()
   await ui.press({ key: 'section::idle' })

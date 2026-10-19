@@ -1,3 +1,4 @@
+import { emptyQuestions, observeQuestions } from '../hooks/questions'
 import { expect, test } from 'claude-code/testing'
 
 import type { ProgressMirror } from '../types'
@@ -486,18 +487,19 @@ test('a hand-kept task the seen record does not know is never hidden', () => {
   const seen = withSeen({}, projects, NOW - IDLE_MS - 1)
   const aged = buildView(projects, [], null, NOW, 0, {}, ZH_TW, [], seen)
   expect(aged.idle.map(row => row.title)).toEqual(['Unknown', 'Undated block'])
-  expect(aged.waiting).toEqual([])
+  expect(aged.waiting.map(item => item.text)).toEqual(['Continue, OK?'])
 })
 
-test("an idle task's question leaves Waiting on you and the counts but stays in its idle row", () => {
+test("an old unanswered question leaves actionable counts and remains recoverable independently of its idle task", () => {
   const projects = parseProgress('## demo\n### Question\n- [?] Publish, OK?\n')
   const seen = withSeen({}, projects, NOW - 9 * 24 * HOUR)
-  const view = buildView(projects, [], null, NOW, 0, {}, ZH_TW, [], seen)
+  const ledger = observeQuestions(emptyQuestions(), projects, null, [], NOW - 9 * 24 * HOUR, true, 'fixture:1').ledger
+  const view = buildView(projects, [], null, NOW, 0, {}, ZH_TW, [], seen, ledger)
   expect(view.waiting).toEqual([])
   expect(view.hidden).toEqual([])
   expect(view.overview).toEqual({ waiting: 0, active: 0, due: 0, today: 0, idle: 1 })
   expect(view.focus).toBe(null)
-  expect(view.idle[0]?.question).toBe('Publish, OK?')
+  expect(view.idle[0]?.question).toBe(null)
   expect(view.idle[0]?.when).toBe(relativeTime(NOW - 9 * 24 * HOUR, NOW))
   expect(view.idle[0]?.next).not.toBe(null)
   expect(view.idle[0]?.archive).not.toBe(null)

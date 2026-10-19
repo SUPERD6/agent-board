@@ -21,7 +21,7 @@ export const remindersOf = (
   for (const item of view.waiting) {
     if (item.where !== 'other') continue
     // Keyed by its words too, so a session that asks something new in the same place pings again.
-    const key = `ask:${item.key}:${item.text}`
+    const key = `ask:${item.questionId ?? item.key}:${item.text}`
     if (told[key] === undefined) out.push({ key, kind: 'ask', project: item.project, text: s.noticeAsked(item.agent || item.project, item.text) })
   }
   for (const row of view.due) {
