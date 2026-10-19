@@ -99,6 +99,8 @@ export type ProgressMirrorTask = {
   blocked: string | null
   blockedBy: string[]
   questionRevision?: string
+  // A confirmed transfer reported by this task's owner, not a suggestion or a transport receipt.
+  handoffTo?: string
 }
 
 export type ProgressMirror = {

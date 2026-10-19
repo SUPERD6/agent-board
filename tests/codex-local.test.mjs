@@ -33,7 +33,10 @@ const fixture = fn => {
   const report = (state = 'working', steps = ['- [~] Real task']) => command(['--codex-report'], { title: 'Task', state, steps })
   const event = (name, turn = 'turn-1', extra = {}) => command(['--codex-event'], { session_id: session, hook_event_name: name, turn_id: turn, ...extra })
   try { return fn({ home, root, script, progress, hooks, skill, env, install, command, save, report, event }) }
-  finally { rmSync(home, { recursive: true, force: true }) }
+  // Native hook assertions have finished, but Windows scanners can briefly hold
+  // the fixture's files. Retry only removal of this exact mkdtemp directory;
+  // persistent cleanup failures still fail the test.
+  finally { rmSync(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 }) }
 }
 
 test('independent prompt metadata answers questions while ordinary activity and replay preserve newer questions', () => fixture(f => {

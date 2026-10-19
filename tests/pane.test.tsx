@@ -35,6 +35,38 @@ const PROPS: RenderPropsOf['Pane'] = {
   view: {},
 }
 
+test('a task handoff removes Continue while retaining the recipient in the pane and file', async ($, on) => {
+  const world: World = { files: new Map(), mtime: 1, hasTasks: true }
+  const clock = engineBeneath(on, world)
+  await start($, 'Fix export')
+  await $.tool.call({ tool: 'TaskCreate', subject: 'Finish export', description: '' })
+  await $.tool.call({ tool: 'TaskUpdate', taskId: '1', metadata: { handoffTo: 'Export session' } })
+  await $.turn.complete({ answer: 'Export session has taken over.', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  await clock.advance(10)
+  expect(world.files.get(FILE)).toContain('state=done')
+  expect(world.files.get(FILE)).toContain('- [-] Finish export — 已交給 Export session')
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface, props: PROPS })
+    expect(await ui.find({ type: 'Button', key: 'continue' })).toBeUndefined()
+    await ui.unmount()
+  }
+})
+
+test('an inbox handoff summary keeps the source cancelled rather than offering its next step again', async ($, on) => {
+  const world: World = {
+    files: new Map([[FILE, '# Progress\n'], [`${INBOX}/codex-turn-1792216380-1.json`, JSON.stringify({ session_id: 'handoff-source', cwd: '/work/demo', prompt: 'Fix export', last_assistant_message: 'Export session has taken over issue 11.' })]]),
+    mtime: 1, hasTasks: true, asked: [], store: { autoConnectOff: true, inboxDone: {} },
+    reply: prompt => prompt.includes('TITLE:') ? 'TITLE: Source work\nCONTEXT: Export fixes\nDONE: Fixed issue 10\nNEXT: Finish issue 11\nASK: -\nHANDOFF: Export session' : undefined,
+  }
+  const clock = engineBeneath(on, world)
+  await $.session.start({ cwd: '/work/source', surface: 'desktop', isInteractive: true })
+  await clock.advance(5000)
+  const file = world.files.get(FILE) ?? ''
+  expect(file).toContain('agent=codex state=done')
+  expect(file).toContain('- [-] Finish issue 11 — 已交給 Export session')
+  expect(buildView(parseProgress(file), [], null, Date.parse('2026-10-16T12:00:00Z')).overview.active).toBe(0)
+})
+
 for (const lang of ['en', 'zh-TW', 'zh-CN'] as const) test(`pane archive controls protect every live agent and explain why in ${lang}`, { options: { language: lang } }, async ($, on) => {
   const agents = ['claude', 'codex', 'gemini', 'cursor', 'grok', 'muse', 'hermes', 'openclaw', 'opencode', 'antigravity', 'deepseek', 'custom-agent']
   const cases = agents.flatMap((agent, index) => ['working', 'waiting', 'stopped', 'ended'].map((kind, n) => ({ agent, kind, id: (10000000 + index * 4 + n).toString(), title: `${agent} ${kind}` })))

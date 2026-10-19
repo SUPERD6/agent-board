@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Native-hook test cleanup retries transient Windows file locks after assertions finish; persistent removal errors still fail. This covers the Node 22 Windows CI `ENOTEMPTY` teardown failure in the Antigravity hook command fixture without changing runtime hooks or test assertions.
+
+- **Keep transferred work at its active owner.** Accept an explicit per-task `handoffTo` declaration and a named `HANDOFF` in turn digests. Preserve cancelled source pointers with recipient names, omit their Continue action, exclude them from completed-work journal entries, retain them across passive TaskList refresh and allow explicit reclamation. Cancelled-only tasks are closed with zero completed steps, including activity-only updates. Existing five-field digests and all progress marks remain compatible. Proposals and transport acceptance do not establish a handoff or approve actions. Tests: `a confirmed task handoff removes only the transferred owner responsibility and survives a passive list refresh`, `turn digests retain an explicit handoff as a cancelled pointer without treating proposals as transfers`, `handoff pointers preserve the recipient and count work only at its active owner in en` (also zh-TW/zh-CN), `a task handoff removes Continue while retaining the recipient in the pane and file`, `an inbox handoff summary keeps the source cancelled rather than offering its next step again`, `cancelled-only work is closed without counting a finished step and an empty task stays open`.
+
+- Mixed handoff/ask metadata renews a question only if the final task stays open and waiting on the user. TaskList reloads retain the handoff recipient and question revision; explicit reclamation can renew that question without disturbing another hidden ask. Tests: `mixed handoff and ask metadata keeps producer revisions through reload and explicit reclamation in en` (also zh-TW/zh-CN).
+
 ## 0.23.2 — 2026-10-19
 
 - **Keep unprocessed reports visible beside prompt metadata.** Read-only previews cannot establish that a prompt was accepted or answered a question. Skip prompts without hiding pending reports, including future/overflow timestamps, missing source clocks and sessions without a board binding. Prompt prose stays excluded. Tests: `pending previews keep reports and questions after future prompts` (also unsafe-order/unknown-source/unbound-session), `--chat keeps unprocessed reports and questions after future prompt metadata` (same variants).
@@ -2357,3 +2363,4 @@ Interactive pane: rows open to their steps and actions, 完成 / 完成這步 /
 ## 0.2.0
 
 Mirrors Claude's Task list, survives compaction, plain-language pane.
+

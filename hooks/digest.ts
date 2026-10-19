@@ -5,7 +5,7 @@ import { cleanContext, cleanTitle, clip, renewQuestion, waitsOnYou, withoutMarks
 // the question it ended on, as the model sums the turn up. Also the question a turn ends
 // on when the session does keep a list, and the handoff line a compaction leaves.
 
-export type Digest = { title: string; context: string; done: string; next: string; ask: string; why: string }
+export type Digest = { title: string; context: string; done: string; next: string; ask: string; why: string; handoffTo?: string }
 
 const EMPTY = /^(?:-+|—+|–+|none|n\/a|無|无|沒有|没有)$/i
 
@@ -30,6 +30,7 @@ export const parseDigest = (answer: string): Digest | null => {
   const done = field(lines, 'DONE')
   const next = field(lines, 'NEXT')
   const ask = field(lines, 'ASK')
+  const handoffTo = field(lines, 'HANDOFF').replace(/\s+/g, ' ').trim()
   if ([title, context, done, next, ask].every(value => value === '')) return null
   const split = ask.search(/\s[—–-]{1,2}\s/)
   const label = split < 0 ? ask : ask.slice(0, split)
@@ -42,6 +43,7 @@ export const parseDigest = (answer: string): Digest | null => {
     next: clip(next, 60),
     ask: clip(label.trim(), 48),
     why: clip(why.trim(), 120),
+    ...(handoffTo === '' ? {} : { handoffTo: clip(handoffTo, 120) }),
   }
 }
 
@@ -118,7 +120,7 @@ export const applyDigest = (mirror: ProgressMirror, given: Digest, now: number):
   const finished = digest.done === '' ? done : [...done, task(id(), digest.done, 'completed', null)]
   const open = [
     ...(digest.ask === '' ? [] : [task(id(), digest.ask, 'in_progress', digest.why || digest.ask)]),
-    ...(digest.next === '' || digest.next === digest.ask ? [] : [task(id(), digest.next, 'pending', null)]),
+    ...(digest.next === '' || digest.next === digest.ask ? [] : [{ ...task(id(), digest.next, digest.handoffTo ? 'completed' : 'pending', null), ...(digest.handoffTo ? { handoffTo: digest.handoffTo } : {}) }]),
   ]
 
   return {

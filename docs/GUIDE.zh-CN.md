@@ -4,6 +4,8 @@
 
 ## 开始使用
 
+工作交出后由来源明确回报：Claude Task 工具在每个交出的步骤加 `metadata: {"handoffTo":"承接方名称"}`；明确改为 pending／in_progress 可接回。回合摘要用 `HANDOFF` 记录承接方，`NEXT` 保留交出的工作；其他 reporter 写 `[-] 工作 — 已交给承接方`。来源保留取消项目，不再提示 Continue，也不重复计入承接方的工作。交接计划、发出消息、模型摘要或进度更新都不证明送达，也不批准动作。
+
 使用 Node.js 18+ 与 repository checkout。永久变更先预览、批准再应用：
 
 ```sh

@@ -49,6 +49,7 @@ const projectSection = (lines: readonly string[], project: string, heading: stri
   sectionRange(lines, heading) ?? (heading !== project.trim() ? sectionRange(lines, project) : null)
 
 const markOf = (task: ProgressMirrorTask): string => {
+  if (task.handoffTo) return '-'
   if (task.status === 'completed') return 'x'
   if (task.blocked !== null) return '!'
   if (task.waiting === 'you') return '?'
@@ -79,7 +80,8 @@ const markerOf = (mirror: ProgressMirror): string => {
 // A task's step line after its mark: what the block holds, and what a reader of the file gets
 // back (trimmed). The pane keys a question on it too, so its key is the one every other reader
 // of the block works out.
-export const stepWords = (task: ProgressMirrorTask): string => {
+export const stepWords = (task: ProgressMirrorTask, s: Strings = ZH_TW): string => {
+  if (task.handoffTo) return `${oneLine(task.subject)} — ${s.transferredTo(oneLine(task.handoffTo))}`
   const note = task.blocked !== null && task.blocked !== '' ? task.blocked : task.status === 'completed' ? '' : (task.why ?? '')
   const reason = note === '' ? '' : ` — ${oneLine(note)}`
 
@@ -102,7 +104,7 @@ export const renderAutoBlock = (mirror: ProgressMirror, s: Strings = ZH_TW): str
       const task = isAnswered(mirror, asked) ? { ...asked, waiting: null, why: s.answeredNote } : asked
 
       const token = questionToken(task)
-      return [`- [${markOf(task)}] ${stepWords(task)}`, ...(token === '' ? [] : [`<!-- question=${token} -->`])]
+      return [`- [${markOf(task)}] ${stepWords(task, s)}`, ...(token === '' ? [] : [`<!-- question=${token} -->`])]
     }),
     `<!-- /auto session=${id} -->`,
   ]

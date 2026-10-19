@@ -288,7 +288,7 @@ const currentOf = (mirror: ProgressMirror, s: Strings): CurrentView | null => {
   const doing = doingTask(mirror)
   const waitingYou = mirror.tasks.find(task => waitsOnYou(mirror, task))
   const blocked = mirror.tasks.find(task => task.status !== 'completed' && task.blocked !== null)
-  const done = mirror.tasks.filter(task => task.status === 'completed').length
+  const done = mirror.tasks.filter(task => task.status === 'completed' && !task.handoffTo).length
   let status = s.waitingReply
   let tone: Tone = 'warn'
   if (mirror.state === 'done') {
@@ -305,14 +305,14 @@ const currentOf = (mirror: ProgressMirror, s: Strings): CurrentView | null => {
   }
   const steps = mirror.tasks.map((task, index) => {
     const hasAnswer = isAnswered(mirror, task)
-    let stepStatus: ProgressStepStatus = task.status === 'completed' ? 'done' : 'todo'
+    let stepStatus: ProgressStepStatus = task.handoffTo ? 'cancelled' : task.status === 'completed' ? 'done' : 'todo'
     if (task.status !== 'completed') {
       if (task.blocked !== null) stepStatus = 'blocked'
       else if (task.waiting === 'you' && !hasAnswer) stepStatus = 'waiting'
       else if (task.waiting === 'run') stepStatus = 'running'
       else if (task.status === 'in_progress') stepStatus = 'doing'
     }
-    const note = stepStatus === 'blocked' ? (task.blocked ?? '') : stepStatus === 'done' ? '' : hasAnswer ? s.answeredNote : (task.why ?? '')
+    const note = task.handoffTo ? s.transferredTo(task.handoffTo) : stepStatus === 'blocked' ? (task.blocked ?? '') : stepStatus === 'done' ? '' : hasAnswer ? s.answeredNote : (task.why ?? '')
     return {
       text: `${task.subject}${suffixOf(stepStatus, s)}`,
       note,
@@ -332,7 +332,7 @@ const currentOf = (mirror: ProgressMirror, s: Strings): CurrentView | null => {
     status,
     tone,
     done,
-    total: mirror.tasks.length,
+    total: mirror.tasks.filter(task => !task.handoffTo).length,
     steps: foldSteps(steps, 6, s),
   }
 }

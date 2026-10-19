@@ -4,6 +4,8 @@ English · [繁體中文](GUIDE.zh-TW.md) · [简体中文](GUIDE.zh-CN.md) · [
 
 ## Get started
 
+When work has transferred, its owner must report that explicitly. Claude Task tools accept `metadata: {"handoffTo":"recipient name"}` on each transferred step; an explicit pending/in-progress update reclaims it. Turn summaries use `HANDOFF` for a named recipient and keep the transferred work in `NEXT`. Other reporters write `[-] Work — Handed to recipient`. The source retains a cancelled pointer, offers no Continue for it, and does not double-count the recipient's work. A proposal, sent message, model summary or progress update does not prove delivery or authorize actions.
+
 Use Node.js 18+ and a checkout. Preview before applying persistent changes:
 
 ```sh
