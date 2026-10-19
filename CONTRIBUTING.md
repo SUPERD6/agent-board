@@ -58,6 +58,7 @@ Keep the original README tour/flow SVGs and dark terminal illustration. The bott
 1. Update `.claude-plugin/plugin.json`, the three README badges and concise marketplace descriptions. Keep support claims aligned with evidence.
 2. Add a dated `## x.y.z — YYYY-MM-DD` CHANGELOG entry, naming covering tests.
 3. Fetch tags (`git fetch --tags origin`), then run `bun scripts/build-released.ts` with Bun 1.4.2. It records this version's generated-file ownership; do not edit its output manually.
+   Run `bun scripts/build-board.ts`, then regenerate the released table once more. Both `--check` commands must pass together. The bundled ownership table excludes its current board fingerprint to avoid a self-reference; historical board and command ownership remain included.
 4. Run applicable checks and generated-file checks. State any unavailable full SDK typecheck.
 5. Open a regular PR, wait for all required CI checks, and merge the exact tested head under the owner's authorization.
 6. On the merged release commit, run `claude plugin tag . --dry-run`, then `claude plugin tag .`. Push only the new exact tag, for example `git push origin agent-board--v0.23.0`. Never replace an existing release tag or push unrelated local tags.

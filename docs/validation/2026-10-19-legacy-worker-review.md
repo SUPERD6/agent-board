@@ -71,3 +71,10 @@ output problem locally. The launcher now catches execution failures and prints a
 short native code before ownership-checked cleanup. The complete affected
 worker/transaction batch passes24/24; Linux confirmation remains with the next
 exact-head CI run. No buffer limit, timeout or assertion was relaxed.
+
+Final result: all six checks passed for exact head
+`79cf5865c25beb085f453adc0eb9f6400a925831` in Actions run `39314094599`,
+including both previously failing Linux Node jobs. The tested integrated tree
+was merged as `a165ce6f9a1eb290fae3f6ed872307e474634187`; #93/#94 are closed.
+This supersedes the pending CI statements above, without changing their history
+or claiming native hook approval or full SDK typechecking.
