@@ -234,8 +234,7 @@ export const connectLegacy = (transaction: ConnectTransaction, request: LegacyCo
   }
   const codexSource = [codexHome, 'hooks.json'].join(sep)
   const normalized = (value: string): string => value.replace(/\\/g, '/')
-  const codexTrusted = observation?.trusted === true && normalized(observation.source) === normalized(codexSource) && observation.sourceHash === sha256(readLocal(codexSource))
-  const canRetireFallback = codexTrusted && hasReporter && hasBoard && transaction.previous(board) !== undefined
+  let codexTrusted = observation?.trusted === true && normalized(observation.source) === normalized(codexSource) && observation.sourceHash === sha256(readLocal(codexSource))
   if (existsSync(codexHome)) {
     const instructions = [[codexHome, 'AGENTS.md'].join(sep), [codexHome, 'AGENTS.override.md'].join(sep)]
     const effective = existsSync(instructions[1]!) && readMaybe(instructions[1]!)?.trim() !== '' ? instructions[1]! : instructions[0]!
@@ -243,7 +242,15 @@ export const connectLegacy = (transaction: ConnectTransaction, request: LegacyCo
     for (const file of instructions) {
       try {
         const before = readLocal(file)
-        const canRestore = !remove && !canRetireFallback && file === effective && transaction.previous(board) !== undefined
+        // Instruction reads can yield to an external editor. Recheck source and
+        // owned executables at each retirement, not only when the lock was taken.
+        if (codexTrusted && observation!.sourceHash !== sha256(readLocal(codexSource))) {
+          codexTrusted = false
+          warn('codex:approval', { message: 'setupCodexApproval', args: [] })
+        }
+        const ownsBoard = !remove && transaction.previous(board) !== undefined
+        const canRetireFallback = codexTrusted && hasReporter && hasBoard && ownsBoard && transaction.previous(script) !== undefined
+        const canRestore = !remove && !canRetireFallback && file === effective && ownsBoard
         const after = managedFallback(before, remove || canRetireFallback ? null : canRestore ? s.codexFallbackInstructions(codexFallbackCommand(board, path)) : '')
         if (after === null) { preserve(file); continue }
         // An empty content sentinel retains existing text without creating instructions

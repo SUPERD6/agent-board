@@ -3410,7 +3410,7 @@ test('/progress connect hooks the installed agents into the pane once, keeps the
   const codex = JSON.parse(world.files.get('/home/me/.codex/hooks.json') ?? '{}')
   expect(codex.hooks.Stop[0].hooks[0]).toEqual({ type: 'command', command: "sh '/home/me/.claude/progress-report.sh' codex turn || true", timeout: 10 })
   expect(codex.hooks.SessionEnd[0].hooks[0].command).toBe("sh '/home/me/.claude/progress-report.sh' codex end || true")
-  expect(world.files.get('/home/me/.codex/AGENTS.md')).toBe('# Mine\n\nUse tabs.\n')
+  expect(world.files.get('/home/me/.codex/AGENTS.md')).toBe(`# Mine\n\nUse tabs.\n\n${section}`)
   expect(world.files.get('/home/me/.gemini/settings.json')).toBe('{ // my comment\n "theme": "dark" }')
 
   // Again: nothing doubles.
@@ -4103,7 +4103,9 @@ test('a session hooks in the agents installed here without /progress connect, an
   const codex = JSON.parse(world.files.get('/home/me/.codex/hooks.json') ?? '{}')
   expect(codex.hooks.Stop[0].hooks[0].command).toBe("sh '/home/me/.claude/progress-report.sh' codex turn || true")
   expect(world.files.get('/home/me/.claude/progress-report.sh')).toContain("dir='/home/me/.claude/progress-inbox'")
-  expect(seen.notified).toEqual(['已自動接上：Codex。重開它們之後，每個回合都會出現在這裡。'])
+  expect(seen.notified).toHaveLength(1)
+  expect(seen.notified[0]).toContain('已自動接上：Codex。重開它們之後，每個回合都會出現在這裡。')
+  expect(seen.notified[0]).toContain('尚未確認目前 Codex hook 的核准狀態。請檢查 /hooks；已有的受管理回報指示會保留。')
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: PROPS })
   expect(await ui.find({ type: 'Text', text: /Codex 第一次要在它的 \/hooks 裡核准這個 hook 才會跑。/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /\/progress connect remove/ })).toBeDefined()
@@ -4748,7 +4750,7 @@ test('taking the hooks out also takes out a Grok hook an earlier version left in
   await $.command.run({ ...TIDY, args: 'connect remove' })
 })
 
-test('an agent already hooked in is left as it is, and nothing is said', async ($, on) => {
+test('an agent already hooked in is left as it is, and unconfirmed Codex approval is named once', async ($, on) => {
   const hooked = String(agentHooks(CONNECT).find(hook => hook.agent === 'codex')!.edit('', false))
   const world: World = { files: new Map([['/home/me/.codex/hooks.json', hooked]]), mtime: 1, hasTasks: true, ran: [] }
   engineBeneath(on, world)
@@ -4756,7 +4758,7 @@ test('an agent already hooked in is left as it is, and nothing is said', async (
   await $.session.start({ cwd: '/work/persona_framework', surface: 'terminal', isInteractive: true })
   await settledSetup($, world)
   expect(world.files.get('/home/me/.codex/hooks.json')).toBe(hooked)
-  expect(seen.notified).toEqual([])
+  expect(seen.notified).toEqual(['尚未確認目前 Codex hook 的核准狀態。請檢查 /hooks；已有的受管理回報指示會保留。\n之後要再看：/progress connect status'])
 })
 
 test('an agent hooked in by an earlier version gets the new hook without a word', async ($, on) => {
@@ -4781,7 +4783,9 @@ test('a changed hook of ours in Codex is still announced, since Codex asks to ap
   await $.session.start({ cwd: '/work/persona_framework', surface: 'terminal', isInteractive: true })
   await settledSetup($, world)
   expect(JSON.parse(world.files.get(ours) ?? '{}').hooks.Stop[0].hooks[0].timeout).toBe(10)
-  expect(seen.notified).toEqual(['已自動接上：Codex。重開它們之後，每個回合都會出現在這裡。'])
+  expect(seen.notified).toHaveLength(1)
+  expect(seen.notified[0]).toContain('已自動接上：Codex。重開它們之後，每個回合都會出現在這裡。')
+  expect(seen.notified[0]).toContain('尚未確認目前 Codex hook 的核准狀態。請檢查 /hooks；已有的受管理回報指示會保留。')
 })
 
 test('a first connection to a config holding only an empty hook list is still announced', async ($, on) => {
@@ -4792,7 +4796,9 @@ test('a first connection to a config holding only an empty hook list is still an
   await $.session.start({ cwd: '/work/persona_framework', surface: 'terminal', isInteractive: true })
   await settledSetup($, world)
   expect(JSON.parse(world.files.get('/home/me/.codex/hooks.json') ?? '{}').hooks.Stop).toHaveLength(1)
-  expect(seen.notified).toEqual(['已自動接上：Codex。重開它們之後，每個回合都會出現在這裡。'])
+  expect(seen.notified).toHaveLength(1)
+  expect(seen.notified[0]).toContain('已自動接上：Codex。重開它們之後，每個回合都會出現在這裡。')
+  expect(seen.notified[0]).toContain('尚未確認目前 Codex hook 的核准狀態。請檢查 /hooks；已有的受管理回報指示會保留。')
 })
 
 test('once the hooks are taken out, a session does not put them back', async ($, on) => {

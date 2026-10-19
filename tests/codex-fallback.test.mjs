@@ -70,6 +70,7 @@ for (const lang of ['en', 'zh-TW', 'zh-CN']) test(`new or untrusted Codex hooks 
   writeFileSync(f.config, JSON.stringify(changed))
   const renewed = f.run('connect', { lang })
   assert.equal(renewed.state.setup.codexTrusted, false)
+  assert.match(readFileSync(f.instructions, 'utf8'), /agent-board:start/)
   assert.deepEqual([...new Set(readFileSync(f.log, 'utf8').trim().split('\n'))].sort(), ['hooks/list', 'initialize', 'initialized'])
 }))
 
@@ -124,4 +125,36 @@ test('disabled definitions and ambiguous instruction markers stay conservative a
   writeFileSync(f.instructions, '# Personal only\n')
   f.run('connect')
   assert.equal(readFileSync(f.instructions, 'utf8'), '# Personal only\n')
+}))
+
+test('an empty override remains empty and does not shadow personal AGENTS rules with a generated fallback', () => fixture(async f => {
+  const before = readFileSync(f.instructions, 'utf8')
+  writeFileSync(f.override, ' \r\n')
+  f.run('connect')
+  assert.equal(readFileSync(f.override, 'utf8'), ' \r\n')
+  assert.ok(readFileSync(f.instructions, 'utf8').startsWith(before))
+  assert.match(readFileSync(f.instructions, 'utf8'), /agent-board:start/)
+}))
+
+for (const artifact of ['board', 'reporter']) test(`approved definitions cannot retire existing fallback after the owned ${artifact} is replaced`, () => fixture(async f => {
+  f.run('connect')
+  const before = readFileSync(f.instructions, 'utf8')
+  const file = join(f.home, 'data', artifact === 'board' ? 'agent-board.mjs' : process.platform === 'win32' ? 'progress-report.ps1' : 'progress-report.sh')
+  writeFileSync(file, 'foreign executable bytes')
+  writeFileSync(f.options, JSON.stringify({ trust: 'trusted' }))
+  const result = f.run('connect')
+  assert.equal(readFileSync(f.instructions, 'utf8'), before)
+  assert.equal(readFileSync(file, 'utf8'), 'foreign executable bytes')
+  assert.ok(result.result.problems.some(one => one.key === 'preserved:' + file))
+}))
+
+test('a hook source change while reading instructions cannot retire an existing fallback', () => fixture(async f => {
+  f.run('connect')
+  const before = readFileSync(f.instructions, 'utf8')
+  writeFileSync(f.options, JSON.stringify({ trust: 'trusted' }))
+  const preload = join(f.home, 'instruction-drift.mjs')
+  writeFileSync(preload, `import fs from 'node:fs';import{syncBuiltinESMExports}from'node:module';const read=fs.readFileSync;let changed=false;fs.readFileSync=(file,...args)=>{if(!changed&&file===${JSON.stringify(f.instructions)}){changed=true;fs.appendFileSync(${JSON.stringify(f.config)},' ')}return read(file,...args)};syncBuiltinESMExports()`)
+  const result = f.run('connect', {}, { NODE_OPTIONS: '--import=' + pathToFileURL(preload).href })
+  assert.equal(readFileSync(f.instructions, 'utf8'), before)
+  assert.equal(result.state.setup.codexTrusted, false)
 }))

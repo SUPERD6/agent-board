@@ -24,6 +24,14 @@ Second focused batch:
 ℹ skipped 0
 ℹ duration_ms 41844.5062
 
-All three failures are a new fixture ReferenceError: a changed-definition scenario was placed before its config constant. The scenario was moved after positive approval; this correction has not been rerun at this checkpoint. Subsequent empty-override and owned-board retirement safeguards also need focused verification.
+All three failures were a new fixture ReferenceError: a changed-definition scenario was placed before its config constant. The scenario was moved after positive approval. The slice 10 batch below verifies that correction and the empty-override and owned-artifact retirement safeguards.
 
-Strict standalone TS and strict plugin validation passed before these last safeguards; final bundle is regenerated. Full plugin/Node acceptance, affected old pane expectations, documentation review, and exact-head CI remain pending. No #102 completion claim.
+Slice 10 first focused batch (`issue-102-slice10-focused-first.log`): 52 tests, 51 passed, one failed, 56.914 seconds. The newly added adversarial fixture changed hooks while the instructions file was read. The original approval snapshot incorrectly retired the fallback. Rechecking the source fingerprint and positively owned board/reporter after reading each instruction file closes this observed window.
+
+Slice 10 final focused batch (`issue-102-slice10-focused-final.log`): 52 tests, 52 passed, zero failed or skipped, 51.336 seconds. This runs all 17 inspector mocks plus fallback, legacy-transaction and bootstrap tests. Empty overrides remain empty; replacing an owned board or reporter retains existing fallback even after approval; changed hook definitions restore fallback in each language.
+
+Strict standalone TypeScript, strict plugin validation, pinned Bun bundle generation/check and whitespace validation passed on the frozen final runtime. The prior pane assertion now expects managed Codex instructions to remain while approval is unknown.
+
+The exact Claude Code 2.1.301 full plugin run (`issue-102-slice10-plugin.log`) finished with 483 passed and five failed, 488 total across nine files, 317.92 seconds. One existing inbox-read fixture timed out at 5016.53 ms against its unchanged 5000 ms limit; its cause remains unproven. Four pane notification assertions expected the old summary-only/silent Codex setup behavior. They are narrowly updated to require exactly one notification containing the original summary and the new unknown-trust notice, or the exact new notice when hook bytes stay unchanged. These four assertion changes still need a fresh plugin run; no runtime change or timeout increase follows this result. Full Node acceptance and exact-head CI also remain pending. No #102 completion claim.
+
+The shared native lock coordinates cooperating installers. A noncooperating external writer can still alter source or instructions after the final comparison and before a write; these checks do not provide a filesystem CAS. Approval discovery is read-only, and unsupported discovery retains fallback rather than guessing a trust hash.

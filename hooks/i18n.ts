@@ -252,7 +252,7 @@ export const ZH_TW = {
   paneNotOpened: (reason: string): string => `進度面板開不了：${reason}`,
   connectDone: (list: string): string => `已接上：${list}。重開它們之後，每回合結束都會自動回報到面板。`,
   connectNone: '沒找到可以接的 agent（Codex、Gemini CLI、Cursor、OpenCode、Grok Build、Hermes Agent、Muse Code、OpenClaw）。',
-  setupCodexApproval: (): string => "Codex hooks 需要在 /hooks 核准目前版本；保留進度回報備援。",
+  setupCodexApproval: (): string => "尚未確認目前 Codex hook 的核准狀態。請檢查 /hooks；已有的受管理回報指示會保留。",
   codexFallbackInstructions: (command: string): string => "在 Codex /hooks 核准這些 hooks 前，每個實質工作步驟後，將 JSON 由 stdin 傳給：\n\n" + command + "\n\n使用 project、title、state（working/waiting/done）與含核取標記的 steps。取消步驟保留 [-]。使用主機提供的 CODEX_THREAD_ID；缺少時不得捏造工作階段綁定，請告知使用者無法回報。",
   connectCodexTrust: 'Codex 第一次要在它的 /hooks 裡核准這個 hook 才會跑。',
   connectHermesTrust: 'Hermes Agent 第一次跑這個 hook 前會問你一次，回答 y（或用 --accept-hooks 啟動）。',
