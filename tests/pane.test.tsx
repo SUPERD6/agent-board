@@ -3245,14 +3245,45 @@ test('a pane button whose answer does not reach Claude leaves its step waiting o
   await $.turn.complete({ answer: '要你決定。', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
   await clock.advance(10)
 
+  const original = storedQuestion(world, '選配色 — 用哪組？')
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop', props: PROPS })
   await ui.press({ key: 'mine::1::Nord' })
   await ui.unmount()
   await clock.advance(10)
   expect(world.files.get(FILE) ?? '').toContain('- [?] 選配色 — 用哪組？\n')
+  expect(storedQuestion(world, '選配色 — 用哪組？')).toBe(original)
+  expect([...world.files].some(([file, text]) => file.includes('-questions-source-') && JSON.parse(text).disposition === 'resolved')).toBe(false)
   const after = await $.ui.mount({ ...PANE, surface: 'desktop', props: PROPS })
   expect(await after.find({ type: 'Button', key: 'mine::1::Nord' })).toBeDefined()
   await after.unmount()
+})
+
+test('an accepted pane reply cannot mark a same-word producer renewal made during submission answered', async ($, on) => {
+  const world: World = { files: new Map(), mtime: 1, hasTasks: true }
+  const clock = engineBeneath(on, world)
+  let release: () => void = () => undefined
+  let reached: () => void = () => undefined
+  const held = new Promise<void>(resolve => { release = resolve })
+  const entered = new Promise<void>(resolve => { reached = resolve })
+  on('prompt.submit', async ($, e) => {
+    if (e.text.startsWith('關於')) { reached(); await held }
+    return { text: e.text }
+  })
+  await start($, '幫我選配色')
+  await $.tool.call({ tool: 'TaskCreate', subject: '選配色', metadata: { waiting: 'you', ask: 'choose', options: ['Nord', '和色'], why: '用哪組？' } })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop', props: PROPS })
+  const pressing = ui.press({ key: 'mine::1::Nord' })
+  await entered
+  await $.tool.call({ tool: 'TaskUpdate', taskId: '1', metadata: { waiting: 'you' } })
+  const renewed = storedQuestion(world, '選配色 — 用哪組？')
+  release()
+  await pressing
+  await clock.advance(10)
+  expect(storedQuestion(world, '選配色 — 用哪組？')).toBe(renewed)
+  expect(world.files.get(FILE) ?? '').toContain('- [?] 選配色 — 用哪組？\n')
+  expect(await ui.find({ type: 'Button', key: 'mine::1::Nord' })).toBeDefined()
+  expect([...world.files].some(([file, text]) => file.includes('-questions-source-') && JSON.parse(text).disposition === 'resolved' && JSON.parse(text).record.id === renewed)).toBe(false)
+  await ui.unmount()
 })
 
 test('your message typed while Claude is still working answers too; a notice delivered into that turn does not', async ($, on) => {

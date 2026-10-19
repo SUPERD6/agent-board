@@ -59,7 +59,6 @@ import {
   noticesOf,
   resumeNote,
   stateOf,
-  withoutMarks,
 } from './mirror'
 import type { ListedTask } from './mirror'
 import { baseName, countSteps, doneKey, isHereProject, isTaskComplete, parseProgress, STALE_MS } from './parse'
@@ -2695,21 +2694,29 @@ export const register: Register = (on, options) => {
       },
       answer: (item, text) => {
         if (item.where !== 'here') return
-        // This session's items are keyed `mine::<task id>`. The press is the answer: the step
-        // stops waiting on the person now, and waits again if the answer cannot be sent.
+        // A dropped or rejected submission is not resolution evidence. Keep the exact ask
+        // until delivery succeeds, then recheck its producer revision and full source.
         const id = item.key.replace(/^mine::/, '')
-        const unmark = () => saveMine($, one => ({ ...one, answered: withoutMarks(one, [id]) }), true).then(() => settle($))
-        saveMine($, one => markAnswered(one, [id]), true)
-          .then(() => settle($))
-          .then(() => submitOwn($, s.answerText(item.text, text)))
-          .then(
-            async entered => {
-              if (entered.drop !== undefined) return unmark()
-              await update($, answer, () => ({ question: item.text, text: s.answered(text), isAsking: false }))
-            },
-            unmark,
-          )
-          .catch(() => undefined)
+        const send = async (): Promise<void> => {
+          const before = await read($, mine)
+          const task = before?.tasks.find(one => one.id === id)
+          if (before === null || task === undefined || task.subject !== item.text || (task.why ?? '') !== item.note) return
+          const source = JSON.stringify({ session: before.sessionId, project: before.project, title: before.title, context: before.context, task })
+          const matches = (one: ProgressMirror): boolean => source === JSON.stringify({ session: one.sessionId, project: one.project, title: one.title, context: one.context, task: one.tasks.find(row => row.id === id) })
+          const isSameAsk = async (one: ProgressMirror): Promise<boolean> => {
+            const view = buildView([], [], one, await $.clock.now(), 0, {}, s, await read($, hiddenAsks), {}, await read($, questionLedger), await questionProofsFor($, await progressPath($)))
+            return [...view.waiting, ...(view.reminder ?? []), ...(view.older ?? [])].some(ask => ask.key === item.key && ask.questionId === item.questionId && ask.text === item.text && ask.note === item.note)
+          }
+          if (!(await isSameAsk(before))) return
+          const entered = await submitOwn($, s.answerText(item.text, text))
+          if (entered.drop !== undefined) return
+          const latest = await read($, mine)
+          if (latest === null || !matches(latest) || !(await isSameAsk(latest))) return
+          await saveMine($, one => matches(one) ? markAnswered(one, [id]) : one, true)
+          await settle($)
+          await update($, answer, () => ({ question: item.text, text: s.answered(text), isAsking: false }))
+        }
+        send().catch(() => undefined)
       },
       copyCommand: (item, surface) => {
         if (item.command === null) return

@@ -10,6 +10,7 @@ import { sha256 } from '../hooks/sha256'
 import { serveAction, serveModel, servePage } from '../hooks/serve'
 import { dashboardHtml } from '../hooks/dashboard'
 import { STRINGS } from '../hooks/strings'
+import { remindersOf } from '../hooks/remind'
 
 const START = Date.parse('2026-10-01T00:00:00Z')
 const board = (steps: string, updated = START): string => `## demo\n<!-- auto session=a1b2c3d4 agent=codex state=waiting updated=${new Date(updated).toISOString()} -->\n### Release\n${steps}\n<!-- /auto session=a1b2c3d4 -->\n`
@@ -317,4 +318,17 @@ test('aged shelf hide actions keep identity and stale fingerprints while retaine
     expect(serveModel(retained, [], s).older.length).toBe(1)
     expect(servePage(s, 'synthetic-nonce').includes(s.questionReviewOnly)).toBe(true)
   }
+})
+
+test('retaining a question changes no reminder identity while a new producer incarnation can notify', () => {
+  const projects = parseProgress(board('- [?] Publish?'))
+  const first = observeQuestions(emptyQuestions(), projects, null, [], START, true, 'remind:1').ledger
+  const active = buildView(projects, [], null, START, 0, {}, STRINGS.en, [], {}, first)
+  const notices = remindersOf(active, {}, START, '2026-10-01', STRINGS.en)
+  const told = Object.fromEntries(notices.map(one => [one.key, START]))
+  const retained = buildView([], [], null, START + 1, 0, {}, STRINGS.en, [], {}, withCaptures(emptyQuestions(), [{ version: 1, disposition: 'unresolved', record: first.records[0]! }]))
+  expect(remindersOf(retained, told, START + 1, '2026-10-01', STRINGS.en)).toEqual([])
+  const completed = observeQuestions(first, parseProgress(board('- [x] Publish?')), null, [], START + 1, true, 'remind:2').ledger
+  const renewed = observeQuestions(completed, projects, null, [], START + 2, true, 'remind:3').ledger
+  expect(remindersOf(buildView(projects, [], null, START + 2, 0, {}, STRINGS.en, [], {}, renewed), told, START + 2, '2026-10-01', STRINGS.en).length).toBe(1)
 })
