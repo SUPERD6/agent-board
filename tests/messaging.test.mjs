@@ -182,6 +182,22 @@ test('synthetic Claude, Codex and Gemini adapters can route messages and lose av
   } finally { await Promise.all([claude.close(), codex.close(), gemini.close()]) }
 }))
 
+test('an inactive source is refused before polling notices it and cannot enqueue a delivery', async () => fixture(async board => {
+  let isAlive = true, deliveries = 0
+  const client = boardClient(board.address)
+  const source = await client.attach({ agent: 'fixture', session: 'source', surface: 'Synthetic', turn: 'turn1', verify: async () => isAlive, deliver: async () => { deliveries++; return 'ACK' } })
+  const target = await client.attach({ agent: 'fixture', session: 'target', surface: 'Synthetic', turn: 'turn1', verify: async () => true, deliver: async () => { deliveries++; return 'ACK' } })
+  try {
+    isAlive = false
+    await assert.rejects(source.send({ ...input, target: target.id }), /HOST_NOT_CONNECTED/)
+    await assert.rejects(source.send({ ...input, target: target.id }), /HOST_NOT_CONNECTED/)
+    const state = (await board.call('/api/board')).body.messaging
+    assert.equal(state.messages.length, 0)
+    assert.ok(!state.connections.some(one => one.id === source.id))
+    assert.equal(deliveries, 0)
+  } finally { await source.close(); await target.close() }
+}))
+
 test('an expired connector disappears and cannot take a queued message', { timeout: 40000 }, async () => fixture(async board => {
   const connected = (await board.call('/api/messages/register', { agent: 'claude', session: 'fixture', turn: 'turn1', surface: 'Synthetic adapter' })).body
   await board.call('/api/messages/send', { ...input, target: connected.id })
@@ -264,6 +280,7 @@ test('an owned idle Codex session accepts only its actual new turn ACK and dedup
       // A native completion may arrive before the turn/start response.
       emit(thread, 'actual-turn', 'ACK AB-TEST-001')
       current = { thread, status: 'idle', turn: null }
+      listener({ method: 'turn/completed', params: { threadId: thread, turn: { id: 'actual-turn', status: 'completed' } } })
       return { turn: { id: 'actual-turn' } }
     },
   }
@@ -279,6 +296,58 @@ test('an owned idle Codex session accepts only its actual new turn ACK and dedup
     await pause(2200); assert.equal(starts, 1)
   } finally { await receiver.close() }
   assert.equal(listener, null)
+}))
+
+test('a Codex ACK before delayed native turn completion keeps its receiver online', async () => fixture(async board => {
+  const thread = '11111111-2222-4333-8444-555555555555'
+  let current = { thread, status: 'idle', turn: null }, listener
+  const transport = {
+    listen: one => { listener = one; return () => { listener = null } },
+    request: async method => {
+      if (method === 'thread/loaded/list') return { data: [thread] }
+      assert.equal(method, 'turn/start')
+      current = { thread, status: 'active', turn: 'actual-turn' }
+      listener({ method: 'item/completed', params: { threadId: thread, turnId: 'actual-turn', item: { type: 'agentMessage', text: 'ACK AB-TEST-001' } } })
+      return { turn: { id: 'actual-turn' } }
+    },
+  }
+  const receiver = await attachCodexSession({ boardUrl: board.address, transport, thread, state: () => current, verifyOwner: () => true })
+  try {
+    await receiver.send({ ...input, target: receiver.id, turn: 'session' })
+    await waitFor(() => current.status === 'active')
+    await pause(2300) // Force at least one receiver poll between ACK and turn/completed.
+    const active = (await board.call('/api/board')).body.messaging
+    assert.equal(active.messages[0].status, 'accepted')
+    assert.ok(active.connections.some(one => one.id === receiver.id))
+    listener({ method: 'turn/completed', params: { threadId: thread, turn: { id: 'old-turn', status: 'completed' } } })
+    assert.equal((await board.call('/api/board')).body.messaging.messages[0].status, 'accepted')
+    current = { thread, status: 'idle', turn: null }
+    listener({ method: 'turn/completed', params: { threadId: thread, turn: { id: 'actual-turn', status: 'completed' } } })
+    await waitFor(async () => (await board.call('/api/board')).body.messaging.messages[0].status === 'acknowledged')
+    assert.ok((await board.call('/api/board')).body.messaging.connections.some(one => one.id === receiver.id))
+  } finally { await receiver.close() }
+}))
+
+test('ACK text from a failed native Codex turn cannot acknowledge delivery', async () => fixture(async board => {
+  const thread = '11111111-2222-4333-8444-555555555555'
+  let listener
+  const transport = {
+    listen: one => { listener = one; return () => { listener = null } },
+    request: async method => {
+      if (method === 'thread/loaded/list') return { data: [thread] }
+      assert.equal(method, 'turn/start')
+      listener({ method: 'item/completed', params: { threadId: thread, turnId: 'failed-turn', item: { type: 'agentMessage', text: 'ACK AB-TEST-001' } } })
+      listener({ method: 'turn/completed', params: { threadId: thread, turn: { id: 'failed-turn', status: 'failed' } } })
+      return { turn: { id: 'failed-turn' } }
+    },
+  }
+  const receiver = await attachCodexSession({ boardUrl: board.address, transport, thread, state: () => ({ thread, status: 'idle', turn: null }), verifyOwner: () => true })
+  try {
+    await receiver.send({ ...input, target: receiver.id, turn: 'session' })
+    const result = await waitFor(async () => { const one = (await board.call('/api/board')).body.messaging.messages[0]; return one?.status === 'uncertain' && one.error === 'TURN_NOT_COMPLETED' && one })
+    assert.equal(result.error, 'TURN_NOT_COMPLETED')
+    assert.equal(result.reply, '')
+  } finally { await receiver.close() }
 }))
 
 test('an owned Codex session refuses an unverified owner, a busy session and a forged session scope', async () => fixture(async board => {
@@ -306,6 +375,7 @@ test('an existing card sends only to its exact live receiver and preserves mark 
   const ask = (await board.call('/api/board')).body.model.asks.find(one => one.agent === 'codex')
   assert.equal(ask.send, 'connected'); assert.equal(ask.canHide, offline.canHide)
   assert.equal(ask.session, thread); assert.equal(ask.delivery.id, connected.id)
+  assert.equal(ask.info, '') // Internal binding metadata is not user-facing copy.
   const request = { key: ask.key, type: 'message', id: 'AB-TEST-001', text: input.text, session: ask.session, asked: ask.text, fp: ask.fp, connection: ask.delivery.id, turn: ask.delivery.turn }
   for (const wrong of [{ connection: 'wrong-session' }, { turn: 'stale-turn' }, { session: 'another-session' }, { fp: 'changed-line' }]) assert.equal((await board.call('/api/act', { ...request, ...wrong })).status, 409)
   assert.equal((await board.call('/api/act', request)).status, 200)
@@ -317,7 +387,7 @@ test('an existing card sends only to its exact live receiver and preserves mark 
   await board.call('/api/messages/poll', { ...credentials, turn: 'turn1' })
   await board.call('/api/messages/receipt', { ...credentials, id: request.id, status: 'acknowledged', reply: 'ACK AB-TEST-001' })
   assert.equal((await board.call('/api/board')).body.model.asks[0].receipt.reply, 'ACK AB-TEST-001')
-  assert.equal((await board.call('/api/act', request)).body.note, 'Session replied with ACK')
+  assert.equal((await board.call('/api/act', request)).body.note, 'Replied')
   await board.call('/api/messages/disconnect', { ...credentials, turn: 'turn1' })
   const disconnected = (await board.call('/api/board')).body.model.asks[0]
   assert.ok(!['send', 'connected'].includes(disconnected.send)); assert.equal(disconnected.delivery, undefined)

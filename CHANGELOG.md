@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **Recheck the source before every forwarded message.** An inactive or unverifiable
+  owner cannot enqueue during the interval before the next poll. Idle hook-only cards
+  no longer use a running-task placeholder. A native Codex ACK waits for its matching
+  completed turn, preserving the receiver while Stop hooks finish. Tests:
+  `a Codex ACK before delayed native turn completion keeps its receiver online`,
+  `ACK text from a failed native Codex turn cannot acknowledge delivery`,
+  `an inactive source is refused
+  before polling notices it and cannot enqueue a delivery`, `the generated Codex hook
+  command runs through the platform shell with JSON on stdin`, `native Antigravity
+  hook commands bind conversationId, record metadata only and keep Stop resumable`.
+
+- **Keep the board focused on work.** Remove receiver diagnostics, visible session ids,
+  duplicate healthy-connection rows and transport jargon. Send, copy, mark read and
+  show again retain their exact internal binding and behavior. Coverage: `an existing
+  card sends only to its exact live receiver and preserves mark read and unhide`.
+
 - **Unify setup and install Antigravity's native hooks.** All three READMEs now start
   with an expanded, agent-neutral installation prompt and the common installer.
   Antigravity is the current consumer CLI entry; Gemini CLI is documented separately

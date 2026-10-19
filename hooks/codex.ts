@@ -44,7 +44,7 @@ export const codexEvent = (previous: CodexReport | null, input: Record<string, u
     session, turn: turn ?? previous?.turn ?? null, state,
     title: previous?.title ?? s.codexTask,
     project: previous?.project ?? s.codexProject,
-    steps: previous?.steps ?? [`- [>] ${s.codexLifecycle}`],
+    steps: previous?.steps ?? [`- [ ] ${s.codexLifecycle}`],
     updated: now,
     events: [...(previous?.events ?? []), key].slice(-256),
     retiredTurns: [...(previous?.retiredTurns ?? []), ...(working && previous?.turn && previous.turn !== turn ? [previous.turn] : [])].slice(-128),

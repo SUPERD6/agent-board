@@ -65,6 +65,10 @@ test('the generated Codex hook command runs through the platform shell with JSON
   assert.match(readFileSync(f.progress, 'utf8'), /state=working/)
   const record = JSON.parse(readFileSync(join(f.root, 'sessions', createHash('sha256').update(`codex:${session}`).digest('hex') + '.json')))
   assert.equal(record.turn, 'native-shell-fixture')
+  assert.equal(f.event('Stop', 'native-shell-fixture').status, 0)
+  const idle = f.command([])
+  assert.equal(idle.status, 0, idle.stderr)
+  assert.ok(!idle.stdout.includes('running:') && !idle.stdout.includes('session ended'), idle.stdout)
 }))
 
 test('Codex trust requires an owned installation and an explicit host binary', () => fixture(f => {
@@ -358,6 +362,11 @@ test('native Antigravity hook commands bind conversationId, record metadata only
   const saved = JSON.parse(readFileSync(record, 'utf8'))
   assert.deepEqual(saved.activity.map(one => one.event), Object.keys(hooks))
   assert.ok(readFileSync(f.progress, 'utf8').includes('resume=' + conversationId))
+  // A hook-only activity record must not leave the idle session looking like a
+  // running semantic task. Explicit agent task reports remain untouched.
+  const board = f.command([])
+  assert.equal(board.status, 0, board.stderr)
+  assert.ok(!board.stdout.includes('running:') && !board.stdout.includes('session ended'), board.stdout)
   assert.equal(fire('PreInvocation').status, 0)
   assert.equal(JSON.parse(readFileSync(record, 'utf8')).state, 'working')
   assert.notEqual(f.command(['--agent-status', '--agent', 'antigravity', '--state', 'ended', '--event', 'Stop'], { conversationId }).status, 0)
