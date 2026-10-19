@@ -7,6 +7,13 @@ existing host connection, register a short-lived lease, and keep it alive. Disco
 adapters lose their card's Send action within 15 seconds. Ordinary messages cannot
 approve tools, grant hook trust or merge a PR.
 
+A temporary network failure, timeout or HTTP 5xx during polling preserves the same
+verified binding only while its last confirmed lease remains valid. Successful polling
+renews that lease; failures do not. Invalid ownership, authentication, stale turns and
+expired leases disconnect immediately. Recovery never registers another session or
+replays a claimed message. If a poll response is lost after claiming, the message stays
+uncertain until reconciled; a later heartbeat cannot turn it into an ACK.
+
 Use the existing reply box on the session's card. Its Copy button becomes Send Codex
 (or that receiver's agent name) only when the full native session id and agent match a
 live receiver. Internal connection ids stay hidden. There is no
@@ -93,10 +100,9 @@ another agent/id, duplicate ambiguous blocks, an RPC success or an ACK cannot sa
 A late new report can resolve a timeout. This observes the progress file; it does not
 prove automatic hooks, native ownership or model delivery. No conversation is read.
 
-The same status area lists live receiving adapters even when they have no progress card.
-It shows progress presence and receiving availability separately. A disconnected receiver
-disappears unless an explicit observation request remains; that request then says it has
-no online receiver. There is no extra send picker or copy-id action. Observation requests
+The page shows actionable progress waits and timeouts without a connection inventory or
+session identifiers. Send appears on a matching task card only while its exact adapter
+is connected. There is no extra send picker or copy-id action. Observation requests
 are bounded to 100 per server, expire after 1–600 seconds (60 by default), and are not
 restored on restart. They never send, retry, approve or create a progress block.
 

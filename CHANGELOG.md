@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Recover temporary message-poll failures within the existing lease.** Retry only polling after a network failure, timeout or HTTP 5xx; preserve the exact verified binding without renewing its lease on failure. Disconnect on ownership loss, authentication errors, stale turns or expiry. Never replay a durable claim or infer an ACK from recovery. Tests: `a temporary poll failure preserves a verified connection and delivers a queued message once`, `a lost poll response after durable claiming is never replayed or turned into an ACK`, `a forbidden or stale heartbeat closes the connection instead of retrying authentication`, `temporary board failures cannot keep an expired connection alive`, `native ownership loss during poll recovery closes the exact binding`. These use synthetic local transports, with no new native-model acceptance claim.
+
 ## 0.23.1 — 2026-10-19
 
 - **Keep session ids out of the native pane and terminal too.** Identify questions by task and agent, remove id-only clipboard actions, and copy the exact resume command only when requested. The read-only page omits resume internals. Tests: `every agent keeps exact resume bindings without showing session identifiers in board text`, `another session shows its task without ids and copies only an actionable resume command`.

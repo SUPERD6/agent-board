@@ -12,13 +12,21 @@ export const boardClient = address => {
   if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || !url.port || !url.searchParams.get('t') || url.username || url.password) throw new Error('LOCAL_BOARD_URL_REQUIRED')
   const token = url.searchParams.get('t')
   const call = async (action, body) => {
-    const response = await fetch(new URL('/api/messages/' + action, url), {
-      method: 'POST', headers: { 'content-type': 'application/json', 'x-board-token': token },
-      body: JSON.stringify(body), signal: AbortSignal.timeout(5000),
-    })
-    const result = await response.json()
-    if (!response.ok) throw new Error(result.error || 'BOARD_UNAVAILABLE')
-    return result
+    let response
+    try {
+      response = await fetch(new URL('/api/messages/' + action, url), {
+        method: 'POST', headers: { 'content-type': 'application/json', 'x-board-token': token },
+        body: JSON.stringify(body), signal: AbortSignal.timeout(5000),
+      })
+      const result = await response.json()
+      if (!response.ok) throw Object.assign(new Error(result.error || 'BOARD_UNAVAILABLE'), { isRetryable: response.status >= 500 && response.status < 600 })
+      return result
+    } catch (error) {
+      // Only the poller uses this hint. Sending, receipts and registration
+      // never retry a request that may already have performed an external effect.
+      if (typeof error.isRetryable !== 'boolean') error.isRetryable = !response || (response.status >= 500 && response.status < 600) || (response.ok && !(error instanceof SyntaxError))
+      throw error
+    }
   }
   return {
     send: body => call('send', body),
@@ -27,7 +35,7 @@ export const boardClient = address => {
       if (typeof verify !== 'function' || typeof deliver !== 'function' || !await verify()) throw new Error('HOST_NOT_CONNECTED')
       const registered = await call('register', { agent, session, surface, turn, scope })
       const credentials = { connection: registered.id, secret: registered.secret }
-      let isClosed = false, isPolling = false
+      let isClosed = false, isPolling = false, leaseUntil = registered.expires
       const close = async () => {
         if (isClosed) return
         isClosed = true
@@ -54,11 +62,26 @@ export const boardClient = address => {
         if (isClosed || isPolling) return
         isPolling = true
         try {
-          if (!await verify()) { await close(); return }
-          const result = await call('poll', { ...credentials, turn })
-          for (const message of result.messages) void processMessage(message)
-        } catch (error) { onError(error); await close() }
-        finally { isPolling = false }
+          // Ownership failures are terminal even if they happen to look like a
+          // network exception. Only a verified host may recover its board poll.
+          let isOwned = false
+          try { isOwned = await verify() } catch (error) { await close(); onError(error); return }
+          if (!isOwned || isClosed) { await close(); return }
+          try {
+            const started = Date.now()
+            if (started >= leaseUntil) throw new Error('CONNECTION_EXPIRED')
+            const result = await call('poll', { ...credentials, turn })
+            if (!Array.isArray(result.messages) || !Number.isFinite(result.leaseMs) || result.leaseMs <= 0) throw new Error('INVALID_POLL_RESPONSE')
+            // A delayed response cannot extend the lease beyond the request's
+            // start plus its duration. Failed polls never renew this deadline.
+            leaseUntil = started + result.leaseMs
+            if (Date.now() >= leaseUntil) throw new Error('CONNECTION_EXPIRED')
+            if (!isClosed) for (const message of result.messages) void processMessage(message)
+          } catch (error) {
+            if (!error.isRetryable || Date.now() >= leaseUntil) await close()
+            onError(error)
+          }
+        } finally { isPolling = false }
       }
       const timer = setInterval(() => { void poll() }, 2000)
       void poll()

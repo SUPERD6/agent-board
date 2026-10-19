@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createServer } from 'node:http'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { BOARD_SCRIPT } from '../hooks/board-script.ts'
@@ -103,6 +104,154 @@ const waitFor = async fn => {
   while (Date.now() < until) { const found = await fn(); if (found) return found; await pause(100) }
   throw new Error('condition timed out')
 }
+
+// A disposable loopback proxy faults only heartbeat responses. The real store still
+// decides whether a message was durably claimed before the response was lost.
+const pollingProxy = async (board, mode) => {
+  const upstream = new URL(board.address)
+  let faults = 0, polls = 0, registrations = 0
+  const server = createServer(async (req, res) => {
+    try {
+      let body = ''
+      for await (const chunk of req) body += chunk
+      const isPoll = req.url === '/api/messages/poll'
+      if (isPoll) polls += 1
+      if (req.url === '/api/messages/register') registrations += 1
+      const fail = code => {
+        faults += 1
+        res.writeHead(code, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ error: 'SYNTHETIC_POLL_FAILURE' }))
+      }
+      if (isPoll && (faults === 0 || mode === 'always') && mode !== 'after-claim') {
+        if (mode === 'network' || mode === 'timeout') {
+          faults += 1
+          if (mode === 'network') req.socket.destroy()
+          return
+        }
+        if (mode === 'malformed') { faults += 1; res.writeHead(200); res.end('{'); return }
+        return fail(mode === 'forbidden' ? 403 : mode === 'stale' ? 409 : 503)
+      }
+      const answer = await fetch(new URL(req.url, upstream), {
+        method: req.method, headers: { 'x-board-token': upstream.searchParams.get('t'), 'content-type': 'application/json' }, body,
+      })
+      const text = await answer.text()
+      if (isPoll && faults === 0 && mode === 'after-claim' && JSON.parse(text).messages?.length) return fail(503)
+      res.writeHead(answer.status, { 'content-type': 'application/json' })
+      res.end(text)
+    } catch { res.writeHead(502); res.end('{}') }
+  })
+  await new Promise(done => server.listen(0, '127.0.0.1', done))
+  return {
+    address: `http://127.0.0.1:${server.address().port}/?t=${upstream.searchParams.get('t')}`,
+    faults: () => faults, polls: () => polls, registrations: () => registrations,
+    close: () => new Promise(done => { server.close(done); server.closeAllConnections() }),
+  }
+}
+
+test('a temporary poll failure preserves a verified connection and delivers a queued message once', async () => {
+  for (const mode of ['before-claim', 'network', 'timeout']) await fixture(async board => {
+    const proxy = await pollingProxy(board, mode)
+    const errors = [], delivered = []
+    const receiver = await boardClient(proxy.address).attach({
+      agent: 'fixture', session: 'recovery', turn: 'turn1', surface: 'Synthetic recovery adapter', verify: async () => true,
+      onError: error => errors.push(error), deliver: async one => { delivered.push(one.id); return 'ACK ' + one.id },
+    })
+    try {
+      await waitFor(() => errors.length === 1)
+      assert.ok((await board.call('/api/board')).body.messaging.connections.some(one => one.id === receiver.id))
+      const sent = { ...input, target: receiver.id }
+      await board.call('/api/messages/send', sent)
+      await waitFor(async () => (await board.call('/api/board')).body.messaging.messages[0]?.status === 'acknowledged')
+      await board.call('/api/messages/send', sent)
+      await pause(2200)
+      assert.deepEqual(delivered, [input.id])
+      assert.equal(proxy.faults(), 1)
+      assert.equal(proxy.registrations(), 1)
+      assert.ok(proxy.polls() >= 2)
+    } finally { await receiver.close(); await proxy.close() }
+  })
+})
+
+test('a lost poll response after durable claiming is never replayed or turned into an ACK', async () => fixture(async board => {
+  const proxy = await pollingProxy(board, 'after-claim')
+  const errors = []
+  let deliveries = 0
+  const receiver = await boardClient(proxy.address).attach({
+    agent: 'fixture', session: 'lost-claim', turn: 'turn1', surface: 'Synthetic lost-response adapter', verify: async () => true,
+    onError: error => errors.push(error), deliver: async one => { deliveries += 1; return 'ACK ' + one.id },
+  })
+  try {
+    const sent = { ...input, target: receiver.id }
+    await board.call('/api/messages/send', sent)
+    await waitFor(() => errors.length === 1)
+    const failedPoll = proxy.polls()
+    await waitFor(() => proxy.polls() > failedPoll)
+    const snapshot = (await board.call('/api/board')).body.messaging
+    assert.ok(snapshot.connections.some(one => one.id === receiver.id))
+    assert.equal(snapshot.messages[0].status, 'uncertain')
+    assert.equal(snapshot.messages[0].reply, '')
+    assert.equal((await board.call('/api/messages/send', sent)).body.status, 'uncertain')
+    assert.equal((await board.call('/api/messages/send', { ...sent, text: 'Conflict' })).body.error, 'ID_CONFLICT')
+    assert.equal(deliveries, 0)
+    assert.equal(proxy.registrations(), 1)
+  } finally { await receiver.close(); await proxy.close() }
+}))
+
+test('a forbidden or stale heartbeat closes the connection instead of retrying authentication', async () => {
+  for (const mode of ['forbidden', 'stale', 'malformed']) await fixture(async board => {
+    const proxy = await pollingProxy(board, mode)
+    const errors = []
+    const receiver = await boardClient(proxy.address).attach({
+      agent: 'fixture', session: 'forbidden', turn: 'turn1', surface: 'Synthetic forbidden adapter', verify: async () => true,
+      onError: error => errors.push(error), deliver: async () => { throw Error('MUST_NOT_DELIVER') },
+    })
+    try {
+      await waitFor(() => errors.length === 1)
+      await waitFor(async () => !(await board.call('/api/board')).body.messaging.connections.some(one => one.id === receiver.id))
+      await assert.rejects(receiver.send({ ...input, target: receiver.id }), /HOST_NOT_CONNECTED/)
+      await pause(2200)
+      assert.equal(proxy.polls(), 1)
+      assert.equal(proxy.registrations(), 1)
+    } finally { await receiver.close(); await proxy.close() }
+  })
+})
+
+test('temporary board failures cannot keep an expired connection alive', async () => fixture(async board => {
+  const proxy = await pollingProxy(board, 'always')
+  const errors = []
+  const receiver = await boardClient(proxy.address).attach({
+    agent: 'fixture', session: 'expired', turn: 'turn1', surface: 'Synthetic expired adapter', verify: async () => true,
+    onError: error => errors.push(error), deliver: async () => { throw Error('MUST_NOT_DELIVER') },
+  })
+  try {
+    await waitFor(() => errors.some(error => error.message === 'CONNECTION_EXPIRED'))
+    assert.equal((await board.call('/api/board')).body.messaging.connections.some(one => one.id === receiver.id), false)
+    await assert.rejects(receiver.send({ ...input, target: receiver.id }), /HOST_NOT_CONNECTED/)
+    const polls = proxy.polls()
+    await pause(2200)
+    assert.equal(proxy.polls(), polls)
+  } finally { await receiver.close(); await proxy.close() }
+}))
+
+test('native ownership loss during poll recovery closes the exact binding', async () => {
+  for (const failure of [false, new TypeError('SYNTHETIC_OWNER_UNAVAILABLE')]) await fixture(async board => {
+    const proxy = await pollingProxy(board, 'before-claim')
+    const errors = []
+    let isOwned = true
+    const receiver = await boardClient(proxy.address).attach({
+      agent: 'fixture', session: 'owner-lost', turn: 'turn1', surface: 'Synthetic owner-loss adapter',
+      verify: async () => { if (!isOwned && failure instanceof Error) throw failure; return isOwned },
+      onError: error => errors.push(error), deliver: async () => { throw Error('MUST_NOT_DELIVER') },
+    })
+    try {
+      await waitFor(() => errors.length === 1)
+      isOwned = false
+      await waitFor(async () => !(await board.call('/api/board')).body.messaging.connections.some(one => one.id === receiver.id))
+      await assert.rejects(receiver.send({ ...input, target: receiver.id }), /HOST_NOT_CONNECTED/)
+      assert.equal(proxy.polls(), 1)
+    } finally { await receiver.close(); await proxy.close() }
+  })
+})
 
 test('handoffs time out visibly until exact fresh progress appears, independently of a live receiver', async () => fixture(async (board, dir) => {
   const client = boardClient(board.address)
