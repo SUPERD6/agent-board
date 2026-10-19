@@ -44,3 +44,30 @@ prompts. Antigravity's Stop ends the execution loop and is not a session-end eve
 Automatic semantic task summaries are separate explicit reports. Gemini was skipped by
 request, Claude model calls were paused, and dot and other vendors were not included.
 These remaining limits do not justify closing broad desktop/parity issues.
+
+## Repeated delivery and the native completion race
+
+A second approved run used three prompts per owner (AB-TEST-101–106). All six ACKs,
+deduplication checks, conflicts and native progress updates passed, but Codex's receiver
+disappeared after the final ACK. The ACK item arrived before `turn/completed`, while
+native Stop hooks were still running. Releasing the pending turn at the ACK let a poll
+mistake that still-active owned turn for a foreign busy turn. This was a failed
+availability check despite successful delivery.
+
+The receiver now waits for both the matching native ACK and a matching successfully
+completed turn. A failed native turn cannot turn ACK text into acknowledged delivery.
+Outbound forwarding also verifies its source immediately, rather than waiting for the
+next poll. Hook-only idle cards no longer use a running-task placeholder.
+
+A final, separately approved run used two prompts per owner (AB-TEST-201–204), with a
+test-only 3.5-second Codex Stop delay and a 10-second hook timeout. Both native receivers
+remained online after their second turn and through the screenshot checkpoint. Native
+Codex and Antigravity progress returned to waiting, exact retries added no model turns,
+and conflicting content was rejected. After terminating Antigravity, the dead source
+was refused with `HOST_NOT_CONNECTED`; sending from the still-live Codex owner to that
+target returned `OFFLINE`. No test model tools or file actions were observed.
+
+Across all runs, the explicit per-binding budgets consumed seven Codex and eight
+Antigravity model turns. Each process and temporary board was stopped. Local screenshots
+cover the English live hub and Traditional/Simplified Chinese progress views of the
+same actual hook records; they are browser-board evidence, not native TTY/App/IDE captures.

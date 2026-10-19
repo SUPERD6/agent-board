@@ -126,7 +126,7 @@ export const runCodexLocal = async (args: string[], boardPath: string, s: String
     const base = mode === '--codex-event' ? codexEvent(previous, payload, now, s) : codexReport(previous, session, mode === '--agent-status' ? {
       title: previous?.title ?? s.localAgentTask(agent), project: previous?.project ?? agent,
       state: status === 'working' ? 'working' : previous?.state === 'done' ? 'done' : status,
-      steps: previous?.steps ?? [`- [>] ${s.localAgentLifecycle}`],
+      steps: previous?.steps ?? [`- [ ] ${s.localAgentLifecycle}`],
     } : payload, now, s)
     const priorActivity = previous?.activity ?? []
     const report = { ...base, agent, ...(mode === '--codex-event' && !previous ? { title: s.localAgentTask(agent), project: agent } : {}), ...(event === undefined ? {} : { activity: [...priorActivity, { event, state: String(status), updated: now }].slice(-16) }) }

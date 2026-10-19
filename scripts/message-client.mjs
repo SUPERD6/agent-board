@@ -64,7 +64,12 @@ export const boardClient = address => {
       void poll()
       return {
         id: registered.id, agent, session, surface, turn, close,
-        send: body => call('send', { ...body, source: registered.id, secret: registered.secret }),
+        send: async body => {
+          let isOwned = false
+          try { isOwned = !isClosed && await verify() } catch { /* An unverifiable owner cannot send. */ }
+          if (!isOwned) { await close(); throw new Error('HOST_NOT_CONNECTED') }
+          return call('send', { ...body, source: registered.id, secret: registered.secret })
+        },
       }
     },
   }

@@ -24,13 +24,26 @@ export const attachCodexSession = async ({ boardUrl, transport, thread, state, v
     } while (cursor)
     return false
   }
+  const settle = () => {
+    if (!pending?.turn || pending.observed?.turn !== pending.turn || pending.finished?.id !== pending.turn) return
+    if (pending.finished.status === 'completed') pending.done(pending.observed.line)
+    else pending.reject(new Error('TURN_NOT_COMPLETED'))
+  }
   const listen = transport.listen(value => {
     const p = value.params
-    if (!pending || value.method !== 'item/completed' || p?.threadId !== thread || p.item?.type !== 'agentMessage') return
+    if (!pending || p?.threadId !== thread) return
+    if (value.method === 'turn/completed' && p.turn?.id) {
+      pending.finished = { id: p.turn.id, status: p.turn.status }
+      settle()
+      return
+    }
+    if (value.method !== 'item/completed' || p.item?.type !== 'agentMessage') return
     const line = String(p.item.text ?? '').split(/\r?\n/).find(line => line === 'ACK ' + pending.id || line.startsWith('ACK ' + pending.id + ' '))
     if (!line) return
     pending.observed = { turn: p.turnId, line: line.slice(0, 500) }
-    if (pending.turn === p.turnId) pending.done(pending.observed.line)
+    // Keep the owned turn pending through Stop hooks. ACK text may precede native
+    // turn/completed; releasing early lets a poll mistake our own turn for a foreign one.
+    settle()
   })
   let receiver
   try { receiver = await boardClient(boardUrl).attach({
@@ -40,14 +53,14 @@ export const attachCodexSession = async ({ boardUrl, transport, thread, state, v
       let timer
       const answer = new Promise((done, reject) => {
         timer = setTimeout(() => reject(new Error('ACK_TIMEOUT')), 60000)
-        pending = { id: message.id, turn: null, done, reject, observed: null }
+        pending = { id: message.id, turn: null, done, reject, observed: null, finished: null }
       })
       void answer.catch(() => undefined)
       try {
         const result = await transport.request('turn/start', { threadId: thread, input: [{ type: 'text', text: deliveryPrompt(message), text_elements: [] }] })
         if (!result.turn?.id) throw new Error('INVALID_TURN_RESPONSE')
         pending.turn = result.turn.id
-        if (pending.observed?.turn === pending.turn) pending.done(pending.observed.line)
+        settle()
         await accepted()
         return await answer
       } finally { clearTimeout(timer); pending = null }
