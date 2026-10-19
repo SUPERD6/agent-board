@@ -624,6 +624,13 @@ export const drawPane = (ui: PaneUi, model: PaneModel, actions: PaneActions): Re
 
       {view.waiting.length > 0 && fold('waiting', s.sectionWaiting, view.waiting.length, 'warn', '')}
       {isOpen('waiting') && view.waiting.map(waitingRow)}
+      {(['reminder', 'older'] as const).map(id => {
+        const items = view[id] ?? []
+        return items.length === 0 ? null : <Box flexDirection="column">
+          {fold(id, id === 'reminder' ? s.sectionQuestionReminders : s.sectionOlderQuestions, items.length, 'quiet', s.questionAgingHint)}
+          {isOpen(id) && items.map(item => <Box flexDirection="column">{waitingRow(item)}{muted(item.when)}</Box>)}
+        </Box>
+      })}
       {view.hidden.length > 0 && (
         <Box marginTop={1}>
           <Button key="section::hidden" plain onPress={() => actions.toggleSection('hidden')}>

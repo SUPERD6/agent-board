@@ -2,7 +2,21 @@
 // someone else) · blocked [!] · cancelled [-]
 export type ProgressStepStatus = 'done' | 'doing' | 'todo' | 'waiting' | 'running' | 'blocked' | 'cancelled'
 
+export type QuestionSource = {
+  kind: 'block' | 'own' | 'manual' | 'inbox'
+  project: string
+  task: string
+  context: string
+  text: string
+  agent: string
+  session: string
+  // Complete structured source, retained independently of display clipping.
+  data: string
+}
+
 export type QuestionRecord = {
+  producerRevisions?: string[]
+  producerSources?: string[]
   id: string
   scope: string
   words: string
@@ -13,6 +27,9 @@ export type QuestionRecord = {
   firstObserved: number
   incarnation: string
   producer?: string
+  source?: QuestionSource
+  isUnresolved?: boolean
+  isArchived?: boolean
 }
 
 export type QuestionLedger = {

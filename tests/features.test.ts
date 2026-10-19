@@ -1,3 +1,4 @@
+import { emptyQuestions, observeQuestions } from '../hooks/questions'
 import { expect, test } from 'claude-code/testing'
 
 import type { ProgressMirror, ProgressPr } from '../types'
@@ -527,7 +528,7 @@ ${extra}`
   expect(buildView([], [], null, NOW + day).focus).toBe(null)
 })
 
-test('a session silent for half a day counts as stopped: its questions stay in its row, not in 等你處理', () => {
+test('a stopped session retains unresolved questions independently of its connection status', () => {
   const iso = (ms: number): string => new Date(ms).toISOString()
   const file = (updated: number): string => `## FLOODABM
 <!-- auto session=dddddddd agent=claude state=waiting updated=${iso(updated)} resume=dddddddd-1 dir=%2Fw -->
@@ -540,8 +541,8 @@ test('a session silent for half a day counts as stopped: its questions stay in i
   expect(live.waiting).toHaveLength(1)
 
   const stopped = buildView(parseProgress(file(NOW - 13 * 60 * 60 * 1000)), [], null, NOW)
-  expect(stopped.waiting).toHaveLength(0)
-  expect(stopped.overview.waiting).toBe(0)
+  expect(stopped.waiting).toHaveLength(1)
+  expect(stopped.overview.waiting).toBe(1)
   expect(stopped.active[0]).toMatchObject({ auto: 'ended', status: '對話已停，13 小時前沒動靜', resume: "cd '/w' && claude --resume dddddddd-1" })
   expect(stopped.groups[0]?.summary).toBe('1 件 · 1 已停')
 })
@@ -3338,7 +3339,8 @@ test('a project whose name starts with a bracket is matched whole, so the uncate
 test('progress.html lists idle tasks in a closed shelf with their count', () => {
   const projects = parseProgress('## demo\n### Old <plan>\n- [?] Publish, OK?\n- [ ] Finish\n')
   const seen = withSeen({}, projects, NOW - 9 * 24 * 60 * 60 * 1000)
-  const view = buildView(projects, [], null, NOW, 0, {}, STRINGS.en, [], seen)
+  const ledger = observeQuestions(emptyQuestions(), projects, null, [], NOW - 9 * 24 * 60 * 60 * 1000, true, 'fixture:1').ledger
+  const view = buildView(projects, [], null, NOW, 0, {}, STRINGS.en, [], seen, ledger)
   const html = dashboardHtml(view, STRINGS.en, '/tmp/progress.md', 'now')
   expect(html).toContain('<details class="section" data-key="section:idle">')
   expect(html).not.toContain('data-key="section:idle" open')
@@ -3363,7 +3365,8 @@ test('every language has the idle count words', () => {
 
 test('the idle shelf keeps terminal and page row actions without putting its question back in Waiting on you', () => {
   const projects = parseProgress('## demo\n### Plan\n- [?] Publish, OK?\n- [ ] Finish\n')
-  const view = buildView(projects, [], null, NOW, 0, {}, STRINGS.en, [], withSeen({}, projects, NOW - IDLE_MS - 1))
+  const ledger = observeQuestions(emptyQuestions(), projects, null, [], NOW - IDLE_MS - 1, true, 'fixture:1').ledger
+  const view = buildView(projects, [], null, NOW, 0, {}, STRINGS.en, [], withSeen({}, projects, NOW - IDLE_MS - 1), ledger)
   const closed = boardScreen(view, [], emptyBoardState, STRINGS.en)
   expect(closed).toContain('1 idle 7+ days · i show/hide idle')
   expect(closed).not.toContain('Publish, OK?')
@@ -3384,7 +3387,7 @@ test('the idle shelf keeps terminal and page row actions without putting its que
   expect(model.counts.waiting).toBe(0)
   expect(model.idle).toHaveLength(1)
   const row = model.idle[0]
-  expect(row?.question).toBe('Publish, OK?')
+  expect(row?.question).toBe('')
   expect(row?.canArchive).toBe(true)
   expect(serveAction(boardItems(view, []), { key: row?.key ?? '', type: 'tick', text: row?.next ?? '', session: '', fp: row?.fp }, STRINGS.en).type).toBe('tick')
   expect(serveAction(boardItems(view, []), { key: row?.key ?? '', type: 'archive', text: '', session: '', fp: row?.fp }, STRINGS.en).type).toBe('archive')

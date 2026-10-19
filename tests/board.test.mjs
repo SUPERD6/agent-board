@@ -144,15 +144,15 @@ const htmlTurn = answer => JSON.stringify({ session_id: 'demo-1', cwd: '/work/ap
 
 test('the HTML board shows pending questions with an empty progress file and cannot send replies', () => {
   for (const [lang, label, hint] of [
-    ['en', 'Turns in the inbox not summed up yet', 'this page cannot send replies'],
-    ['zh-TW', '收件匣裡還沒整理的回合', '請回到該 agent 的對話裡回覆；這個頁面不能傳送回覆。'],
-    ['zh-CN', '收件箱里还没整理的回合', '请回到该 agent 的对话里回复；这个页面不能发送回复。'],
+    ['en', 'Waiting on you', 'codex'],
+    ['zh-TW', '等你處理', 'codex'],
+    ['zh-CN', '等你处理', 'codex'],
   ]) {
     const page = htmlRun({ inbox: { [HTML_TURN]: htmlTurn(HTML_QUESTION) }, lang })
     assert.ok(page.includes(label) && page.includes(hint), page)
-    assert.ok(page.includes('api-gateway · codex'), page)
-    assert.equal(page.split(HTML_QUESTION).length - 1, 1)
-    assert.ok(page.includes('data-key="section:inbox" open'), page)
+    assert.ok(page.includes('api-gateway') && page.includes('codex'), page)
+    assert.equal(page.split(HTML_QUESTION).length - 1, 2)
+    assert.ok(page.includes('data-key="section:waiting" open'), page)
     assert.ok(!/Nothing needs you right now|<form|<textarea|<button|fetch\(/.test(page), page)
     assert.ok(/● 1<\/span>/.test(page), page)
   }
@@ -160,7 +160,7 @@ test('the HTML board shows pending questions with an empty progress file and can
 
 test('the HTML board keeps a stale inbox question visible until it is processed', () => {
   const page = htmlRun({ inbox: { [HTML_TURN]: htmlTurn(HTML_QUESTION) }, age: 7 * 24 * 60 * 60 * 1000 })
-  assert.ok(page.includes(HTML_QUESTION) && page.includes('Turns in the inbox not summed up yet'), page)
+  assert.ok(page.includes(HTML_QUESTION) && page.includes('Waiting on you'), page)
 })
 
 test('the HTML board shows only the newest thirty inbox files', () => {
@@ -207,8 +207,8 @@ test('the HTML board lists a question in both an agent block and the inbox like 
   })
   const pending = page.match(/data-key="section:inbox"[\s\S]*?<\/details>/)?.[0] ?? ''
   const waiting = page.match(/data-key="section:waiting"[\s\S]*?<\/details>/)?.[0] ?? ''
-  assert.equal(pending.split(HTML_QUESTION).length - 1, 1, page)
-  assert.equal(waiting.split(HTML_QUESTION).length - 1, 1, page)
+  assert.equal(pending.split(HTML_QUESTION).length - 1, 0, page)
+  assert.equal(waiting.split(HTML_QUESTION).length - 1, 2, page)
   assert.ok(/● 2<\/span>/.test(page), page)
 })
 
@@ -860,6 +860,34 @@ test('page Confirm done buttons act once with exact fingerprints and journal all
   }
 })
 
+test('unseen inbox questions survive same-batch end and restart after a stale mutable ledger overwrite', { timeout: 30_000 }, async () => {
+  const board = await page()
+  try {
+    const inbox = join(board.dir, 'progress-inbox')
+    mkdirSync(inbox)
+    const texts = ['Keep option A?', 'Keep option B?', 'Keep the end-only original?']
+    const names = ['codex-turn-1792152000-1.json', 'codex-turn-1792152000-2.json', 'codex-end-1792152000-3.json']
+    names.forEach((name, index) => writeFileSync(join(inbox, name), JSON.stringify({ session_id: 'one-owner', cwd: '/work/api-gateway', last_assistant_message: texts[index] })))
+    const model = async () => (await board.call('GET', '/api/board')).json().model
+    const asks = (await model()).asks.filter(one => one.agent === 'codex')
+    assert.deepEqual(asks.map(one => one.text).sort(), [...texts].sort())
+    const file = join(board.dir, 'progress-questions.json')
+    const records = JSON.parse(readFileSync(file, 'utf8')).records.filter(one => texts.includes(one.words))
+    assert.equal(records.length, 3)
+    const captures = readdirSync(board.dir).filter(name => /^progress-questions-source-[a-f0-9]{64}\.json$/.test(name))
+    for (const text of texts) assert.ok(captures.some(name => JSON.parse(readFileSync(join(board.dir, name), 'utf8')).record.source.text === text))
+    for (const name of names) rmSync(join(inbox, name))
+    writeFileSync(file, JSON.stringify({ version: 1, next: 1, records: [], legacy: {} }))
+    assert.deepEqual((await model()).asks.filter(one => one.agent === 'codex').map(one => one.text).sort(), [...texts].sort())
+    const restarted = execFileSync(process.execPath, [join(board.dir, 'agent-board.mjs'), '--chat'], { env: { ...process.env, CLAUDE_PROGRESS_FILE: board.path, NO_COLOR: '1' }, encoding: 'utf8' })
+    for (const text of texts) assert.ok(restarted.includes(text), restarted)
+    const recovered = JSON.parse(readFileSync(file, 'utf8')).records
+    for (const record of records) assert.equal(recovered.find(one => one.id === record.id)?.firstObserved, record.firstObserved)
+  } finally {
+    await board.close()
+  }
+})
+
 test('the terminal and served boards show only the newest thirty inbox files', { timeout: 30_000 }, async () => {
   const board = await page()
   try {
@@ -876,7 +904,7 @@ test('the terminal and served boards show only the newest thirty inbox files', {
       env: { ...process.env, CLAUDE_PROGRESS_FILE: board.path, NO_COLOR: '1' },
       encoding: 'utf8',
     })
-    const served = (await board.call('GET', '/api/board')).json().model.turns
+    const served = (await board.call('GET', '/api/board')).json().model.asks.filter(one => one.agent === 'codex')
     assert.equal(served.length, 30)
     for (let i = 0; i < 35; i++) {
       assert.equal(terminal.includes(`Use limit ${i}?`), i < 30, terminal)
@@ -921,7 +949,7 @@ test('marking a question answered on the page or with h on the board writes only
     // The terminal board's h writes the same list, and u lists everything hidden again.
     const script = join(dir, 'agent-board.mjs')
     const play = keys => execFileSync(process.execPath, [script, '--keys', keys], { env: { ...process.env, CLAUDE_PROGRESS_FILE: '', NO_COLOR: '1' }, encoding: 'utf8' })
-    const marked = play('h')
+    const marked = play('down h')
     assert.ok(marked.includes('Hidden: “PDF or HTML?”'), marked)
     assert.ok(marked.includes('1 answered, hidden · u show them again'), marked)
     assert.deepEqual(hidden(), [question()])
@@ -933,14 +961,14 @@ test('marking a question answered on the page or with h on the board writes only
     // leaves it and says so. Left broken for a while, it is written anew by the next press.
     const list = join(dir, 'progress-answered.json')
     writeFileSync(list, '{"answered": ["x"')
-    const kept = play('h')
+    const kept = play('down h')
     assert.ok(kept.includes("Couldn't save that it was answered"), kept)
     const refused = await call('POST', '/api/act', { body: { key: ask.key, type: 'hide' } })
     assert.deepEqual([refused.status, refused.json().note], [409, "Couldn't save that it was answered; it stays on the list."])
     assert.equal(readFileSync(list, 'utf8'), '{"answered": ["x"')
     const old = new Date(Date.now() - 60_000)
     utimesSync(list, old, old)
-    play('h')
+    play('down h')
     assert.deepEqual(hidden(), [question()])
     // Nothing went to any agent, and every block is as its session wrote it.
     assert.equal(readFileSync(path, 'utf8'), before)
@@ -976,8 +1004,10 @@ test('served questions keep hidden identities across reordered reports and a fre
       assert.ok(!chat.includes('PDF  or') && !chat.includes('PDF or HTML?'), chat)
       run('--html')
       const html = readFileSync(join(board.dir, 'progress.html'), 'utf8')
-      assert.ok(!html.includes('class="ask"') && !html.includes('data-key="section:waiting"'), html)
-      assert.match(html, /● 0<\/span>/)
+      const waiting = html.match(/data-key="section:waiting"[\s\S]*?<\/details>/)?.[0] ?? ''
+      assert.ok(!waiting.includes('PDF or HTML?') && !waiting.includes('PDF  or'), html)
+      assert.ok(html.includes('PDF  or') || html.includes('PDF or HTML?'), html)
+      assert.match(html, /● 1<\/span>/)
       assert.equal(readFileSync(join(board.dir, 'progress-answered.json'), 'utf8'), saved['progress-answered.json'])
       assert.equal(readFileSync(join(board.dir, 'progress-questions.json'), 'utf8'), saved['progress-questions.json'])
     }
@@ -1617,7 +1647,7 @@ test('a reply typed for one session is dropped when the box is redrawn for anoth
     await dom.flush()
     const row = await rowOf('Pick the cache')
     assert.equal(dom.requests.length, 1)
-    assert.deepEqual([dom.requests[0].path, dom.requests[0].body.session, dom.requests[0].body.fp], ['/api/act', 'd4e5f6a7', row.fp])
+    assert.deepEqual([dom.requests[0].path, dom.requests[0].body.session, dom.requests[0].body.fp], ['/api/act', 'd4e5f6a7', second.asks.find(one => one.task === 'Pick the cache').fp])
     const sent = await call('POST', '/api/act', { body: dom.requests[0].body })
     assert.equal(sent.status, 202, sent.body)
     // The agent stand-in answers after a second; the page is not closed while it is on its way.
@@ -2051,7 +2081,14 @@ const IDLE_FILE = `## demo
 const idleRecord = () => JSON.stringify({ seen: {
   [createHash('sha256').update(JSON.stringify(['demo', 'Quiet plan', [['waiting', 'Publish, OK?'], ['todo', 'Finish']]])).digest('hex')]: IDLE_NOW - 9 * 24 * 60 * 60 * 1000,
 } })
-const idleRun = (args, beside = { 'progress-seen.json': idleRecord() }) => chatRun(args, {
+const idleQuestions = () => {
+  const scope = JSON.stringify(['demo', 'manual', 'Quiet plan'])
+  const words = 'Publish, OK?'
+  const incarnation = 'idle-fixture:1'
+  const binding = createHash('sha256').update(JSON.stringify([scope, words, 1, 1, incarnation])).digest('hex')
+  return JSON.stringify({ version: 1, next: 2, records: [{ id: `question:${binding}:1`, scope, words, occurrence: 1, copies: 1, isWaiting: true, isPresent: true, firstObserved: IDLE_NOW - 9 * 24 * 60 * 60 * 1000, incarnation }], legacy: {} })
+}
+const idleRun = (args, beside = { 'progress-seen.json': idleRecord(), 'progress-questions.json': idleQuestions() }) => chatRun(args, {
   file: () => IDLE_FILE,
   beside,
   change: script => `Date.now = () => ${IDLE_NOW}\n${script}`,
@@ -2086,7 +2123,7 @@ test("the board script's --chat run reads the seen record and writes nothing", (
     const ran = idleRun(args)
     assert.equal(ran.status, 0, ran.stderr)
     assert.ok(ran.stdout.includes('2 idle 7+ days'), ran.stdout)
-    assert.ok(!ran.stdout.includes('Quiet plan') && !ran.stdout.includes('Publish, OK?'), ran.stdout)
+    assert.ok(ran.stdout.includes('Older unanswered questions') && ran.stdout.includes('Publish, OK?'), ran.stdout)
     assert.deepEqual(ran.wrote, [])
     assert.deepEqual(ran.modified, [])
     assert.deepEqual(ran.served, [])

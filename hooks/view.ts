@@ -10,8 +10,10 @@ import { doingTask, fallbackTitle, isAnswered, waitsOnYou } from './mirror'
 import type { Tone } from './palette'
 import { countSteps, currentStepIndex, doneKey, isHereProject, isStale, isTaskComplete, parseProgress, RESUME } from './parse'
 import { sha256 } from './sha256'
-import { observeQuestions, questionScope, questionSlot } from './questions'
+import { observeQuestions, pendingQuestionSlot, questionScope, questionSlot } from './questions'
 import type { QuestionLedger, QuestionProofs } from './questions'
+import { questionAge } from './question-aging'
+import type { PendingTurn } from './board'
 
 // What the pane shows, worked out from the file and this session's own list, so the
 // drawing code only lays it out.
@@ -61,6 +63,8 @@ const targetOf = (auto: ProgressAuto | null): AgentTarget | null =>
     : { agent: auto.agent, session: auto.session, resume: auto.resume, dir: auto.dir, isClosed: auto.state === 'ended' }
 
 export type WaitingItem = {
+  questionId?: string
+  ageStage?: 'pending' | 'reminder' | 'older'
   nativeSession?: string
   key: string
   project: string
@@ -168,6 +172,9 @@ export type View = {
   waiting: WaitingItem[]
   // Questions the person marked answered, until their session asks something else.
   hidden: WaitingItem[]
+  reminder?: WaitingItem[]
+  older?: WaitingItem[]
+  hasPendingQuestions?: boolean
   idle: TaskRow[]
   due: TaskRow[]
   active: TaskRow[]
@@ -643,8 +650,9 @@ export const buildView = (
   seen: Readonly<Record<string, number>> = {},
   questions?: QuestionLedger,
   proofs: QuestionProofs | null = { retired: [], consumed: [] },
+  pending: readonly PendingTurn[] = [],
 ): View => {
-  const observed = questions === undefined ? null : observeQuestions(questions, projects, mine, answered, now, false, 'preview', proofs ?? { retired: [], consumed: [] })
+  const observed = questions === undefined ? null : observeQuestions(questions, projects, mine, answered, now, false, 'preview', proofs ?? { retired: [], consumed: [] }, pending)
   const marked = new Set(proofs === null ? [] : observed?.marked ?? answered)
   const ownId = mine === null ? '' : shortId(mine.sessionId)
   const waiting: WaitingItem[] = []
@@ -679,15 +687,18 @@ export const buildView = (
       // A session that stopped writing is treated as ended: its questions wait in its row,
       // not in 等你處理, where nobody could answer them.
       const stale = isStale(task.auto, now)
-      const isLive = task.auto !== null && task.auto.state !== 'ended' && !stale
       const keys = task.auto === null || observed === null
         ? blockKeys(task)
         : task.steps.map((step, index) => step.status === 'waiting' ? observed.keys[questionSlot(questionScope(project.name, task.auto?.agent ?? '', task.auto?.session ?? ''), index)] ?? '' : '')
       const isAsked = (index: number): boolean => !marked.has(keys[index] ?? '')
+      const stageOf = (index: number) => {
+        const id = observed?.keys[questionSlot(questionScope(project.name, task.auto?.agent ?? 'manual', task.auto?.session ?? task.title), index)]
+        return questionAge(observed?.ledger.records.find(record => record.id === id)?.firstObserved ?? 0, now).stage
+      }
+      const isPrompt = (index: number): boolean => isAsked(index) && stageOf(index) === 'pending'
 
       task.steps.forEach((step, index) => {
-        if (step.status !== 'waiting' || (!isManual && !isLive)) return
-        if (isIdle && !marked.has(keys[index] ?? '')) return
+        if (step.status !== 'waiting') return
         const parts = splitNote(step.text)
         waiting.push({
           key: `${key}::${index}`,
@@ -709,6 +720,7 @@ export const buildView = (
           resumeVia: task.auto?.resume ? resumeVia(task.auto.agent) : null,
           reopen: task.auto?.resume ? resumeCommand(task.auto.resume, task.auto.dir, task.auto.agent) : null,
           hideKey: keys[index] ?? '',
+          questionId: observed?.keys[questionSlot(questionScope(project.name, task.auto?.agent ?? 'manual', task.auto?.session ?? task.title), index)],
           step: isManual ? { project: name, title, step: step.text, line: step.line, raw: step.raw } : null,
           target: targetOf(task.auto),
           ...(task.auto === null ? {} : { nativeSession: task.auto.resume ?? task.auto.session }),
@@ -734,7 +746,9 @@ export const buildView = (
           ? { status: task.auto?.agent === 'claude' ? s.claudeWorking : s.agentWorking(task.auto?.agent ?? ''), tone: 'accent' as const }
           : auto === 'ended'
             ? { status: stale ? s.sessionStopped(when) : s.sessionEnded, tone: 'warn' as const }
-            : stepPhrase(task, s, isAsked)
+            : task.steps.some((step, index) => step.status === 'waiting' && isAsked(index)) && !task.steps.some((step, index) => step.status === 'waiting' && isPrompt(index))
+              ? { status: task.steps.some((step, index) => step.status === 'waiting' && stageOf(index) === 'reminder') ? s.sectionQuestionReminders : s.sectionOlderQuestions, tone: 'quiet' as const }
+              : stepPhrase(task, s, isPrompt)
       const open = task.steps[currentStepIndex(task)]
       const row: TaskRow = {
         key,
@@ -750,7 +764,7 @@ export const buildView = (
         steps: rowSteps(task, s),
         left: task.steps.filter(step => step.status !== 'done' && step.status !== 'cancelled').map(step => step.text),
         question: ((asked: ProgressStep | undefined) => (asked === undefined ? null : splitNote(asked.text).text))(
-          task.steps.find((step, index) => step.status === 'waiting' && isAsked(index)),
+          task.steps.find((step, index) => step.status === 'waiting' && isPrompt(index)),
         ),
         next:
           isManual && open !== undefined
@@ -815,11 +829,35 @@ export const buildView = (
       .join(' · ')
   }
 
-  const all = [...(mine === null ? [] : ownWaiting(mine, observed?.keys)), ...waiting].sort(
+  const inbox = pending.filter(turn => turn.isQuestion && turn.id !== undefined).flatMap(turn => {
+    const id = observed?.keys[pendingQuestionSlot(questionScope(turn.project, turn.agent, turn.id ?? ''), turn.text)]
+    if (id === undefined || waiting.some(item => item.questionId === id)) return []
+    const parts = splitNote(turn.text)
+    return [{ key: `inbox::${id}`, questionId: id, project: turn.project, task: '', context: '', ...parts, when: '', ...askOf(parts.text, parts.note), where: 'other' as const, agent: turn.agent, session: turn.id ?? '', sessionId: null, resumeVia: null, reopen: null, hideKey: id, step: null, target: null }]
+  })
+  const all = [...(mine === null ? [] : ownWaiting(mine, observed?.keys).map(item => ({ ...item, questionId: item.hideKey }))), ...waiting, ...inbox].map(item => {
+    const record = observed?.ledger.records.find(row => row.id === item.questionId)
+    const age = questionAge(record?.firstObserved ?? 0, now)
+    return { ...item, ageStage: age.stage, when: age.age === null ? s.questionAgeUnknown : relativeTime(record?.firstObserved ?? 0, now, s) }
+  }).sort(
     (a, b) => whereRank(a) - whereRank(b) || askRank(a.kind) - askRank(b.kind),
   )
-  const asks = all.filter(item => item.hideKey === '' || !marked.has(item.hideKey))
-  const hidden = all.filter(item => item.hideKey !== '' && marked.has(item.hideKey))
+  const asks: WaitingItem[] = all.filter(item => item.ageStage === 'pending' && (item.hideKey === '' || !marked.has(item.hideKey)))
+  const reminder: WaitingItem[] = all.filter(item => item.ageStage === 'reminder' && (item.hideKey === '' || !marked.has(item.hideKey)))
+  const older: WaitingItem[] = all.filter(item => item.ageStage === 'older' && (item.hideKey === '' || !marked.has(item.hideKey)))
+  const hidden: WaitingItem[] = all.filter(item => item.hideKey !== '' && marked.has(item.hideKey))
+  for (const record of observed?.ledger.records ?? []) {
+    if (!record.isUnresolved || record.source === undefined || all.some(item => item.questionId === record.id)) continue
+    const source = record.source
+    const parts = splitNote(source.text)
+    const age = questionAge(record.firstObserved, now)
+    const stage = record.isArchived ? 'older' : age.stage
+    const item: WaitingItem = { key: `retained::${record.id}`, questionId: record.id, ageStage: stage, project: source.project, task: source.task, context: source.context, ...parts, when: age.age === null ? s.questionAgeUnknown : relativeTime(record.firstObserved, now, s), ...askOf(parts.text, parts.note), where: 'other', agent: source.agent === 'claude' ? '' : source.agent, session: source.session, sessionId: null, resumeVia: null, reopen: null, hideKey: record.id, step: null, target: null }
+    if (marked.has(record.id)) hidden.push(item)
+    else if (stage === 'pending') asks.push(item)
+    else if (stage === 'reminder') reminder.push(item)
+    else older.push(item)
+  }
   const dueRows = due.map(({ days: _days, ...row }) => row)
   const now1 = asks.find(item => askRank(item.kind) < 2)
   const today1 = due.find(row => row.days <= 1)
@@ -836,13 +874,21 @@ export const buildView = (
             ? { type: 'ask', item: later }
             : null
 
+  const current = mine === null ? null : currentOf(mine, s)
+  if (current !== null && !asks.some(item => item.where === 'here') && all.some(item => item.where === 'here' && item.ageStage !== 'pending')) {
+    current.status = reminder.some(item => item.where === 'here') ? s.sectionQuestionReminders : s.sectionOlderQuestions
+    current.tone = 'quiet'
+  }
   return {
-    current: mine === null ? null : currentOf(mine, s),
+    current,
     pr: prView(mine, s),
     overview: { waiting: asks.length, active: rows.length + due.length, due: due.length, today, idle: idle.length },
     focus,
     waiting: asks,
     hidden,
+    reminder,
+    older,
+    hasPendingQuestions: questions !== undefined,
     idle,
     due: dueRows,
     active: rows,

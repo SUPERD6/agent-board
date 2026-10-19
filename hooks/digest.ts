@@ -70,7 +70,7 @@ const withoutEmphasis = (line: string): string =>
 // The question a reply ends on, if its last paragraph asks one: the last sentence there
 // with a question mark, without code or markdown. A reply that ends on a statement asks
 // nothing, even if it asked something earlier.
-export const lastQuestion = (answer: string): string | null => {
+export const lastQuestion = (answer: string, isFull = false): string | null => {
   const prose = answer.replace(/```[\s\S]*?```/g, '\n\n').replace(/`([^`]*)`/g, '$1')
   const paragraphs = prose.split(/\n\s*\n/).map(one => one.trim()).filter(one => one !== '')
   const last = paragraphs.at(-1)
@@ -84,7 +84,7 @@ export const lastQuestion = (answer: string): string | null => {
   const sentences = tail.match(/[^.。!！?？]*[?？]/g) ?? []
   const question = (sentences.at(-1) ?? '').trim()
 
-  return question === '' ? null : clip(question, 120)
+  return question === '' ? null : isFull ? question : clip(question, 120)
 }
 
 const task = (id: string, subject: string, status: ProgressMirrorTask['status'], why: string | null): ProgressMirrorTask => ({
