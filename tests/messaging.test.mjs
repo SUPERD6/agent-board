@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createServer } from 'node:http'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { BOARD_SCRIPT } from '../hooks/board-script.ts'
@@ -37,6 +38,15 @@ test('AB-TEST-001 deduplicates exact retries and rejects conflicting contents or
   assert.equal(disconnectMessages(claimed.state, target.id, 1003).messages[0].status, 'uncertain')
 })
 
+test('an idle or already claimed poll preserves the exact durable state', () => {
+  const empty = { messages: [] }
+  assert.equal(claimMessages(empty, target, 1000).state, empty)
+  const queued = queueMessage(empty, input, 'board', target, 1000).state
+  const claimed = claimMessages(queued, target, 1001)
+  assert.notEqual(claimed.state, queued)
+  assert.equal(claimMessages(claimed.state, target, 1002).state, claimed.state)
+})
+
 test('a connection observation requires one exact newer report, never a relay claim or ACK', () => {
   const one = { id: 'link1', agent: 'codex', session: 'native1', surface: 'Synthetic desktop', created: 10000, deadline: 20000, baseline: 9000, observed: null }
   for (const reports of [[], [{ agent: 'gemini', session: 'native1', updated: 11000 }], [{ agent: 'codex', session: 'native', updated: 11000 }], [{ agent: 'codex', session: 'native1', updated: 9000 }], [{ agent: 'codex', session: 'native1', updated: 13000 }]]) assert.equal(observeSession(one, reports, 12000), one)
@@ -68,12 +78,14 @@ test('transport acceptance is distinct from an actual reply and cannot grant too
   assert.throws(() => messageReceipt(ack, target, { id: input.id, status: 'rejected' }, 1004), /RECEIPT_CONFLICT/)
 })
 
-const start = async dir => {
+const start = async (dir, fault = '') => {
   const runtime = join(dir, 'runtime'); mkdirSync(runtime, { recursive: true })
   const script = join(dir, 'board.mjs'), progress = join(dir, 'progress.md')
   writeFileSync(script, `globalThis.AGENT_BOARD = ${JSON.stringify({ path: progress, lang: 'en' })}\n${BOARD_SCRIPT}`)
   if (!readFileSyncSafe(progress)) writeFileSync(progress, '# Synthetic board\n')
-  const child = spawn(process.execPath, [script, '--serve-child', '--messages-dir', join(dir, 'messages')], { windowsHide: true, env: { ...process.env, CLAUDE_PROGRESS_FILE: '', XDG_RUNTIME_DIR: runtime }, stdio: ['ignore', 'pipe', 'pipe'] })
+  const preload = join(dir, 'message-fault.cjs')
+  if (fault) writeFileSync(preload, `const fs = require('node:fs')\nconst path = require('node:path')\nconst directory = ${JSON.stringify(dir)}\n${fault}\nrequire('node:module').syncBuiltinESMExports()\n`)
+  const child = spawn(process.execPath, [...(fault ? ['-r', preload] : []), script, '--serve-child', '--messages-dir', join(dir, 'messages')], { windowsHide: true, env: { ...process.env, CLAUDE_PROGRESS_FILE: '', XDG_RUNTIME_DIR: runtime }, stdio: ['ignore', 'pipe', 'pipe'] })
   const exited = new Promise(done => child.once('exit', done))
   const address = await new Promise((done, fail) => {
     let out = '', err = ''
@@ -91,9 +103,9 @@ const start = async dir => {
   return { address, call, close }
 }
 const readFileSyncSafe = file => { try { return readFileSync(file, 'utf8') } catch { return null } }
-const fixture = async fn => {
+const fixture = async (fn, fault = '') => {
   const dir = mkdtempSync(join(tmpdir(), 'board-messages-'))
-  const board = await start(dir)
+  const board = await start(dir, fault)
   try { await fn(board, dir) } finally { await board.close().catch(() => undefined); rmSync(dir, { recursive: true, force: true }) }
 }
 const waitFor = async fn => {
@@ -103,6 +115,190 @@ const waitFor = async fn => {
   while (Date.now() < until) { const found = await fn(); if (found) return found; await pause(100) }
   throw new Error('condition timed out')
 }
+
+test('a transient message-store rename failure recovers polling without replaying delivery', async () => {
+  for (const code of ['EPERM', 'EBUSY', 'EAGAIN']) await fixture(async (board, dir) => {
+    const errors = [], deliveries = []
+    const receiver = await boardClient(board.address).attach({
+      agent: 'fixture', session: 'storage-recovery', turn: 'turn1', surface: 'Synthetic storage recovery', verify: async () => true,
+      onError: error => errors.push(error), deliver: async message => { deliveries.push(message.id); return 'ACK ' + message.id },
+    })
+    try {
+      const message = { ...input, target: receiver.id }
+      writeFileSync(join(dir, 'fail-message-rename'), code)
+      await board.call('/api/messages/send', message)
+      const file = join(dir, 'messages', 'messages.json'), before = readFileSync(file, 'utf8')
+      await waitFor(() => errors.length > 0)
+      assert.equal(errors[0].message, 'MESSAGE_STORE_BUSY')
+      assert.equal(errors[0].isRetryable, true)
+      assert.equal(readFileSync(file, 'utf8'), before)
+      assert.deepEqual(deliveries, [])
+      const failed = (await board.call('/api/board')).body.messaging
+      assert.ok(failed.connections.some(one => one.id === receiver.id))
+      assert.equal(failed.messages[0].status, 'queued')
+      assert.equal(failed.messages[0].reply, '')
+      await waitFor(async () => (await board.call('/api/board')).body.messaging.messages[0]?.status === 'acknowledged')
+      await board.call('/api/messages/send', message)
+      assert.deepEqual(deliveries, [input.id])
+    } finally { await receiver.close() }
+  }, `const original = fs.renameSync
+fs.renameSync = (from, to) => {
+  const flag = path.join(directory, 'fail-message-rename')
+  if (String(to) === path.join(directory, 'messages', 'messages.json') && fs.existsSync(flag) && JSON.parse(fs.readFileSync(from, 'utf8')).messages.some(one => one.status === 'uncertain')) {
+    const code = fs.readFileSync(flag, 'utf8'); fs.unlinkSync(flag)
+    throw Object.assign(new Error('synthetic message rename failure'), { code })
+  }
+  return original(from, to)
+}`)
+})
+
+// A disposable loopback proxy faults only heartbeat responses. The real store still
+// decides whether a message was durably claimed before the response was lost.
+const pollingProxy = async (board, mode) => {
+  const upstream = new URL(board.address)
+  let faults = 0, polls = 0, registrations = 0
+  const server = createServer(async (req, res) => {
+    try {
+      let body = ''
+      for await (const chunk of req) body += chunk
+      const isPoll = req.url === '/api/messages/poll'
+      if (isPoll) polls += 1
+      if (req.url === '/api/messages/register') registrations += 1
+      const fail = code => {
+        faults += 1
+        res.writeHead(code, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ error: 'SYNTHETIC_POLL_FAILURE' }))
+      }
+      if (isPoll && (faults === 0 || mode === 'always') && mode !== 'after-claim') {
+        if (mode === 'network' || mode === 'timeout') {
+          faults += 1
+          if (mode === 'network') req.socket.destroy()
+          return
+        }
+        if (mode === 'malformed') { faults += 1; res.writeHead(200); res.end('{'); return }
+        return fail(mode === 'forbidden' ? 403 : mode === 'stale' ? 409 : 503)
+      }
+      const answer = await fetch(new URL(req.url, upstream), {
+        method: req.method, headers: { 'x-board-token': upstream.searchParams.get('t'), 'content-type': 'application/json' }, body,
+      })
+      const text = await answer.text()
+      if (isPoll && faults === 0 && mode === 'after-claim' && JSON.parse(text).messages?.length) return fail(503)
+      res.writeHead(answer.status, { 'content-type': 'application/json' })
+      res.end(text)
+    } catch { res.writeHead(502); res.end('{}') }
+  })
+  await new Promise(done => server.listen(0, '127.0.0.1', done))
+  return {
+    address: `http://127.0.0.1:${server.address().port}/?t=${upstream.searchParams.get('t')}`,
+    faults: () => faults, polls: () => polls, registrations: () => registrations,
+    close: () => new Promise(done => { server.close(done); server.closeAllConnections() }),
+  }
+}
+
+test('a temporary poll failure preserves a verified connection and delivers a queued message once', async () => {
+  for (const mode of ['before-claim', 'network', 'timeout']) await fixture(async board => {
+    const proxy = await pollingProxy(board, mode)
+    const errors = [], delivered = []
+    const receiver = await boardClient(proxy.address).attach({
+      agent: 'fixture', session: 'recovery', turn: 'turn1', surface: 'Synthetic recovery adapter', verify: async () => true,
+      onError: error => errors.push(error), deliver: async one => { delivered.push(one.id); return 'ACK ' + one.id },
+    })
+    try {
+      await waitFor(() => errors.length === 1)
+      assert.ok((await board.call('/api/board')).body.messaging.connections.some(one => one.id === receiver.id))
+      const sent = { ...input, target: receiver.id }
+      await board.call('/api/messages/send', sent)
+      await waitFor(async () => (await board.call('/api/board')).body.messaging.messages[0]?.status === 'acknowledged')
+      await board.call('/api/messages/send', sent)
+      await pause(2200)
+      assert.deepEqual(delivered, [input.id])
+      assert.equal(proxy.faults(), 1)
+      assert.equal(proxy.registrations(), 1)
+      assert.ok(proxy.polls() >= 2)
+    } finally { await receiver.close(); await proxy.close() }
+  })
+})
+
+test('a lost poll response after durable claiming is never replayed or turned into an ACK', async () => fixture(async board => {
+  const proxy = await pollingProxy(board, 'after-claim')
+  const errors = []
+  let deliveries = 0
+  const receiver = await boardClient(proxy.address).attach({
+    agent: 'fixture', session: 'lost-claim', turn: 'turn1', surface: 'Synthetic lost-response adapter', verify: async () => true,
+    onError: error => errors.push(error), deliver: async one => { deliveries += 1; return 'ACK ' + one.id },
+  })
+  try {
+    const sent = { ...input, target: receiver.id }
+    await board.call('/api/messages/send', sent)
+    await waitFor(() => errors.length === 1)
+    const failedPoll = proxy.polls()
+    await waitFor(() => proxy.polls() > failedPoll)
+    const snapshot = (await board.call('/api/board')).body.messaging
+    assert.ok(snapshot.connections.some(one => one.id === receiver.id))
+    assert.equal(snapshot.messages[0].status, 'uncertain')
+    assert.equal(snapshot.messages[0].reply, '')
+    assert.equal((await board.call('/api/messages/send', sent)).body.status, 'uncertain')
+    assert.equal((await board.call('/api/messages/send', { ...sent, text: 'Conflict' })).body.error, 'ID_CONFLICT')
+    assert.equal(deliveries, 0)
+    assert.equal(proxy.registrations(), 1)
+  } finally { await receiver.close(); await proxy.close() }
+}))
+
+test('a forbidden or stale heartbeat closes the connection instead of retrying authentication', async () => {
+  for (const mode of ['forbidden', 'stale', 'malformed']) await fixture(async board => {
+    const proxy = await pollingProxy(board, mode)
+    const errors = []
+    const receiver = await boardClient(proxy.address).attach({
+      agent: 'fixture', session: 'forbidden', turn: 'turn1', surface: 'Synthetic forbidden adapter', verify: async () => true,
+      onError: error => errors.push(error), deliver: async () => { throw Error('MUST_NOT_DELIVER') },
+    })
+    try {
+      await waitFor(() => errors.length === 1)
+      await waitFor(async () => !(await board.call('/api/board')).body.messaging.connections.some(one => one.id === receiver.id))
+      await assert.rejects(receiver.send({ ...input, target: receiver.id }), /HOST_NOT_CONNECTED/)
+      await pause(2200)
+      assert.equal(proxy.polls(), 1)
+      assert.equal(proxy.registrations(), 1)
+    } finally { await receiver.close(); await proxy.close() }
+  })
+})
+
+test('temporary board failures cannot keep an expired connection alive', async () => fixture(async board => {
+  const proxy = await pollingProxy(board, 'always')
+  const errors = []
+  const receiver = await boardClient(proxy.address).attach({
+    agent: 'fixture', session: 'expired', turn: 'turn1', surface: 'Synthetic expired adapter', verify: async () => true,
+    onError: error => errors.push(error), deliver: async () => { throw Error('MUST_NOT_DELIVER') },
+  })
+  try {
+    await waitFor(() => errors.some(error => error.message === 'CONNECTION_EXPIRED'))
+    assert.equal((await board.call('/api/board')).body.messaging.connections.some(one => one.id === receiver.id), false)
+    await assert.rejects(receiver.send({ ...input, target: receiver.id }), /HOST_NOT_CONNECTED/)
+    const polls = proxy.polls()
+    await pause(2200)
+    assert.equal(proxy.polls(), polls)
+  } finally { await receiver.close(); await proxy.close() }
+}))
+
+test('native ownership loss during poll recovery closes the exact binding', async () => {
+  for (const failure of [false, new TypeError('SYNTHETIC_OWNER_UNAVAILABLE')]) await fixture(async board => {
+    const proxy = await pollingProxy(board, 'before-claim')
+    const errors = []
+    let isOwned = true
+    const receiver = await boardClient(proxy.address).attach({
+      agent: 'fixture', session: 'owner-lost', turn: 'turn1', surface: 'Synthetic owner-loss adapter',
+      verify: async () => { if (!isOwned && failure instanceof Error) throw failure; return isOwned },
+      onError: error => errors.push(error), deliver: async () => { throw Error('MUST_NOT_DELIVER') },
+    })
+    try {
+      await waitFor(() => errors.length === 1)
+      isOwned = false
+      await waitFor(async () => !(await board.call('/api/board')).body.messaging.connections.some(one => one.id === receiver.id))
+      await assert.rejects(receiver.send({ ...input, target: receiver.id }), /HOST_NOT_CONNECTED/)
+      assert.equal(proxy.polls(), 1)
+    } finally { await receiver.close(); await proxy.close() }
+  })
+})
 
 test('handoffs time out visibly until exact fresh progress appears, independently of a live receiver', async () => fixture(async (board, dir) => {
   const client = boardClient(board.address)

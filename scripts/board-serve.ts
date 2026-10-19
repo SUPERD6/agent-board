@@ -367,7 +367,13 @@ export const startServer = (o: ServeOptions): void => {
       // A browser can send a message, but cannot impersonate a receiving host adapter.
       if (action !== 'send' && req.headers.origin !== undefined) return json(res, 403, {})
       try { return json(res, 200, messaging.act(action, body, Date.now(), action === 'expect' ? o.reports?.() : undefined)) }
-      catch (error) { return json(res, 409, { error: error instanceof Error ? error.message : 'MESSAGE_FAILED' }) }
+      catch (error) {
+        // A temporary file lock is storage unavailability, not a stale binding.
+        // Only the owner's lease-bounded poller retries; sends and receipts do not.
+        const code = (error as { code?: unknown } | null)?.code
+        if (['EPERM', 'EBUSY', 'EAGAIN'].includes(String(code))) return json(res, 503, { error: 'MESSAGE_STORE_BUSY' })
+        return json(res, 409, { error: error instanceof Error ? error.message : 'MESSAGE_FAILED' })
+      }
     }
     // A press that met a file the board could not read or write is answered with why; any other
     // error stays a bare server error.
