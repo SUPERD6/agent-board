@@ -30,6 +30,26 @@ checks passed. Earlier failures were retained: reminder identity changed after
 capture, and the pane marked a question answered before prompt acceptance; both
 were reproduced and corrected before the full green run.
 
+Release integration includes exact head `186b85a`, retaining its Bun loader fix:
+only the current-version board fingerprint is omitted from the embedded ownership
+table; the external table, historical boards and current command/reporter hashes
+remain intact. Released changelog content matches that head exactly; #66 remains
+under Unreleased. README changes are version badges only.
+
+The regenerated bundle is 441311 characters, SHA-256
+`D7F2E09116E75076AF1714726A85457B36213E3722ECCDB70BA474D7868412CE`.
+Focused validation passed: 18 pure tests with 304 assertions, and three Node
+regressions covering self-hash ownership, source retention across end/restart and
+three-language hide/restore. Strict standalone TypeScript, strict plugin
+validation and the bundle check also passed. Full suites were not rerun on this
+snapshot while another task held the shared heavy-reader lease; the 514/229
+results above remain evidence for runtime221d816.
+
+The `agent-board--v0.23.3` tag was absent during this integration. The generated
+ownership tables remain byte-identical to the release head and were not edited
+or regenerated here; the released-files check must be revisited after that tag
+exists and before final CI.
+
 Full SDK `tsc -p .` is unrun because the generated SDK is unavailable. These local
 results do not replace final exact-head Windows/Linux CI. No native model calls
 or permanent host settings were part of this issue's tests.

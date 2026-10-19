@@ -13,6 +13,20 @@ import { runInNewContext } from 'node:vm'
 import assert from 'node:assert/strict'
 import { BOARD_SCRIPT } from '../hooks/board-script.ts'
 import { boardRun, geminiBoardCommand, normalizeCommandPath, opencodeBoardCommand } from '../hooks/board-commands.ts'
+import { RELEASED } from '../hooks/released.ts'
+
+test('the bundled release table excludes its current board fingerprint and retains historical ownership', () => {
+  const version = JSON.parse(readFileSync(new URL('../.claude-plugin/plugin.json', import.meta.url))).version
+  const current = RELEASED.find(release => release.version === version)
+  assert.ok(current)
+  for (const fingerprint of current.board) assert.ok(!BOARD_SCRIPT.includes(fingerprint), 'a board cannot embed its own fingerprint')
+  for (const release of RELEASED.filter(release => release.version !== version)) {
+    for (const fingerprint of release.board) assert.ok(BOARD_SCRIPT.includes(fingerprint), 'historical released boards remain recognized')
+  }
+  for (const kind of ['skill', 'gemini', 'opencode', 'reporterSh', 'reporterPs1']) {
+    for (const fingerprint of current[kind]) assert.ok(BOARD_SCRIPT.includes(fingerprint), 'current non-board ownership remains recognized')
+  }
+})
 
 test('release command normalization keeps platform paths and encoded paths portable', () => {
   for (const sensitive of [false, true]) {

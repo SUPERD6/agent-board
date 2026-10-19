@@ -186,3 +186,14 @@ Supported strict standalone TS, strict plugin validation, pinned Bun bundle chec
 and whitespace check passed. The regenerated bundle is 418,897 characters.
 Full plugin and full Node acceptance on this new runtime remain pending; prior
 full-suite counts above are historical evidence, not substituted for a new run.
+
+## Final cross-platform acceptance
+
+PR #137 head `79cf5865c25beb085f453adc0eb9f6400a925831` passed all six
+required checks in Actions run `39314094599`: plugin/installer/reporter jobs on
+Windows and Linux, and the complete local Node suites on both systems with
+Node 22 and 24. This confirms the later remove-recovery and bounded-error fixes;
+the earlier local failures above remain historical evidence. The integrated
+tree matched the tested tree before merge. Merged as
+`a165ce6f9a1eb290fae3f6ed872307e474634187`; #93 and #94 are closed.
+Full SDK typechecking remains unrun; native hook approval (#102) is separate.
