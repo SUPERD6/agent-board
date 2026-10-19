@@ -45,10 +45,13 @@ validation and the bundle check also passed. Full suites were not rerun on this
 snapshot while another task held the shared heavy-reader lease; the 514/229
 results above remain evidence for runtime221d816.
 
-The `agent-board--v0.23.3` tag was absent during this integration. The generated
-ownership tables remain byte-identical to the release head and were not edited
-or regenerated here; the released-files check must be revisited after that tag
-exists and before final CI.
+The initial integration preceded `agent-board--v0.23.3`. The published tag now
+points to actual release merge `5610ce6`, which is an ancestor after the
+content-empty merge `dbe2701`. On that input, pinned Bun1.4.2
+`scripts/build-board.ts --check` and `scripts/build-released.ts --check` both
+exited0. The bundle fingerprint above and generated ownership tables remain
+byte-identical; no table edits or regeneration were needed. Final exact-head CI
+is still required.
 
 Full SDK `tsc -p .` is unrun because the generated SDK is unavailable. These local
 results do not replace final exact-head Windows/Linux CI. No native model calls
