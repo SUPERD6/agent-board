@@ -24,6 +24,7 @@ node --test tests/exchange.test.mjs    # local exchange scripts; needs Node 22.1
 node --test tests/messaging.test.mjs   # connected-session API and synthetic owner adapters; no real model calls
 python3 -B scripts/remote-reporter/test_pipeline.py   # remote reporter tests; stdlib Python, runs in a temp folder
 node --test tests/board.test.mjs       # the board script on plain Node; needs Node 22.18+ or 24
+node --test tests/local-lock.test.mjs  # native setup/report lock ownership, concurrency and crash recovery
 bun scripts/build-board.ts --check     # hooks/board-script.ts matches its sources (CI pins Bun 1.4.2)
 bun scripts/build-released.ts --check  # hooks/released.ts and tests/fixtures/released.ts match the release tags (git fetch --tags first)
 ```
