@@ -33,6 +33,12 @@ try {
   globalThis.AGENT_BOARD_WORKER_SOURCE = code
   process.argv = [process.execPath, file, '--legacy-connect-request', request]
   await import('data:text/javascript;base64,' + Buffer.from(code).toString('base64'))
+} catch (error) {
+  // Node's uncaught stack can repeat the entire data URL and exhaust the host's
+  // output buffer before its useful error. Report only a bounded native code.
+  const reason = typeof error?.code === 'string' ? error.code : error?.message
+  process.stderr.write((typeof reason === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(reason) ? reason : 'WORKER_EXECUTION_FAILED') + '\\n')
+  process.exitCode = 1
 } finally {
   if (fs.realpathSync(directory) !== directory || fs.lstatSync(directory).isSymbolicLink() || fs.lstatSync(marker).isSymbolicLink() || fs.readFileSync(marker, 'utf8') !== stage.token) throw new Error('WORKER_OWNERSHIP_LOST')
   fs.rmSync(directory, { recursive: true, force: true })

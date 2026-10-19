@@ -53,6 +53,19 @@ test('worker transport accepts generated ownership hashes and refuses configurat
   assert.equal(workerStage({ protocol: 1, directory: '/tmp/agent-board-worker-x', file: '/foreign.mjs', token: 'a'.repeat(32) }, 'b'.repeat(64)), null)
 })
 
+test('a large verified module reports a bounded failure without embedding its data URL', () => {
+  const code = '// ' + 'synthetic padding '.repeat(24000) + '\nthrow new Error("SYNTHETIC_NATIVE_FAILURE")'
+  const { digest, value } = stage(code)
+  try {
+    writeFileSync(value.file, code)
+    const result = run(CONNECT_EXECUTE, [digest, JSON.stringify(value), workerRequest({ mode: 'status', home: value.directory, progress: value.directory + '/progress.md', lang: 'en', node: process.version })], true)
+    assert.notEqual(result.status, 0)
+    assert.ok(Buffer.byteLength(result.stderr) < 256, 'native execution failure must not print the verified module data URL')
+    assert.equal(result.stderr.trim(), 'SYNTHETIC_NATIVE_FAILURE')
+    assert.equal(existsSync(value.directory), false)
+  } finally { if (existsSync(value.directory)) rmSync(value.directory, { recursive: true, force: true }) }
+})
+
 test('the full generated worker bundle runs through verified staging without recursive bundle growth', () => {
   const source = readFileSync(new URL('../hooks/board-script.ts', import.meta.url), 'utf8')
   const code = JSON.parse(source.slice(source.indexOf('export const BOARD_SCRIPT = ') + 'export const BOARD_SCRIPT = '.length))
