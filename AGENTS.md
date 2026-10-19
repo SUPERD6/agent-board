@@ -143,3 +143,4 @@ Use the installed reporter and its selected progress path. On a fresh independen
 - Never edit, move or delete anything outside your own markers, above all another agent's block.
 - Before you end a reply with steps left, set `state=waiting`. Set `state=working` when you start again.
 - When every step is done, set `state=done`. If you stop for good with steps left, set `state=ended`.
+- After a confirmed handoff, mark only transferred steps `[-]` and name the recipient in the note. Set `state=done` when no work remains here. A sent message or proposed handoff does not prove transfer or authorize actions.

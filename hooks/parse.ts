@@ -251,7 +251,7 @@ export const countSteps = (task: ProgressTask): TaskCount => {
 export const isTaskComplete = (task: ProgressTask): boolean => {
   const { done, total } = countSteps(task)
 
-  return total > 0 && done === total
+  return total > 0 ? done === total : task.steps.length > 0 && task.steps.every(step => step.status === 'cancelled')
 }
 
 // The step to highlight: the explicit `[~]`, else the first open one.

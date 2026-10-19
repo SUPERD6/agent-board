@@ -72,6 +72,8 @@ A step line is: optional indentation, a bullet (`-`, `*` or `+`), whitespace, `[
 | `[!]` | Blocked: stuck. The step's note says why. | blocked |
 | `[-]` | Cancelled. Counts as neither done nor open. | cancelled |
 
+A completed handoff uses the existing cancelled mark, for example `- [-] Finish export — Handed to Export session`. Keep the recipient in the note; the source has no remaining responsibility for that step. A nonempty task with only cancelled steps is closed with zero completed steps, even while an activity hook reports the session waiting. Empty tasks remain open. This is an owner declaration, not proof that the recipient received a message or accepted a tool action. Ordinary proposals and transport receipts must not cancel work.
+
 Any other character between the brackets makes the line a non-step.
 
 An agent may put `<!-- question=<64 lowercase hex characters>:<positive decimal revision> -->` on its own line after a step inside its auto block. This optional annotation supplies a producer identity and revision for the preceding step; it is metadata and never visible step text. The Claude writer hashes the stable task id, scopes it to the owning session/project, and increments that task's revision on an explicit ask, including the same words asked again. List reloads, heartbeats, whitespace and unrelated task changes preserve it. Keep the annotation with its step when reordering. Identical duplicate annotations are ambiguous and cannot hide multiple independent questions. Existing steps without annotations remain valid and use conservative observation matching. An annotation inside a fenced example, another comment or outside an auto block has no effect. It conveys no answer, approval or delivery acknowledgement.
@@ -300,6 +302,7 @@ A session's own questions are listed first, then the others'. Within each group,
 | Key | Value | Effect |
 |---|---|---|
 | `waiting` | `"you"` (also `"user"`, `"me"`, `"human"`, `"person"`, `"使用者"`, `"用户"`, `"我"`, any case) | Step is `[?]`. |
+| `handoffTo` | Nonempty recipient name | A confirmed owner-declared transfer is written as `[-]` with its recipient. A later explicit `status: "pending"` or `"in_progress"` reclaims it; passive TaskList refresh preserves it. No message delivery is implied. |
 | `waiting` | `"run"`, or any other value that is not empty | Step is `[>]`. |
 | `why` | One line | The note after ` — `. If `why` is missing, `reason`, `question` and `note` are tried in that order. Always give `why`. |
 | `ask` | `confirm`, `choose`, `input`, `do`, `review`, `wait` or `reply` (lower case) | The kind, in the owning session's pane. Any other value is ignored and the kind is worked out as below. |
@@ -309,6 +312,8 @@ A session's own questions are listed first, then the others'. Within each group,
 | `blocked` | A reason, or `true` for none | Step is `[!]`, with the reason as its note. Wins over `waiting`. |
 
 A key set to `null` clears it (`false` and `""` also clear `waiting` and `blocked`). Clearing `waiting` also clears `why`, `ask`, `options`, `command` and `link`. Marking the step completed clears all of it. In the session that set it, the person's own message marks every open `waiting: "you"` step answered, and a pane button marks the step it answers when pressed. An answered step keeps what Claude set but is written as Claude's to do, with the note for an answered step in the pane's language (see [Language](#language)), until Claude sets `waiting: "you"` again, the step's subject or note changes, or a turn ends on a question the pane puts on that step. A notification, a scheduled prompt, another session's message or a turn with no typed text is not an answer. In the file a step is written as `[x]` completed, else `[!]` blocked, else `[?]` waiting on you, else `[>]` waiting on a run, else `[~]` in progress, else `[ ]`.
+
+If one update declares both a handoff and `waiting: "you"`, the final handed-off task stays closed and does not renew its question revision. Passive TaskList reloads preserve both the recipient and revision. A later explicit open ask renews only that question.
 
 Only the note travels through the file. `ask`, `options`, `command` and `link` stay in the owning session, so another session's pane works the kind out again from the words of the note. Write the note as a plain sentence that carries the question.
 
