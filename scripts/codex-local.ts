@@ -12,6 +12,7 @@ import type { LocalAgent } from '../hooks/local-agents'
 import { deepseekLocalPlugin, deepseekPatch, openclawLocalPlugin } from '../hooks/portable-agents'
 import { trustCodex } from './codex-host'
 import { withLocalLock } from './local-lock'
+import { withInstallLock } from './install-control'
 
 type Json = Record<string, unknown>
 type Manifest = { files: Record<string, string>; groups: Record<string, unknown> }
@@ -277,7 +278,7 @@ export const runCodexLocal = async (args: string[], boardPath: string, s: String
   }
   if (!args.includes('--apply')) { output(plan); return true }
   if (conflicts.length) { output(plan); throw new Error('INSTALL_CONFLICT') }
-  withLocalLock(join(root, 'install.lock'), () => {
+  withInstallLock(home, () => {
     // Compare the bytes used to build the plan, not a fresh snapshot taken after
     // planning: another installer or host may have changed them in that interval.
     for (const [file, expected] of before) if (readLocal(file) !== expected) throw new Error('INSTALL_CHANGED')
