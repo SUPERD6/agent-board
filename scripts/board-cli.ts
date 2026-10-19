@@ -16,7 +16,7 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { mergeBlock, takeArchivable, takeManualDone, takeTask, setManualStep } from '../hooks/blocks'
 import { startServer } from './board-serve'
 import { idleTimeout } from '../hooks/serve'
-import { boardKey, boardScreen, boardText, chatText, doneToday, emptyBoardState, peekInbox, boardItems, pinned, redact } from '../hooks/board'
+import { boardKey, boardScreen, boardText, CHAT_MAX, chatText, doneToday, emptyBoardState, peekInbox, boardItems, pinned, redact } from '../hooks/board'
 import type { BoardAction, BoardState } from '../hooks/board'
 import { LOG_TAIL, isInboxFile } from '../hooks/inbox'
 import { dashboardHtml } from '../hooks/dashboard'
@@ -130,9 +130,7 @@ const pending = (scrub?: (text: string) => string) => {
 // part way through a write never resets every task's age.
 let lastSeen: Record<string, number> = {}
 let lastStat = { stat: '', at: 0 }
-const view = () => {
-  const now = Date.now()
-  const projects = parseProgress(read(path))
+const view = (projects = parseProgress(read(path)), now = Date.now()) => {
   let stat = ''
   try {
     const one = statSync(path)
@@ -695,7 +693,9 @@ const chat = (): void => {
     const now = Date.now()
     const home = homeOrNone()
     // A reply is hidden whole, before its question is picked and cut to length.
-    process.stdout.write(chatText(view(), pending(text => redact(text, home, isWin)), doneToday(read(journalPath(path, now)), now, s), s, home, isWin))
+    const projects = parseProgress(read(path))
+    const updates = pending(text => redact(text, home, isWin))
+    process.stdout.write(chatText(view(projects, now), updates, doneToday(read(journalPath(path, now)), now, s), s, home, isWin, CHAT_MAX, now))
   } catch (error) {
     process.exitCode = 1
     const code = (error as { code?: unknown } | null)?.code

@@ -45,6 +45,8 @@ node ~/.agent-board/agent-board.mjs --html
 | `--chat` | 精简文字；不开网页、链接或浏览器、不写文件 |
 | `--html` | 生成并打开只读网页，不能发消息 |
 
+聊天模式先列问题，再列尚未整理的进度汇报与来源时间。汇报不代表工作完成或连接在线；已领取或处理的收件文件不会重复显示，也不会只因 hook 时间更新就隐藏待处理汇报。超长内容会显示省略数量，聊天模式不写文件。
+
 加上 `--lang en`、`zh-TW` 或 `zh-CN` 选择语言。Windows／自定义安装请使用实际打印的完整路径。Codex 的入口是 `$agent-board`，OpenCode 安装 `/board`；其他 host 须先加载已安装的 skill／command。
 
 ### 看板的网页
