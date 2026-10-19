@@ -1,6 +1,7 @@
 import type { Strings } from './i18n'
 import type { LocalAgent } from './local-agents'
-import { RESUME } from './parse'
+import { parseAttrs, parseProgress, RESUME } from './parse'
+import { scanBlocks } from './blocks'
 
 export type CodexReport = {
   session: string
@@ -81,16 +82,25 @@ export const putCodexBlock = (text: string, report: CodexReport, owner: string):
   const marker = `<!-- auto session=${id} agent=${agent} source=${agent}-local owner=${owner} state=${report.state} updated=${report.updated}${resume} -->`
   const eol = text.includes('\r\n') ? '\r\n' : '\n'
   const block = [marker, `### ${report.title}`, ...report.steps, `<!-- /auto session=${id} -->`].join(eol)
-  const start = new RegExp(`^<!-- auto [^\\r\\n]*\\bsession=${id}(?: | -->)[^\\r\\n]*`, 'gm')
-  const found = [...text.matchAll(start)]
+  // Use the board's scanner: Markdown examples are not task ownership, and a
+  // missing close must never reach past the next project or another agent's block.
+  // Keep raw CR bytes in these lines so offsets preserve even mixed line endings.
+  const lines = text.split('\n')
+  const found = scanBlocks(lines).filter(span => span.session === id)
   if (found.length > 1) throw new Error('BLOCK_CONFLICT')
   const existing = found[0]
+  let next: string
   if (existing) {
-    if (!existing[0].includes(` owner=${owner} `) || !existing[0].includes(` agent=${agent} `)) throw new Error('BLOCK_CONFLICT')
-    const end = new RegExp(`^<!-- /auto session=${id} -->`, 'm').exec(text.slice(existing.index))
-    if (!end) throw new Error('BLOCK_CONFLICT')
-    return text.slice(0, existing.index) + block + text.slice(existing.index + end.index + end[0].length)
+    const attrs = parseAttrs(lines[existing.start] ?? '')
+    if (!existing.isClosed || attrs.owner !== owner || attrs.agent !== agent) throw new Error('BLOCK_CONFLICT')
+    const offset = (index: number): number => lines.slice(0, index).reduce((total, line) => total + line.length + 1, 0)
+    const end = offset(existing.end) + (lines[existing.end] ?? '').replace(/\r$/, '').length
+    next = text.slice(0, offset(existing.start)) + block + text.slice(end)
+  } else {
+    // Append a section rather than reformat another writer's bytes.
+    next = `${text}${text && !text.endsWith('\n') ? eol : ''}${eol}## ${report.project}${eol}${block}${eol}`
   }
-  // Append a section rather than reformat another writer's bytes.
-  return `${text}${text && !text.endsWith('\n') ? eol : ''}${eol}## ${report.project}${eol}${block}${eol}`
+  const visible = parseProgress(next).flatMap(project => project.tasks).filter(task => task.auto?.session === id && task.auto.agent === agent)
+  if (visible.length !== 1) throw new Error('BLOCK_NOT_VISIBLE')
+  return next
 }
