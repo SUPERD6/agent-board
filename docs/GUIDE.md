@@ -47,6 +47,8 @@ node ~/.agent-board/agent-board.mjs --html
 
 Add `--lang en`, `zh-TW` or `zh-CN` to select the board language. Windows/custom installations use the printed absolute paths. `$agent-board` is the Codex skill entry; OpenCode installs `/board`. Other hosts must load their installed skill/command first.
 
+Chat shows questions first, then unprocessed progress reports with their source age. These reports do not prove completion or a live connection. Claimed or processed inbox files do not appear twice; a fresh hook timestamp alone never hides a pending report. Long replies retain an omission count; chat writes nothing.
+
 ### The board's page
 
 Questions appear first. Expand a task for its steps. You can tick manual steps, archive, paste a valid progress block, copy a reply or resume command, mark a question read and show it again. Mark read only changes the local hidden list; it sends nothing. The question returns when its words change. There is no general task-editing form.

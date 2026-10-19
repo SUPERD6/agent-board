@@ -10,6 +10,8 @@ import { ZH_CN } from '../hooks/strings-zh-cn'
 import { dashboardHtml } from '../hooks/dashboard'
 import { buildView, IDLE_MS, parseSeen, seenJson, seenPath, withSeen } from '../hooks/view'
 import { parseProgress } from '../hooks/parse'
+import { chatText, peekInbox } from '../hooks/board'
+import { isInboxFile } from '../hooks/inbox'
 import { RELEASE_0_18_1, RELEASE_0_20_5 } from './fixtures/released'
 
 const FILE = '/home/me/.claude/progress.md'
@@ -304,6 +306,25 @@ test('receipt write failure retains the input despite a verified board output', 
   expect(world.files.get(FILE)).toContain('### fixture')
   expect((world.store!.inboxDone as Record<string, string>)[PROBE_NAME]).toBeUndefined()
   expect([...world.files.keys()].some(path => path.endsWith('.taking'))).toBe(true)
+})
+
+test('a saved inbox digest appears once in chat even when its receipt cannot be written', async ($, on) => {
+  const world = probeWorld()
+  world.failStore = (operation, key) => operation === 'set' && key === 'inboxDone'
+  const clock = engineBeneath(on, world)
+  await probeStart($)
+  await clock.advance(5000)
+  const projects = parseProgress(world.files.get(FILE) ?? '')
+  const at = Date.parse('2026-10-16T12:00:05Z')
+  const files = [...world.files].flatMap(([path, body]) => {
+    const name = path.slice(`${INBOX}/`.length)
+    return path.startsWith(`${INBOX}/`) && isInboxFile(name) ? [{ name, body, at }] : []
+  })
+  const text = chatText(buildView(projects, [], null, at, 0, {}, EN), peekInbox(files), [], EN, '/home/me')
+  expect([...world.files.keys()].some(path => path.endsWith('.taking'))).toBe(true)
+  expect(text.split('› fixture').length - 1).toBe(1)
+  expect(text).not.toContain(EN.chatPendingReports)
+  expect(text).not.toContain('Implemented a fixture.')
 })
 
 test('failed-note write failure retains a settled input rather than silently deleting it', async ($, on) => {

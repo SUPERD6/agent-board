@@ -1249,7 +1249,7 @@ test('the board only peeks at the inbox: a session’s end drops its turn, the n
     { name: 'codex-turn-4-1.json', body: 'not json', at: 4 },
     { name: 'cursor-turn-5-1.json', body: turn('u1', 'Here is the board:\n```\n● 1 waiting\n```\nThe release plan needs you first.'), at: 5 },
   ])
-  expect(pending).toEqual([
+  expect(pending).toMatchObject([
     { agent: 'cursor', project: 'app', text: 'The release plan needs you first.', isQuestion: false, at: 5 },
     { agent: 'codex', project: 'app', text: 'Second.', isQuestion: false, at: 3 },
   ])
@@ -1510,6 +1510,49 @@ test('a chat board puts the questions first, each with its project and agent, an
   expect(none).not.toContain('Waiting on you')
   expect(chatText(chatView(CHAT_FILE), [], [], STRINGS.en, '/home/jane')).not.toContain('answered, hidden')
 })
+
+test('a chat board shows unprocessed reports with honest age instead of a false empty state in every language', () => {
+  const pending = [{ agent: 'codex', project: 'export', text: 'Validation finished; packaging next.', isQuestion: false, at: CHAT_NOW, sourceAt: CHAT_NOW - 2 * 86400000 }]
+  for (const s of Object.values(STRINGS)) {
+    const view = buildView([], [], null, CHAT_NOW, 0, {}, s)
+    const text = chatText(view, pending, [], s, '/home/jane', false, CHAT_MAX, CHAT_NOW)
+    expect(text).toContain(s.chatPendingReports)
+    expect(text).toContain(`export · codex · ${s.chatReportTime(s.daysAgo(2))}`)
+    expect(text).toContain(pending[0]!.text)
+    expect(text).not.toContain(s.empty)
+    expect(text).not.toContain(s.justNow)
+    for (const sourceAt of [0, Number.NaN, CHAT_NOW + 60000]) {
+      expect(chatText(view, [{ ...pending[0]!, sourceAt }], [], s, '/home/jane', false, CHAT_MAX, CHAT_NOW)).toContain(s.chatReportTime(''))
+    }
+    expect(chatText(view, [], [], s, '/home/jane')).toContain(s.empty)
+  }
+})
+
+test('chat pending reports follow questions and share redaction and omission limits', () => {
+  const secret = 'sk-' + 'a'.repeat(80)
+  const updates = Array.from({ length: 80 }, (_, index) => ({ agent: 'codex', project: 'exports', text: `Update ${index}: /home/jane/private ${secret} ${'details '.repeat(100)}`, isQuestion: false, at: CHAT_NOW }))
+  const question = { ...updates[0]!, isQuestion: true, text: 'Approve staging?' }
+  const text = chatText(chatView(''), [question, ...updates], [], STRINGS.en, '/home/jane', false, CHAT_MAX, CHAT_NOW)
+  expect(text.indexOf('Approve staging?')).toBeLessThan(text.indexOf(STRINGS.en.chatPendingReports))
+  expect(text).toContain('Update 0: ~/private •••')
+  expect(text).not.toContain(secret)
+  expect(text).not.toContain('/home/jane')
+  expect(text.length).toBeLessThanOrEqual(CHAT_MAX)
+  expect(text).toMatch(/\n\n\+\d+ more\n$/)
+})
+
+test('chat never presents a raw user prompt as an unprocessed progress summary', () => {
+  for (const answer of ['', '```\nprivate code\n```']) {
+    const pending = peekInbox([{ name: `codex-turn-${CHAT_NOW}-1.json`, body: JSON.stringify({ session_id: 'native-session-001', cwd: '/w/export', prompt: 'Private original request', last_assistant_message: answer }), at: CHAT_NOW }])
+    const shown = chatText(chatView(''), pending, [], STRINGS.en, '/home/jane', false, CHAT_MAX, CHAT_NOW)
+    expect(shown).toContain(STRINGS.en.chatPendingReports)
+    expect(shown).toContain(STRINGS.en.chatNoSummary)
+    expect(shown).not.toContain('Private original request')
+    expect(shown).not.toContain('private code')
+    expect(shown).not.toContain(STRINGS.en.empty)
+  }
+})
+
 
 const MANY = (count: number): string =>
   `# Progress\n\n## big-project\n${Array.from({ length: count }, (_, index) => {

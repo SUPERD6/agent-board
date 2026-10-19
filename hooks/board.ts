@@ -4,7 +4,7 @@ import { lastQuestion } from './digest'
 import { isBoardTurn, isTranscriptPath, readTurn, transcriptTail } from './inbox'
 import { localDay, parseJournal, progressReport } from './journal'
 import { sha256 } from './sha256'
-import { replyHint } from './view'
+import { relativeTime, replyHint } from './view'
 import type { StepRef, TaskRef, TaskRow, View, ViewStep, WaitingItem } from './view'
 
 // The board as plain text, for agents other than Claude Code: the standalone script that
@@ -13,7 +13,7 @@ import type { StepRef, TaskRef, TaskRow, View, ViewStep, WaitingItem } from './v
 
 // A turn another agent's hook left that no Claude Code session has summed up yet. The
 // board only peeks at it: taking it is a Claude Code session's job, so the two never race.
-export type PendingTurn = { agent: string; project: string; text: string; isQuestion: boolean; at: number }
+export type PendingTurn = { agent: string; project: string; text: string; isQuestion: boolean; at: number; sourceAt?: number; hasSummary?: boolean }
 
 // A reply's last line of prose, its code blocks left out: where a reply usually says what
 // came of the turn.
@@ -45,9 +45,10 @@ export const peekInbox = (
     }
     const answer = scrub(turn.answer)
     const question = lastQuestion(answer)
-    const text = (question ?? closing(answer) ?? turn.prompt).trim()
+    const summary = question ?? closing(answer)
+    const text = (summary ?? turn.prompt).trim()
     if (text === '') continue
-    latest.set(turn.id, { agent: turn.agent, project: turn.project, text, isQuestion: question !== null, at: file.at })
+    latest.set(turn.id, { agent: turn.agent, project: turn.project, text, isQuestion: question !== null, at: file.at, sourceAt: turn.at ?? file.at, hasSummary: summary !== undefined && summary !== null })
   }
 
   return [...latest.values()].sort((a, b) => Number(b.isQuestion) - Number(a.isQuestion) || b.at - a.at)
@@ -298,6 +299,7 @@ export const chatText = (
   home: string,
   isWindows = false,
   max = CHAT_MAX,
+  now?: number,
 ): string => {
   const line = (text: string, indent = 0): string => chatLine(text, indent, home, isWindows)
   // A session started in the home folder is named after it, and the folder's name is the person's.
@@ -315,6 +317,12 @@ export const chatText = (
     items.push([...(index === 0 ? ['', `● ${s.sectionWaiting}`] : []), line(ask.where + (ask.task ? ` › ${ask.task}` : ''), 2), line(ask.text, 4)].join('\n'))
   })
   if (asks.length > 0 && hidden !== null) items.push(`  ${hidden}`)
+  const news = pending.filter(turn => !turn.isQuestion)
+  news.forEach((turn, index) => {
+    const at = turn.sourceAt ?? turn.at
+    const when = now !== undefined && Number.isFinite(at) && at > 0 && at <= now ? relativeTime(at, now, s) : ''
+    items.push([...(index === 0 ? ['', `◐ ${s.chatPendingReports}`] : []), line(`${[named(turn.project), turn.agent].filter(part => part !== '').join(' · ')} · ${s.chatReportTime(when)}`, 2), line(turn.hasSummary === false ? s.chatNoSummary : turn.text, 4)].join('\n'))
+  })
   if (view.idle.length > 0) items.push(line(s.idleCount(view.idle.length)))
   // A question is told above, answered or not: it is never the "next step" of its task.
   const isNext = (step: ViewStep): boolean => step.number !== null && !['done', 'cancelled', 'waiting'].includes(step.status)
@@ -323,7 +331,7 @@ export const chatText = (
     const words = `${mark} ${named(row.project)} › ${row.title}${row.due === null ? '' : ` · ${row.due.left}`}${next === undefined ? '' : ` — ${s.reportNext(next)}`}`
     items.push(`${index === 0 ? '\n' : ''}${line(words)}`)
   })
-  if (asks.length === 0 && rows.length === 0 && view.idle.length === 0) items.push(s.empty)
+  if (asks.length === 0 && rows.length === 0 && news.length === 0 && view.idle.length === 0) items.push(s.empty)
   // Each starts with its project (`project · task: step`).
   const doneWords = (words: string): string => {
     const [project = '', ...rest] = words.split(' · ')

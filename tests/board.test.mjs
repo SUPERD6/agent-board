@@ -257,6 +257,10 @@ const chatRun = (args, { file = () => FILE, beside = {}, lang = 'en', isFolder =
     }
     const before = readdirSync(dirs['.claude']).sort()
     const unchanged = new Map(before.filter(name => statSync(join(dirs['.claude'], name)).isFile()).map(name => [name, { bytes: readFileSync(join(dirs['.claude'], name)), mtime: statSync(join(dirs['.claude'], name)).mtimeMs }]))
+    for (const name of Object.keys(inbox)) {
+      const relative = join('progress-inbox', name), source = join(dirs['.claude'], relative)
+      unchanged.set(relative, { bytes: readFileSync(source), mtime: statSync(source).mtimeMs })
+    }
     const ran = spawnSync(process.execPath, [script, ...args], { env, encoding: 'utf8', timeout: 20000 })
     const modified = [...unchanged].filter(([name, old]) => !existsSync(join(dirs['.claude'], name)) || !readFileSync(join(dirs['.claude'], name)).equals(old.bytes) || statSync(join(dirs['.claude'], name)).mtimeMs !== old.mtime).map(([name]) => name)
     return { ...ran, home, path, modified, wrote: readdirSync(dirs['.claude']).filter(name => !before.includes(name)), served: readdirSync(dirs.run) }
@@ -346,6 +350,51 @@ test('--chat hides a token in a waiting reply before its question is picked, so 
   assert.ok(ran.stdout.includes('Should I use postgres://•••@dbhost as the URL for the staging database?'), ran.stdout)
   // Not a piece of it, nor the token with its underscores taken out.
   for (const leak of [token.slice(4, 14), token.replace(/_/g, ''), 'xxxx', 'K7MDENG']) assert.ok(!ran.stdout.includes(leak), leak + '\n' + ran.stdout)
+})
+
+test('--chat includes pending progress without claiming an empty board or mutating its sources', () => {
+  for (const [lang, heading, empty] of [['en', 'Unprocessed reports', 'No work in progress right now.'], ['zh-TW', '尚未整理的回報', '目前沒有進行中的工作。'], ['zh-CN', '尚未整理的汇报', '目前没有进行中的工作。']]) {
+    const ran = chatRun(['--chat', '--serve', '--lang', lang], {
+      file: () => '# Progress\n',
+      inbox: { 'codex-turn-1792152000-1.json': JSON.stringify({ session_id: 'chat-progress-1', cwd: '/work/export', last_assistant_message: 'Export validation finished; packaging next. token=synthetic-secret' }) },
+    })
+    assert.equal(ran.status, 0, ran.stderr)
+    assert.ok(ran.stdout.includes(heading) && ran.stdout.includes('export · codex'), ran.stdout)
+    assert.ok(ran.stdout.includes('Export validation finished; packaging next.'), ran.stdout)
+    assert.ok(!ran.stdout.includes(empty) && !ran.stdout.includes('synthetic-secret'), ran.stdout)
+    assert.ok(!ran.stdout.includes('chat-progress-1') && !ran.stdout.includes('127.0.0.1'), ran.stdout)
+    assert.deepEqual([ran.wrote, ran.modified, ran.served], [[], [], []])
+    assert.ok(ran.stdout.length <= 3500)
+  }
+})
+
+test('--chat does not duplicate a claimed digest or mistake a fresh heartbeat for processing', () => {
+  const source = Date.parse('2026-10-16T12:00:00Z')
+  const body = JSON.stringify({ session_id: 'chat-progress-1', cwd: '/work/export', last_assistant_message: 'Validation finished; package next.' })
+  for (const isClaimed of [true, false]) {
+    const original = `codex-turn-${source}-1.json`
+    const name = isClaimed ? `${original}.digestowner-${(source + 500).toString(36)}-1.taking` : original
+    const ran = chatRun(['--chat'], {
+      file: () => `## export\n<!-- auto session=12345678 agent=codex resume=chat-progress-1 state=working updated=${new Date(source + 1000).toISOString()} -->\n### Export package\n- [~] Package next\n<!-- /auto session=12345678 -->\n`,
+      inbox: { [name]: body },
+    })
+    assert.equal(ran.status, 0, ran.stderr)
+    assert.equal(ran.stdout.includes('Validation finished; package next.'), !isClaimed, ran.stdout)
+    assert.equal(ran.stdout.includes('Unprocessed reports'), !isClaimed, ran.stdout)
+    assert.equal(ran.stdout.split('› Export package').length - 1, 1, ran.stdout)
+    assert.deepEqual([ran.wrote, ran.modified, ran.served], [[], [], []])
+  }
+})
+
+test('--chat shows pending metadata without forwarding a raw user prompt', () => {
+  const ran = chatRun(['--chat'], {
+    file: () => '# Progress\n',
+    inbox: { 'codex-turn-1792152000-1.json': JSON.stringify({ session_id: 'chat-progress-1', cwd: '/work/export', prompt: 'Private original request' }) },
+  })
+  assert.equal(ran.status, 0, ran.stderr)
+  assert.ok(ran.stdout.includes('export · codex') && ran.stdout.includes('No progress summary yet'), ran.stdout)
+  assert.ok(!ran.stdout.includes('Private original request'), ran.stdout)
+  assert.deepEqual([ran.wrote, ran.modified, ran.served], [[], [], []])
 })
 
 test('--chat leaves out a question marked answered, and a damaged answered list drops none', () => {
