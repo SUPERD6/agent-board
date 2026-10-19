@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Compare a denied historical-hide action with the exact bytes present after startup migration, while retaining the original legacy keys and later renewal/migration assertions. Test: `historical hide marks survive failed reads while an observed renewed question gets a fresh identity`.
+
 - Bound page-fixture HTTP requests, synchronous JavaScript and the live-block terminal probe so a stalled helper cannot bypass the test's deadline. Tests: `live blocks of every agent refuse forged web archives without writes and terminal a and tidy preserve them`, `page Confirm done buttons act once with exact fingerprints and journal all new ticks in three languages`.
 
 - Correct the pane test filesystem so dashboard/metadata writes, including direct same-size replacements, advance only their own timestamp. Preserve direct progress renewals and native Map behavior. Test: `mock file timestamps isolate sidecar writes and preserve explicit progress renewals`. This corrects a demonstrated mock artifact; it does not establish the cause of full-suite timeouts.
