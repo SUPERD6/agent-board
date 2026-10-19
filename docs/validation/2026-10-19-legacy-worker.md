@@ -156,3 +156,8 @@ merge were removed before acceptance.
 Frozen integrated input hashes are retained in `issue-93-integrated-inputs.txt`.
 All heavy readers exited and their lease was released. No native model/host or
 permanent configuration was used, and final root review/publication is outstanding.
+
+The pending integrated pinned-Bun `build-released.ts --check` subsequently exited
+zero (`issue-93-integrated-released.log`). No runtime or fixture changed for this
+check. The [review map](2026-10-19-legacy-worker-review.md) records source locations,
+scope limits and the pending-connect/remove ordering candidate reported to root.
