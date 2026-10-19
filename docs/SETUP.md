@@ -46,6 +46,8 @@ The optional Claude pane's `/progress connect` also resolves OpenCode's configur
 from `OPENCODE_CONFIG_DIR`, then `XDG_CONFIG_HOME/opencode`, then `~/.config/opencode`.
 Detection, plugin, board command and owned instruction cleanup use that same root;
 stale default directories are left alone. Its status records configuration, not a native ACK.
+Generated board commands preserve literal paths with spaces or shell metacharacters on
+Windows and POSIX. Updating them still preserves personal edits and unrelated files.
 
 ## Native status adapters
 

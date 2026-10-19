@@ -5,6 +5,7 @@ import { RELEASED } from './released'
 import type { ReleasedKind } from './released'
 import { sha256 } from './sha256'
 import { STRINGS } from './strings'
+import { boardRun, geminiBoardCommand, opencodeBoardCommand } from './board-commands'
 
 // The reporter script an agent's hook runs, written beside progress.md by `/progress
 // connect`: it saves what the hook hands over into the inbox and clears files older than two
@@ -847,7 +848,7 @@ const SKILL = 'agent-board'
 export const boardCommands = (ctx: ConnectContext): AgentHook[] => {
   if (ctx.board === undefined) return []
   const opencodeHome = ctx.opencodeHome ?? join(ctx, '.config', 'opencode')
-  const run = `node "${ctx.board}"`
+  const run = boardRun(ctx.board)
   // JSON is YAML too, so a description with a colon in it stays one value.
   const contents = (s: Strings) => {
     const description = JSON.stringify(s.boardCommandDescription)
@@ -856,8 +857,8 @@ export const boardCommands = (ctx: ConnectContext): AgentHook[] => {
       skill: skill(s.boardSkillPrompt(run)),
       // Hermes Agent answers in a chat app (Telegram), where a link to this computer does not open.
       hermes: skill(s.boardChatSkillPrompt(run)),
-      gemini: `# Written by the Agent Board plugin (/progress connect).\ndescription = ${description}\nprompt = '''${s.boardCommandPrompt}\n\n!{${run} --serve}\n'''\n`,
-      opencode: `---\ndescription: ${description}\n---\n\n${s.boardCommandPrompt}\n\n!\`${run} --serve\`\n`,
+      gemini: geminiBoardCommand(s.boardCommandDescription, s.boardCommandPrompt, run),
+      opencode: opencodeBoardCommand(s.boardCommandDescription, s.boardCommandPrompt, run),
     }
   }
   const current = contents(ctx.s ?? ZH_TW)

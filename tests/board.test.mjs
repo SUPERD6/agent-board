@@ -12,6 +12,34 @@ import { test } from 'node:test'
 import { runInNewContext } from 'node:vm'
 import assert from 'node:assert/strict'
 import { BOARD_SCRIPT } from '../hooks/board-script.ts'
+import { boardRun, geminiBoardCommand, opencodeBoardCommand } from '../hooks/board-commands.ts'
+
+test('generated board commands pass literal shell-sensitive paths through Gemini and OpenCode wrappers', () => {
+  const root = mkdtempSync(join(tmpdir(), 'board-command-'))
+  try {
+    for (const folder of ['ordinary space', '中文 🧭', "cash $AB_PATH 'quote' \u0060echo probe\u0060 ; & %AB_PATH% ! ( ) { } 中文"]) {
+      const directory = join(root, folder)
+      mkdirSync(directory)
+      const script = join(directory, 'agent-board.mjs')
+      writeFileSync(script, "import { readFileSync } from 'node:fs'; process.stdout.write(JSON.stringify({ url: import.meta.url, args: process.argv.slice(2), stdin: readFileSync(0, 'utf8') }))")
+      const run = boardRun(script)
+      const gemini = geminiBoardCommand('Board: literal paths', 'Show the board.', run)
+      const value = /^prompt = (.*)$/m.exec(gemini)?.[1]
+      const prompt = JSON.parse(value)
+      const geminiRun = /!\{(.*)\}/.exec(prompt)?.[1]
+      const opencodeRun = /^!\u0060(.*)\u0060$/m.exec(opencodeBoardCommand('Board: literal paths', 'Show the board.', run))?.[1]
+      const isWindows = process.platform === 'win32'
+      for (const command of [run + ' --serve', geminiRun, opencodeRun]) {
+        assert.ok(command)
+        const result = spawnSync(isWindows ? process.env.ComSpec || 'cmd.exe' : '/bin/sh', isWindows ? ['/d', '/s', '/c', command] : ['-c', command], {
+          env: { ...process.env, AB_PATH: 'expanded-wrong-path' }, input: 'AB-COMMAND-FIXTURE', encoding: 'utf8', windowsHide: true, windowsVerbatimArguments: isWindows, timeout: 10000,
+        })
+        assert.equal(result.status, 0, result.stderr)
+        assert.deepEqual(JSON.parse(result.stdout), { url: pathToFileURL(script).href, args: ['--serve'], stdin: 'AB-COMMAND-FIXTURE' })
+      }
+    }
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
 
 // The board script reads these times against the real clock: a waiting block shows as stopped
 // after 12 hours, and an ended one is archived after three days. A fixed date would stop
@@ -635,8 +663,11 @@ setTimeout(() => process.stdout.write('Redis it is; wiring it up now.\\n'), 1000
   const close = async () => {
     if (child.exitCode === null) await call('POST', '/api/close', { body: {} }).catch(() => undefined)
     const code = await Promise.race([exited, new Promise(done => setTimeout(() => done('still running'), 5000))])
-    if (code === 'still running') child.kill()
-    rmSync(dir, { recursive: true, force: true })
+    if (code === 'still running') {
+      child.kill()
+      if (await Promise.race([exited, new Promise(done => setTimeout(() => done('still running'), 5000))]) === 'still running') throw new Error('Fixture process did not exit')
+    }
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     return code
   }
   return { dir, path, url, port, token, call, rows, rowOf, keyOf, close, exited, served: servedAt(run, path) }
@@ -1361,8 +1392,8 @@ const closeAt = async (url, served) => {
   for (let tries = 0; existsSync(served) && tries < 50; tries++) await pause(100)
 }
 
-// A page whose agent stand-in writes down each run and holds it until `release` is written (or
-// 8 seconds pass), like a long agent turn; and the `--serve` of a copy of its script beside it.
+// Hold the stand-in until explicit release. Its deadline fails rather than
+// manufacturing success while the test is still checking the busy state.
 const holdingPage = async () => {
   const hold = mkdtempSync(join(tmpdir(), 'board-hold-'))
   const stand = join(hold, 'grok-stand-in.mjs')
@@ -1370,8 +1401,11 @@ const holdingPage = async () => {
   const gate = join(hold, 'release')
   writeFileSync(stand, `import { appendFileSync, existsSync } from 'node:fs'
 appendFileSync(${JSON.stringify(calls)}, JSON.stringify(process.argv.slice(2)) + '\\n')
-const end = Date.now() + 8000
-const timer = setInterval(() => { if (existsSync(${JSON.stringify(gate)}) || Date.now() > end) { clearInterval(timer); process.stdout.write('Redis it is.\\n'); process.exit(0) } }, 25)
+const end = Date.now() + 45000
+const timer = setInterval(() => {
+  if (existsSync(${JSON.stringify(gate)})) { clearInterval(timer); process.stdout.write('Redis it is.\\n'); process.exit(0) }
+  if (Date.now() > end) { clearInterval(timer); process.stderr.write('FIXTURE_RELEASE_TIMEOUT\\n'); process.exit(1) }
+}, 25)
 `)
   const agents = { AGENT_BOARD_GROK: stand, AGENT_BOARD_CODEX: stand }
   const board = await page('', agents, ['--allow-resume'])
