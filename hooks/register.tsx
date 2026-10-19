@@ -1066,6 +1066,8 @@ const connectAgents = async (
   const grokHome = ((await $.env.get('GROK_HOME')) ?? '').replace(/[\\/]+$/, '') || [home, '.grok'].join(sep)
   const hermesHome = ((await $.env.get('HERMES_HOME')) ?? '').replace(/[\\/]+$/, '') || [home, '.hermes'].join(sep)
   const openclawHome = ((await $.env.get('OPENCLAW_STATE_DIR')) ?? '').replace(/[\\/]+$/, '') || [home, '.openclaw'].join(sep)
+  const configHome = ((await $.env.get('XDG_CONFIG_HOME')) ?? '').replace(/[\\/]+$/, '') || [home, '.config'].join(sep)
+  const opencodeHome = ((await $.env.get('OPENCODE_CONFIG_DIR')) ?? '').replace(/[\\/]+$/, '') || [configHome, 'opencode'].join(sep)
   const script = `${path.replace(/[\\/][^\\/]*$/, '')}${sep}progress-report.${isWin ? 'ps1' : 'sh'}`
   const reporter = isWin ? reporterPs1() : reporterSh(inboxPath(path))
   // The board for every other agent: their board commands run it, and so can any terminal.
@@ -1168,7 +1170,7 @@ const connectAgents = async (
     warn(`removeFailed:${folder}`, { message: 'connectRemoveFailed', args: [folder] })
     failedLabels.add(label)
   }
-  for (const hook of agentHooks({ home, sep, isWindows: isWin, script, inbox: inboxPath(path), codexHome, grokHome, hermesHome, openclawHome, board, s: STRINGS[fileLang] })) {
+  for (const hook of agentHooks({ home, sep, isWindows: isWin, script, inbox: inboxPath(path), codexHome, grokHome, hermesHome, openclawHome, opencodeHome, board, s: STRINGS[fileLang] })) {
     let isInstalled = false
     for (const dir of hook.dirs ?? [hook.dir]) isInstalled = isInstalled || (await $.fs.exists(dir))
     // Taking the hooks out goes by our own files, so one an earlier connect left where the
@@ -1277,7 +1279,7 @@ const connectAgents = async (
       if (hook.label === '' || done.includes(hook.label)) continue
       done.push(hook.label)
       // The old instructions section is only tidied away; the hook is in either way.
-      if (!remove) await dropSection($, hook.agent, home, codexHome, sep).catch(() => undefined)
+      if (!remove) await dropSection($, hook.agent, home, codexHome, opencodeHome, sep).catch(() => undefined)
     } catch {
       // A board command (no label of its own) that fails leaves the agent's hook
       // as it is: the board is an extra, the hook is what reports.
@@ -1367,11 +1369,11 @@ const autoConnect = async ($: EngineInterface, options: PluginOptions): Promise<
 }
 
 // The instruction files setup --agents writes the section into, per agent.
-const dropSection = async ($: EngineInterface, agent: string, home: string, codexHome: string, sep: string): Promise<void> => {
+const dropSection = async ($: EngineInterface, agent: string, home: string, codexHome: string, opencodeHome: string, sep: string): Promise<void> => {
   const files: Record<string, string[]> = {
     codex: [[codexHome, 'AGENTS.md'].join(sep), [codexHome, 'AGENTS.override.md'].join(sep)],
     gemini: [[home, '.gemini', 'GEMINI.md'].join(sep)],
-    opencode: [[home, '.config', 'opencode', 'AGENTS.md'].join(sep)],
+    opencode: [[opencodeHome, 'AGENTS.md'].join(sep)],
   }
   for (const file of files[agent] ?? []) {
     const text = await readText($, file).catch(() => '')

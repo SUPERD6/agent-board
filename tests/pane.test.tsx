@@ -3308,6 +3308,76 @@ test('a session hooks in the agents installed here without /progress connect, an
   expect(await ui.find({ type: 'Text', text: /\/progress connect remove/ })).toBeDefined()
 })
 
+for (const isAuto of [true, false]) test(`OpenCode connect uses its effective config root for ${isAuto ? 'automatic' : 'manual'} setup, repeat and removal`, { options: { autoConnect: isAuto } }, async ($, on) => {
+  const root = '/tmp/config with spaces/設定/opencode'
+  const defaultRoot = '/home/me/.config/opencode'
+  const instructions = '# My rules\n\n<!-- agent-board:start -->\n## Report your progress to the progress pane\nOld board rule\n<!-- agent-board:end -->\n'
+  const foreign = '// Personal plugin\n'
+  const world: World = {
+    files: new Map([
+      [`${root}/opencode.json`, '{}'], [`${root}/AGENTS.md`, instructions],
+      [`${defaultRoot}/plugin/agent-board.js`, foreign], [`${defaultRoot}/AGENTS.md`, instructions],
+    ]),
+    env: { HOME: '/home/me', XDG_CONFIG_HOME: '/tmp/config with spaces/設定/', LANG: 'en_US.UTF-8' },
+    store: { inboxDone: {} }, mtime: 1, hasTasks: true, ran: [],
+  }
+  engineBeneath(on, world)
+  await $.session.start({ cwd: '/work/persona_framework', surface: 'terminal', isInteractive: true })
+  if (!isAuto) await $.command.run({ ...TIDY, args: 'connect' })
+  const plugin = `${root}/plugin/agent-board.js`
+  const command = `${root}/commands/board.md`
+  const skill = '/home/me/.agents/skills/agent-board/SKILL.md'
+  expect(world.files.get(plugin)).toContain('export const AgentBoard')
+  expect(world.files.get(command)).toContain('--serve')
+  expect(world.files.get(skill)).toContain('--serve')
+  expect(world.files.get(`${root}/AGENTS.md`)).toBe('# My rules\n')
+  expect(world.files.get(`${defaultRoot}/plugin/agent-board.js`)).toBe(foreign)
+  expect(world.files.get(`${defaultRoot}/AGENTS.md`)).toBe(instructions)
+  const before = world.files.get(plugin)
+  await $.command.run({ ...TIDY, args: 'connect' })
+  expect(world.files.get(plugin)).toBe(before)
+  expect((await $.command.run({ ...TIDY, args: 'connect status' })).text).toContain(EN.setupAgent('OpenCode', [EN.setupHookConfigured, EN.setupBoardReady]))
+  await $.command.run({ ...TIDY, args: 'connect remove' })
+  expect(world.files.has(plugin)).toBe(false)
+  expect(world.files.has(command)).toBe(false)
+  expect(world.files.get(`${root}/opencode.json`)).toBe('{}')
+  expect(world.files.get(`${root}/AGENTS.md`)).toBe('# My rules\n')
+  expect(world.files.get(`${defaultRoot}/plugin/agent-board.js`)).toBe(foreign)
+  expect(world.files.get(`${defaultRoot}/AGENTS.md`)).toBe(instructions)
+})
+
+test('OpenCode explicit config root wins over XDG when using the Windows reporter', async ($, on) => {
+  const root = '/Agent Config/設定/OpenCode'
+  const world: World = {
+    files: new Map([[`${root}/opencode.json`, '{}'], ['/xdg/opencode/opencode.json', '{}']]),
+    env: { OS: 'Windows_NT', USERPROFILE: 'C:/Users/me', OPENCODE_CONFIG_DIR: `${root}/`, XDG_CONFIG_HOME: 'C:/xdg', CLAUDE_PROGRESS_FILE: 'C:/Users/me/.claude/progress.md', LANG: 'en_US.UTF-8' },
+    mtime: 1, hasTasks: true,
+  }
+  engineBeneath(on, world)
+  await $.session.start({ cwd: '/work/persona_framework', surface: 'terminal', isInteractive: true })
+  expect(world.files.get(`${root}/plugin/agent-board.js`)).toContain('export const AgentBoard')
+  expect(world.files.get(`${root}/commands/board.md`)).toContain('--serve')
+  expect(world.files.has('/xdg/opencode/plugin/agent-board.js')).toBe(false)
+  expect(world.files.has('/xdg/opencode/commands/board.md')).toBe(false)
+  expect(world.files.get(`${root}/opencode.json`)).toBe('{}')
+})
+
+test('OpenCode config override wins over XDG and a stale default directory never indicates installation', async ($, on) => {
+  const world: World = {
+    files: new Map([['/home/me/.config/opencode/opencode.json', '{}'], ['/tmp/xdg/opencode/opencode.json', '{}']]),
+    env: { HOME: '/home/me', OPENCODE_CONFIG_DIR: '/tmp/missing/', XDG_CONFIG_HOME: '/tmp/xdg', LANG: 'en_US.UTF-8' },
+    mtime: 1, hasTasks: true,
+  }
+  engineBeneath(on, world)
+  await $.session.start({ cwd: '/work/persona_framework', surface: 'terminal', isInteractive: true })
+  expect((await $.command.run({ ...TIDY, args: 'connect status' })).text).toBe(`${EN.setupStatusTitle}\n${EN.connectNone}`)
+  for (const root of ['/home/me/.config/opencode', '/tmp/xdg/opencode', '/tmp/missing']) {
+    expect(world.files.has(`${root}/plugin/agent-board.js`)).toBe(false)
+    expect(world.files.has(`${root}/commands/board.md`)).toBe(false)
+  }
+  expect(world.files.has('/home/me/.agents/skills/agent-board/SKILL.md')).toBe(false)
+})
+
 test('a session hooks OpenClaw in by a plugin file and its config entry, names it once, and takes both back out', async ($, on) => {
   const world: World = { files: new Map([['/home/me/.openclaw/openclaw.json', '{"gateway":{"port":18789}}']]), mtime: 1, hasTasks: true, ran: [] }
   engineBeneath(on, world)

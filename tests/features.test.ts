@@ -1730,6 +1730,19 @@ test('each agent gets a board command in the form it reads, and a missing report
   expect(reportCommand('/h/.claude/progress-report.sh', 'gemini', 'turn', false)).toBe("sh '/h/.claude/progress-report.sh' gemini turn || true")
 })
 
+test('OpenCode generated paths use the exact Windows config root with spaces and non-ASCII', () => {
+  const root = 'C:\\Agent Config\\設定\\OpenCode'
+  const ctx = { home: 'C:\\Users\\me', sep: '\\', isWindows: true, script: 'C:\\board\\progress-report.ps1', inbox: 'C:\\board\\progress-inbox', codexHome: 'C:\\Users\\me\\.codex', grokHome: 'C:\\Users\\me\\.grok', hermesHome: 'C:\\Users\\me\\.hermes', openclawHome: 'C:\\Users\\me\\.openclaw', opencodeHome: root, board: 'C:\\board\\agent-board.mjs' }
+  const plugin = agentHooks(ctx).find(hook => hook.agent === 'opencode' && hook.label !== '')
+  expect(plugin?.dir).toBe(root)
+  expect(plugin?.file).toBe(`${root}\\plugin\\agent-board.js`)
+  expect(plugin?.old).toBe(`${root}\\plugin\\progress-pane.js`)
+  const command = boardCommands(ctx).find(hook => hook.agent === 'opencode')
+  expect(command?.dir).toBe(root)
+  expect(command?.file).toBe(`${root}\\commands\\board.md`)
+  expect(boardCommands(ctx).find(hook => hook.agent === 'skills')?.dirs).toContain(root)
+})
+
 test('generated files require exact current or recorded bytes, never a familiar name or header', () => {
   const current = '# Written by Agent Board\nnew output\n'
   const previous = '# Written by Agent Board\nearlier output\n'

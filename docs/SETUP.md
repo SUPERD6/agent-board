@@ -42,6 +42,11 @@ before `--apply`. Close that board first. Progress/history/session records remai
 shared files stay while another installed target needs them. Do not use the legacy
 Claude setup scripts as a prerequisite for this installer.
 
+The optional Claude pane's `/progress connect` also resolves OpenCode's configuration
+from `OPENCODE_CONFIG_DIR`, then `XDG_CONFIG_HOME/opencode`, then `~/.config/opencode`.
+Detection, plugin, board command and owned instruction cleanup use that same root;
+stale default directories are left alone. Its status records configuration, not a native ACK.
+
 ## Native status adapters
 
 | Host | Installed adapter | Separate acceptance / remaining limit |
