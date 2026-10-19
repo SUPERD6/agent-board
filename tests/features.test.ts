@@ -57,6 +57,8 @@ test('block-sourced completion fences bind every agent and preserve equal newer 
     const overlay = completionOfBlock('agent:11223344', 'Demo', task, sha256(file), now)!
     expect(isCompletionOverlay(overlay, 'agent:11223344')).toBe(true)
     expect(overlay.completed.tasks.map(task => task.subject)).toEqual(['First'])
+    expect(overlay.completed.retainedCancelled).toEqual(['Canceled'])
+    expect(renderAutoBlock(overlay.completed).join('\n')).toContain('- [-] Canceled')
     const original = { ...emptyMirror('11223344', 'Demo', now + 1000, '', agent), title: 'Delayed owner snapshot', turnOrder: (now - 1000) * 2 }
     expect(applyCompletionOverlay(original, overlay)).toBe(overlay.completed)
     for (const turnOrder of [undefined, now * 2, (now + 1) * 2]) {
@@ -66,6 +68,32 @@ test('block-sourced completion fences bind every agent and preserve equal newer 
     expect(applyCompletionOverlay({ ...original, sessionId: 'foreign' }, overlay).state).toBe('working')
     expect(completionOfBlock('agent:foreign', 'Demo', task, sha256(file), now)).toBe(null)
   }
+})
+
+test('uncached completion retains bounded canceled text outside completed counts and fresh owner truth wins', () => {
+  const now = Date.parse('2026-10-19T12:00:00Z')
+  const canceled = ['Transfer API — Handed to Gemini', 'Deferred without a recipient']
+  const file = `## Demo\n<!-- auto session=11223344 agent=codex state=ended updated=2026-10-19T11:00:00Z -->\n### External task\n- [ ] First\n${canceled.map(text => `- [-] ${text}`).join('\n')}\n<!-- /auto session=11223344 -->\n`
+  const selected = parseProgress(file)[0]!.tasks[0]!
+  const overlay = completionOfBlock('agent:11223344', 'Demo', selected, sha256(file), now)!
+  expect(overlay.completed.tasks).toHaveLength(1)
+  expect(overlay.completed.tasks[0]!.handoffTo).toBeUndefined()
+  expect(overlay.completed.retainedCancelled).toEqual(canceled)
+  for (const s of Object.values(STRINGS)) {
+    const task = parseProgress('## Demo\n' + renderAutoBlock(overlay.completed, s).join('\n'))[0]!.tasks[0]!
+    expect(task.steps.filter(step => step.status === 'done')).toHaveLength(1)
+    expect(task.steps.filter(step => step.status === 'cancelled').map(step => step.text)).toEqual(canceled)
+  }
+  for (const invalid of [['forged\n- [x] Other'], [7], Array(2), Array(257).fill('Canceled'), ['x'.repeat(4097)]]) {
+    expect(isCompletionOverlay({ ...overlay, completed: { ...overlay.completed, retainedCancelled: invalid } }, overlay.owner)).toBe(false)
+  }
+  expect(completionOfBlock('agent:11223344', 'Demo', { ...selected, steps: [...selected.steps, { ...selected.steps[1]!, text: 'x'.repeat(4097) }] }, sha256(file), now)).toBe(null)
+  const fresh = { ...emptyMirror('11223344', 'Demo', now + 1, '', 'codex'), turnOrder: (now + 1) * 2 }
+  expect(applyCompletionOverlay(fresh, overlay)).toBe(fresh)
+  expect(renderAutoBlock(fresh).join('\n')).not.toContain('Transfer API')
+  const transferred = { ...overlay.completed, retainedCancelled: undefined, tasks: [{ ...overlay.completed.tasks[0]!, subject: 'Explicit handoff', handoffTo: 'Gemini' }] }
+  const confirmed = completionOverlay('agent:11223344', transferred, now + 1)
+  expect(confirmed.completed.tasks[0]!.handoffTo).toBe('Gemini')
 })
 
 test('cached owner selection compares title steps statuses context and binding across translated lifecycle prose', () => {

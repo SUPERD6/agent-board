@@ -433,6 +433,40 @@ test('Confirm done fences the first delayed legacy delivery even when the owner 
   await ui.unmount()
 })
 
+for (const [when, delta] of [['older', -1000], ['equal', 0], ['newer', 1000]] as const) test(`uncached completion retains canceled pointers through the first old inbox and ${when} prompt`, async ($, on) => {
+  const at = Date.parse('2026-10-16T12:00:00Z')
+  const session = 'uncached-canceled-session'
+  const id = blockId('codex', session)
+  const canceled = '- [-] Transfer API — Transferred to Gemini\n- [-] Deferred without a recipient'
+  const file = `## Demo\n<!-- auto session=${id} agent=codex state=ended updated=2026-10-16T11:00:00Z resume=${session} -->\n### External task\n- [ ] Old step\n${canceled}\n<!-- /auto session=${id} -->\n`
+  const world: World = { files: new Map([[FILE, file]]), mtime: 1, hasTasks: true, asked: [], reads: [], store: { inboxDone: {}, autoConnectOff: true, opened: ['others'] } }
+  const clock = engineBeneath(on, world)
+  await probeStart($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop', props: PROPS })
+  await ui.press({ key: 'Demo::External task' })
+  await ui.press({ key: 'Demo::External task::done' })
+  const confirmed = world.files.get(FILE)
+  expect(confirmed).toContain('- [x] Old step')
+  expect(confirmed).toContain(canceled)
+  world.files.set(`${INBOX}/codex-turn-${at - 1000}-1.json`, JSON.stringify({ session_id: session, cwd: '/work/Demo', prompt: 'Old request', last_assistant_message: 'Old work must stay complete.' }))
+  world.mtime += 1
+  await clock.advance(5000)
+  expect(world.files.get(FILE)).toBe(confirmed)
+  world.files.set(`${INBOX}/codex-prompt-${at + delta}-2.json`, JSON.stringify({ session_id: session, prompt: 'PRIVATE_NEW_INPUT', transcript_path: '/private/rollout-canceled.jsonl' }))
+  world.mtime += 1
+  await clock.advance(5000)
+  expect(world.files.get(FILE)).toContain(canceled)
+  expect(world.files.get(FILE)).toContain(`state=${when === 'newer' ? 'working' : 'done'}`)
+  if (when !== 'newer') expect(world.files.get(FILE)).toBe(confirmed)
+  const steps = parseProgress(world.files.get(FILE)!).flatMap(project => project.tasks).flatMap(task => task.steps)
+  expect(steps.filter(step => step.status === 'done')).toHaveLength(1)
+  expect(steps.filter(step => step.status === 'cancelled')).toHaveLength(2)
+  expect(world.asked).toEqual([])
+  expect(world.reads?.some(path => path.includes('rollout-canceled'))).toBe(false)
+  expect(world.files.get(FILE)).not.toContain('PRIVATE_NEW_INPUT')
+  await ui.unmount()
+})
+
 test('an absent owner becoming fresh during completion storage is preserved without false success', async ($, on) => {
   const at = Date.parse('2026-10-16T12:00:00Z')
   const id = blockId('codex', 'missing-owner-race')

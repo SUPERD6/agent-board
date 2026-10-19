@@ -37,22 +37,31 @@ export const completionOverlay = (owner: string, source: ProgressMirror, now: nu
 })
 export const completionKey = (overlay: CompletionOverlay): string => `${completionPrefix(overlay.owner)}${overlay.source}:${overlay.updated}`
 
+const isRetainedCancelled = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.length <= 256 && Array.from(value).every(text => typeof text === 'string' && text.length <= 4096 && !/[\r\n]/.test(text))
+
+export const retainedCancelledOf = (mirror: ProgressMirror): readonly string[] =>
+  isRetainedCancelled(mirror.retainedCancelled) ? mirror.retainedCancelled : []
+
 // An externally written block can predate its first inbox delivery. Keep its exact
 // selected fingerprint and completed steps without creating a mutable owner record.
 export const completionOfBlock = (owner: string, project: string, task: ProgressTask, fingerprint: string, now: number): CompletionOverlay | null => {
   const auto = task.auto
   if (auto === null || !/^[a-f0-9]{64}$/.test(fingerprint) || owner !== `agent:${auto.session}` && !(auto.agent === 'claude' && owner === `mirror:${auto.resume ?? auto.session}`)) return null
   const sessionId = owner.slice(owner.indexOf(':') + 1)
+  const retainedCancelled = task.steps.filter(step => step.status === 'cancelled').map(step => step.text)
+  if (!isRetainedCancelled(retainedCancelled)) return null
   const tasks: ProgressMirrorTask[] = task.steps.filter(step => step.status !== 'cancelled').map((step, index) => ({
     id: String(index + 1), subject: step.text, status: 'completed', activeForm: '', waiting: null, why: null, ask: null, options: [], command: null, link: null, blocked: null, blockedBy: [],
   }))
-  const completed = confirmMirror({ ...emptyMirror(sessionId, project, auto.updated, auto.dir ?? '', auto.agent), title: task.title, isTitleFinal: true, source: owner.startsWith('agent:') ? 'turns' : 'tasks', tasks, ...(auto.resume === null ? {} : { resume: auto.resume }) }, now)
+  const completed = confirmMirror({ ...emptyMirror(sessionId, project, auto.updated, auto.dir ?? '', auto.agent), title: task.title, isTitleFinal: true, source: owner.startsWith('agent:') ? 'turns' : 'tasks', tasks, ...(retainedCancelled.length === 0 ? {} : { retainedCancelled }), ...(auto.resume === null ? {} : { resume: auto.resume }) }, now)
   return { owner, source: fingerprint, sourceMissing: true, updated: now, completed }
 }
 
 export const isCompletionOverlay = (value: unknown, owner: string): value is CompletionOverlay => {
   if (value === null || typeof value !== 'object') return false
   const one = value as Partial<CompletionOverlay>
+  if (one.completed?.retainedCancelled !== undefined && !isRetainedCancelled(one.completed.retainedCancelled)) return false
   return one.owner === owner && typeof one.source === 'string' && /^[a-f0-9]{64}$/.test(one.source) && typeof one.updated === 'number' && Number.isFinite(one.updated) && one.updated > 0 && (one.sourceMissing === undefined || one.sourceMissing === true) && (one.sourceOrder === undefined || Number.isSafeInteger(one.sourceOrder) && one.sourceOrder >= 0) && one.completed?.state === 'done' && one.completed.confirmedAt === one.updated && typeof one.completed.sessionId === 'string' && (owner === `agent:${one.completed.sessionId}` || owner === `mirror:${one.completed.sessionId}`) && typeof one.completed.agent === 'string' && Array.isArray(one.completed.tasks) && one.completed.tasks.every(task => task !== null && typeof task === 'object' && task.status === 'completed')
 }
 

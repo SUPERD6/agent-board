@@ -67,7 +67,7 @@ The board keeps local identity history in `progress-questions.json` beside `prog
 
 Keep the accompanying `progress-questions-retired-*.json` and `progress-questions-consumed-*.json` files in backups and moves too. These immutable records contain only a version, kind and opaque hash. They prevent stale file writes from reviving retired identities or reusing migrated hides. They are never removed by age or task archiving. Unreadable, incomplete or unwritable records disable hiding until storage recovers; extra visible questions are safer than transferring an old hide.
 
-**Confirm done** finishes every open step at once, preserving canceled steps. Use the pane or page button, or `d` on a selected terminal task. It is available for manual tasks and agent blocks that ended or stopped writing for more than 12 hours. Changed or live tasks are refused. Each new tick goes to the journal; blocks become `state=done` with the current timestamp and follow the usual archive wait. It sends nothing to an agent. `progress.html` stays read-only.
+**Confirm done** finishes every open step at once, preserving canceled steps. Those canceled pointers also survive a later prompt when the board had no cached owner; a fresh producer report can replace that snapshot. Use the pane or page button, or `d` on a selected terminal task. It is available for manual tasks and agent blocks that ended or stopped writing for more than 12 hours. Changed or live tasks are refused. Each new tick goes to the journal; blocks become `state=done` with the current timestamp and follow the usual archive wait. It sends nothing to an agent. `progress.html` stays read-only.
 
 Local lifecycle updates preserve completed steps. A fresh explicit task report can introduce new work.
 

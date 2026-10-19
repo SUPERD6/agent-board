@@ -120,6 +120,9 @@ export type ProgressMirror = {
   firstPrompt: string
   state: ProgressSessionState
   tasks: ProgressMirrorTask[]
+  // Exact canceled text from an uncached completed block, outside completed-work counts.
+  // A fresh producer mirror can supersede this snapshot without guessing a recipient.
+  retainedCancelled?: string[]
   // Retained even after a task is deleted, so reusing its id cannot reuse an ask revision.
   questionSequence?: string
   updated: number
