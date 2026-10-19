@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Write only visible, bounded local progress blocks.** Share the board scanner for every independent reporter: leave fenced examples unchanged, ignore hidden closing markers, and reject incomplete ownership spans or appends hidden by unfinished Markdown. These validation failures leave both progress and session metadata unchanged. Tests: `local reports preserve fenced examples and update only the visible owned block`, `local reports refuse hidden appends without changing progress or session state`, `local reports refuse a closing marker beyond another task block`, `local reports ignore a fenced closing marker while replacing their own complete block`.
+
 - **Use OpenCode's effective config root in legacy connect.** Resolve `OPENCODE_CONFIG_DIR`, then `XDG_CONFIG_HOME/opencode`, then the default once for detection, plugin, board command, shared skill and owned instruction cleanup. Leave stale default directories untouched. Tests: `OpenCode connect uses its effective config root for automatic setup, repeat and removal`, its manual counterpart, `OpenCode explicit config root wins over XDG when using the Windows reporter`, `OpenCode generated paths use the exact Windows config root with spaces and non-ASCII`, `OpenCode config override wins over XDG and a stale default directory never indicates installation`.
   Keep setup notices strictly typecheckable by passing their narrowed arguments explicitly; the existing multilingual status tests cover their output.
 

@@ -140,5 +140,10 @@ for an exact new report; see [connection observations](MESSAGING.md#connecting-a
 Progress, live receiving and an actual model ACK are separate checks. Supported transports,
 surface-specific evidence and limits are listed in [messaging](MESSAGING.md).
 
+Local reports use the same Markdown scanner as the board. Fenced examples stay unchanged;
+an unfinished code fence/comment or incomplete owned block is refused before either the
+board or session record changes. Close the Markdown construct or restore the exact owned
+block, then retry. A successful write must produce one visible task for that session.
+
 See the [2026-10-19 native acceptance record](validation/2026-10-19-native-hooks.md)
 for the observed CLI events, cross-host ACKs, the Windows failure and its retest.

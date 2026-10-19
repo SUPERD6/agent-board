@@ -209,6 +209,74 @@ test('Codex reports refuse a colliding or unowned block and do not change it', (
   assert.equal(readFileSync(f.progress, 'utf8'), foreign)
 }))
 
+test('local reports preserve fenced examples and update only the visible owned block', () => fixture(f => {
+  assert.equal(f.install('--apply').status, 0)
+  assert.equal(f.report().status, 0)
+  const owned = readFileSync(f.progress, 'utf8')
+  const examples = `# Format examples\r\n\u0060\u0060\u0060markdown\r\n${owned}\u0060\u0060\u0060\r\n~~~markdown\r\n${owned}~~~\r\n`
+  writeFileSync(f.progress, examples)
+  const result = f.command(['--codex-report'], { title: 'Visible real task', state: 'working', steps: ['- [~] Visible step'] })
+  assert.equal(result.status, 0, result.stderr)
+  const first = readFileSync(f.progress, 'utf8')
+  assert.ok(first.startsWith(examples))
+  assert.match(f.command([]).stdout, /Visible real task/)
+  assert.equal(f.report('waiting', ['- [?] Visible decision']).status, 0)
+  assert.ok(readFileSync(f.progress, 'utf8').startsWith(examples))
+  assert.match(f.command([]).stdout, /Visible decision/)
+}))
+
+test('local reports refuse hidden appends without changing progress or session state', () => fixture(f => {
+  assert.equal(f.install('--apply').status, 0)
+  const record = join(f.root, 'sessions', createHash('sha256').update(`codex:${session}`).digest('hex') + '.json')
+  for (const ending of ['\u0060\u0060\u0060markdown\nexample\n', '~~~markdown\nexample\n', '<!-- unfinished note\n']) {
+    const before = '# Personal notes\r\n' + ending
+    writeFileSync(f.progress, before)
+    const result = f.report()
+    assert.notEqual(result.status, 0, ending)
+    assert.match(result.stderr, /BLOCK_NOT_VISIBLE/)
+    assert.equal(readFileSync(f.progress, 'utf8'), before)
+    assert.ok(!existsSync(record))
+  }
+  writeFileSync(f.progress, '')
+  assert.equal(f.report().status, 0)
+  const previous = readFileSync(record, 'utf8')
+  writeFileSync(f.progress, '\u0060\u0060\u0060\n')
+  assert.notEqual(f.event('Stop').status, 0)
+  assert.equal(readFileSync(record, 'utf8'), previous)
+  assert.equal(readFileSync(f.progress, 'utf8'), '\u0060\u0060\u0060\n')
+}))
+
+test('local reports refuse a closing marker beyond another task block', () => fixture(f => {
+  assert.equal(f.install('--apply').status, 0)
+  assert.equal(f.report().status, 0)
+  const owned = readFileSync(f.progress, 'utf8')
+  const end = owned.match(/<!-- \/auto session=[a-f0-9]{8} -->/)[0]
+  const other = '## Personal\n<!-- auto session=12345678 agent=dot state=waiting -->\n### Keep this task\n- [ ] Keep this step\n<!-- /auto session=12345678 -->\n'
+  const before = owned.replace(end, '') + other + end + '\n'
+  writeFileSync(f.progress, before)
+  const result = f.report('done', ['- [x] Finished'])
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /BLOCK_CONFLICT/)
+  assert.equal(readFileSync(f.progress, 'utf8'), before)
+}))
+
+test('local reports ignore a fenced closing marker while replacing their own complete block', () => fixture(f => {
+  assert.equal(f.install('--apply').status, 0)
+  assert.equal(f.report().status, 0)
+  const owned = readFileSync(f.progress, 'utf8')
+  const end = owned.match(/<!-- \/auto session=[a-f0-9]{8} -->/)[0]
+  const before = owned.replace(end, `\u0060\u0060\u0060markdown\n${end}\n\u0060\u0060\u0060\n- [ ] Old step\n${end}`)
+  const other = '\n## Personal\n### Preserve manual work\n- [ ] Keep this step\n'
+  writeFileSync(f.progress, before + other)
+  const result = f.report('waiting', ['- [?] New visible decision'])
+  assert.equal(result.status, 0, result.stderr)
+  assert.ok(readFileSync(f.progress, 'utf8').endsWith(other))
+  assert.doesNotMatch(readFileSync(f.progress, 'utf8'), /Old step/)
+  const board = f.command([])
+  assert.match(board.stdout, /New visible decision/)
+  assert.match(board.stdout, /Preserve manual work/)
+}))
+
 test('Codex uninstall removes only owned integration files and preserves progress and foreign hooks', () => fixture(f => {
   const other = { hooks: [{ type: 'command', command: 'echo other' }] }
   f.save(f.hooks, JSON.stringify({ hooks: { Stop: [other] } }))
