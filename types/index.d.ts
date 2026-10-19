@@ -145,6 +145,8 @@ export type ProgressMirror = {
   // Newest prompt receipt, on the same binary timestamp scale as turnOrder. Kept
   // separately so adding prompt events never reinterprets saved turn/end ranks.
   promptOrder?: number
+  // A person's completion rejects older (or undated) inbox turns without stopping new work.
+  confirmedAt?: number
   // Claude's steps the person has answered since they were asked: task id to the stepKey of
   // the words they answered. A step stops waiting on them while its words match, until Claude
   // asks again (a TaskUpdate that sets waiting to the person, or a turn that ends on a

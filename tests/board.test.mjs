@@ -634,6 +634,17 @@ process.stdout.write = function (text, ...rest) {
 
 const LINE_CHANGED = 'That line just changed; check the one chosen now and press again.'
 
+test('terminal Confirm done finishes every open step and refuses changes below the next step', () => {
+  const file = '## Synthetic\n### Finish the task\n- [ ] First\n- [~] Later\n- [>] Running\n- [!] Blocked\n- [-] Canceled\n- [x] Already done\n'
+  const done = watchPress(file, file, ['d'])
+  assert.match(done.out, /Confirmed “Finish the task” done\./)
+  assert.equal(done.after, file.replace(/\[(?: |~|>|!)\]/g, '[x]'))
+  const changed = file.replace('Later', 'Changed later step')
+  const refused = watchPress(file, changed, ['d'])
+  assert.match(refused.out, /That line just changed/)
+  assert.equal(refused.after, changed)
+})
+
 test('the terminal board archives with a only the block it drew: another session’s block under the same title is left alone and named as changed', { timeout: 30_000 }, () => {
   const updated = ago(20 * 60 * 60 * 1000)
   const initial = `# Progress\n\n## synthetic\n<!-- auto session=a1b2c3d4 agent=codex state=ended updated=${updated} -->\n### Synthetic same-title task\n- [ ] Keep this task\n<!-- /auto session=a1b2c3d4 -->\n`
@@ -798,6 +809,55 @@ test('live blocks of every agent refuse forged web archives without writes and t
     assert.equal(readFileSync(board.path, 'utf8'), file)
     assert.deepEqual(readdirSync(board.dir).sort(), files)
   } finally { await board.close() }
+})
+
+test('page Confirm done buttons act once with exact fingerprints and journal all new ticks in three languages', { timeout: 30_000 }, async () => {
+  const labels = { en: 'Confirm done', 'zh-TW': '確認完成', 'zh-CN': '确认完成' }
+  for (const lang of Object.keys(labels)) {
+    const board = await page('', {}, ['--lang', lang])
+    try {
+      const steps = '- [ ] Todo\n- [~] Doing\n- [?] Ask?\n- [>] Running\n- [!] Blocked\n- [-] Canceled\n- [x] Already done\n'
+      const file = `## Synthetic\n### Manual\n${steps}\n<!-- auto session=11223344 agent=claude state=ended updated=${ago(3600000)} -->\n### Ended Claude\n${steps}<!-- /auto session=11223344 -->\n<!-- auto session=22334455 agent=codex state=waiting updated=${ago(13 * 3600000)} -->\n### Stopped Codex\n${steps}<!-- /auto session=22334455 -->\n<!-- auto session=33445566 agent=codex state=working updated=${ago(60000)} -->\n### Live task\n- [ ] Leave open\n<!-- /auto session=33445566 -->\n`
+      writeFileSync(board.path, file)
+      const model = (await board.call('GET', '/api/board')).json().model
+      const rows = model.groups.flatMap(group => group.rows)
+      assert.equal(rows.filter(row => row.canConfirm).length, 3)
+      const html = (await board.call('GET', `/?t=${board.token}`)).body
+      const dom = await pageDom(html, model, { post: async request => {
+        const response = await board.call('POST', request.path, { body: request.body })
+        assert.equal(response.status, 200, response.body)
+        return { ok: true, json: async () => response.json() }
+      } })
+      const buttons = node => node.childNodes.flatMap(child => [...(child.tag === 'button' ? [child] : []), ...buttons(child)])
+      const confirms = buttons(dom.node('board')).filter(button => button.textContent === labels[lang])
+      assert.equal(confirms.length, 3)
+      confirms[rows.filter(row => row.canConfirm).findIndex(row => row.title === 'Manual')].click()
+      await dom.flush()
+      const live = rows.find(row => row.title === 'Live task')
+      assert.equal((await board.call('POST', '/api/act', { body: { key: live.key, type: 'done', fp: live.fp } })).status, 409)
+      for (const row of rows.filter(row => row.canConfirm && row.title !== 'Manual')) {
+        const response = await board.call('POST', '/api/act', { body: { key: row.key, type: 'done', fp: row.fp } })
+        assert.equal(response.status, 200, response.body)
+      }
+      const after = readFileSync(board.path, 'utf8')
+      assert.equal((after.match(/state=done updated=/g) ?? []).length, 2)
+      assert.equal((after.match(/- \[-\] Canceled/g) ?? []).length, 3)
+      assert.ok(after.includes('- [ ] Leave open'))
+      const journal = readdirSync(board.dir).find(name => name.includes('-journal-'))
+      const history = readFileSync(join(board.dir, journal), 'utf8')
+      assert.equal(history.split('\n').filter(line => line.startsWith('- ')).length, 15)
+      assert.ok(!history.includes('Canceled') && !history.includes('Already done'))
+      const repeat = await board.call('POST', '/api/act', { body: { key: rows.find(row => row.title === 'Manual').key, type: 'done', fp: rows.find(row => row.title === 'Manual').fp } })
+      assert.equal(repeat.status, 409)
+      assert.equal(readFileSync(join(board.dir, journal), 'utf8'), history)
+      writeFileSync(board.path, file)
+      const changed = file.replace('Doing', 'Changed later step')
+      writeFileSync(board.path, changed)
+      const row = rows.find(row => row.title === 'Manual')
+      assert.equal((await board.call('POST', '/api/act', { body: { key: row.key, type: 'done', fp: row.fp } })).status, 409)
+      assert.equal(readFileSync(board.path, 'utf8'), changed)
+    } finally { await board.close() }
+  }
 })
 
 test('the terminal and served boards show only the newest thirty inbox files', { timeout: 30_000 }, async () => {

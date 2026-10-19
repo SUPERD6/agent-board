@@ -6,6 +6,9 @@ import type { RenderSurface } from 'claude-code'
 import type { ProgressAnswer, ProgressMirror, ProgressPr, ProgressSnapshot } from '../types'
 import {
   addManualTask,
+  confirmMatches,
+  confirmTask,
+  confirmedTarget,
   extractAutoBlock,
   manualTaskCount,
   removeAutoBlock,
@@ -17,6 +20,7 @@ import {
   takeTask,
   upsertAutoBlock,
 } from './blocks'
+import type { ConfirmedTask, ConfirmRef } from './blocks'
 import { ciFinished, GH_FIELDS, prFromGh } from './github'
 import {
   appendJournal,
@@ -39,6 +43,12 @@ import {
   cleanTitle,
   clip,
   completedSince,
+  applyCompletionOverlay,
+  completionKey,
+  completionOverlay,
+  completionOfBlock,
+  completionPrefix,
+  isCompletionOverlay,
   dataBlock,
   emptyMirror,
   fallbackTitle,
@@ -52,7 +62,7 @@ import {
   withoutMarks,
 } from './mirror'
 import type { ListedTask } from './mirror'
-import { baseName, countSteps, doneKey, isHereProject, isTaskComplete, parseProgress } from './parse'
+import { baseName, countSteps, doneKey, isHereProject, isTaskComplete, parseProgress, STALE_MS } from './parse'
 import type { ProgressProject } from '../types'
 import { dashboardHtml } from './dashboard'
 import { peekInbox, redact } from './board'
@@ -94,7 +104,7 @@ import {
 } from './inbox'
 import type { AgentTurn } from './inbox'
 import { keepRecent, remindersOf } from './remind'
-import { agentName, answeredJson, answeredPath, buildView, parseAnswered, parseSeen, seenJson, seenPath, statusLine, withAnswered, withSeen } from './view'
+import { agentName, answeredJson, answeredPath, buildView, mirrorMatchesTask, parseAnswered, parseSeen, seenJson, seenPath, statusLine, withAnswered, withSeen } from './view'
 import type { StepRef, TaskRef, TaskRow, WaitingItem } from './view'
 import { acknowledgementKeys, emptyQuestions, isQuestionProof, isQuestionSnapshot, migratedAnswered, observeQuestions, parseQuestions, questionProofJson, questionProofOf, questionProofPath, questionsJson, questionsPath } from './questions'
 import type { QuestionProofs } from './questions'
@@ -937,9 +947,31 @@ const loadMine = async ($: EngineInterface, cwd: string): Promise<void> => {
   const sessionId = await $.session.id()
   const held = await read($, mine)
   if (held !== null && held.sessionId === sessionId) return
-  const stored = (await $.store.get(`mirror:${sessionId}`)) as Partial<ProgressMirror> | undefined
+  const key = `mirror:${sessionId}`
+  const raw = await $.store.get(key) as ProgressMirror | undefined
+  const stored = (await completedMirror($, key, raw)).mirror
   const fresh = emptyMirror(sessionId, await projectName($), await $.clock.now(), cwd)
   await update($, mine, () => (stored === undefined ? fresh : { ...fresh, ...stored, cwd: stored.cwd || cwd }))
+}
+
+const completedMirror = async ($: EngineInterface, key: string, raw: ProgressMirror | undefined): Promise<{ mirror: ProgressMirror | undefined; barrier: number }> => {
+  let mirror = raw
+  let barrier = 0
+  for (const name of (await $.store.keys()).filter(name => name.startsWith(completionPrefix(key)))) {
+    const overlay = await $.store.get(name)
+    if (!isCompletionOverlay(overlay, key)) continue
+    if (raw === undefined) {
+      barrier = Math.max(barrier, overlay.updated)
+      if (mirror === undefined || (mirror.confirmedAt ?? 0) <= overlay.updated) mirror = overlay.completed
+      continue
+    }
+    const projected = applyCompletionOverlay(raw, overlay)
+    if (projected !== raw) {
+      barrier = Math.max(barrier, overlay.updated)
+      if ((mirror?.confirmedAt ?? 0) <= overlay.updated) mirror = projected
+    }
+  }
+  return { mirror, barrier }
 }
 
 // Claude's own list, read when the mirror missed calls (installed mid-session, a reload).
@@ -1084,27 +1116,36 @@ const digestTurn = async ($: EngineInterface, prompt: string, answer: string): P
 // back, so what can be written without it is.
 // A turn older than one already folded in (a file taken again after a later turn of the same
 // session got through, its end included) changes nothing: its steps would stand over newer ones.
-const agentMirror = async ($: EngineInterface, id: string): Promise<ProgressMirror | undefined> => {
-  const raw = (await $.store.get(`agent:${id}`)) as ProgressMirror | undefined
+// Completion hashes always refer to the raw owner, before prompt projection.
+const agentProjection = async ($: EngineInterface, id: string, raw: ProgressMirror | undefined): Promise<{ mirror: ProgressMirror | undefined; barrier: number }> => {
+  const completion = await completedMirror($, `agent:${id}`, raw)
   const receipts = []
   for (const key of await $.store.keys()) {
     if (key.startsWith(`agentPrompt:${id}:`)) receipts.push(await $.store.get(key))
   }
-  return withAgentPrompts(raw, receipts, await $.clock.now())
+  return { mirror: withAgentPrompts(completion.mirror, receipts, await $.clock.now()), barrier: completion.barrier }
 }
 
-const takeAgentTurns = async ($: EngineInterface, turns: readonly AgentTurn[], isRetry = false, isLastTry = false): Promise<void> => {
+const agentMirror = async ($: EngineInterface, id: string): Promise<ProgressMirror | undefined> =>
+  (await agentProjection($, id, await $.store.get(`agent:${id}`) as ProgressMirror | undefined)).mirror
+
+const takeAgentTurns = async ($: EngineInterface, turns: readonly AgentTurn[], attempt = 0, isLastTry = false): Promise<void> => {
   const last = turns.at(-1)
   if (last === undefined) return
   const at = await $.clock.now()
-  const stored = await agentMirror($, last.id)
-  const seen = JSON.stringify(stored ?? null)
+  const owner = `agent:${last.id}`
+  const raw = await $.store.get(owner) as ProgressMirror | undefined
+  const completion = await agentProjection($, last.id, raw)
+  const stored = completion.mirror
+  const seen = JSON.stringify(raw ?? null)
+  const completedSeen = JSON.stringify(completion)
   const fresh = emptyMirror(last.id, last.project || (await wordsOf($)).uncategorized, at, last.cwd, last.agent)
   const firstPrompt = promptKey(stored?.firstPrompt || turns.find(one => one.prompt !== '')?.prompt || '')
   let mirror: ProgressMirror = { ...fresh, ...stored, firstPrompt, lastAnswer: answerKey(stored?.lastAnswer ?? ''), resume: last.session }
   const newest = normalizeTurnOrder(stored?.turnOrder) ?? -1
-  const barrier = Math.max(newest, normalizeTurnOrder(stored?.promptOrder) ?? -1)
-  const isNewer = (turn: AgentTurn): boolean => (turnOrder(turn) ?? barrier) >= barrier
+  const promptBarrier = normalizeTurnOrder(stored?.promptOrder) ?? -1
+  const barrier = Math.max(stored?.confirmedAt ?? 0, completion.barrier)
+  const isNewer = (turn: AgentTurn): boolean => (turnOrder(turn) ?? newest) >= newest && (promptBarrier < 0 || (turnOrder(turn) ?? -1) >= promptBarrier) && (barrier === 0 || (turnOrder(turn) ?? -1) > barrier * 2 + 1)
   const digested = turnsToDigest(turns)
   for (const [index, turn] of turns.entries()) {
     if (turn.event !== 'turn' || !isNewer(turn)) continue
@@ -1136,16 +1177,18 @@ const takeAgentTurns = async ($: EngineInterface, turns: readonly AgentTurn[], i
   const written = mirror
   let hasMoved = false
   await enqueue(async () => {
-    if (JSON.stringify((await agentMirror($, last.id)) ?? null) !== seen) {
+    const current = await $.store.get(owner) as ProgressMirror | undefined
+    if (JSON.stringify(current ?? null) !== seen || JSON.stringify(await agentProjection($, last.id, current)) !== completedSeen) {
       hasMoved = true
       return
     }
-    await $.store.set(`agent:${last.id}`, written)
+    await $.store.set(owner, written)
     const path = await progressPath($)
     const isKept = (check: string): boolean =>
       extractAutoBlock(check, written.sessionId) === extractAutoBlock(upsertAutoBlock(check, written, s), written.sessionId)
     await rewrite($, path, async before => {
-      if (JSON.stringify((await agentMirror($, last.id)) ?? null) !== JSON.stringify(written)) {
+      const current = await $.store.get(owner) as ProgressMirror | undefined
+      if (JSON.stringify(current ?? null) !== JSON.stringify(written) || JSON.stringify((await agentProjection($, last.id, current)).mirror ?? null) !== JSON.stringify(written)) {
         hasMoved = true
         return null
       }
@@ -1157,8 +1200,8 @@ const takeAgentTurns = async ($: EngineInterface, turns: readonly AgentTurn[], i
     await poll($)
   })
   if (hasMoved) {
-    if (isRetry) throw new Error('INBOX_CHANGED')
-    await takeAgentTurns($, turns, true, isLastTry)
+    if (attempt >= 2) throw new Error(NOT_KEPT)
+    await takeAgentTurns($, turns, attempt + 1, isLastTry)
   }
 }
 
@@ -1718,7 +1761,7 @@ const drainInbox = async ($: EngineInterface): Promise<void> => {
       if (group.length === 0) continue
       const isLastTry = group.some(one => one.attempt >= MAX_TRIES)
       try {
-        await takeAgentTurns($, group.flatMap(one => (one.turn === null || one.turn === undefined ? [] : [one.turn])), false, isLastTry)
+        await takeAgentTurns($, group.flatMap(one => (one.turn === null || one.turn === undefined ? [] : [one.turn])), 0, isLastTry)
         settled.push(...group)
       } catch (error) {
         const why = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, ' ').slice(0, 200)
@@ -1853,6 +1896,55 @@ const archiveOne = async ($: EngineInterface, ref: TaskRef): Promise<boolean> =>
   await poll($)
 
   return true
+}
+
+const confirmOne = async ($: EngineInterface, ref: ConfirmRef): Promise<(ConfirmedTask & { isMirrorSaved: boolean }) | null> => {
+  const path = await progressPath($)
+  const at = await $.clock.now()
+  const s = await wordsOf($)
+  const original = await readText($, path)
+  const candidate = confirmTask(original, ref, at, s)
+  if (candidate === null) return null
+  const selected = confirmedTarget(original, ref, s)
+  const mirrors = new Map<string, { stored: ProgressMirror | undefined; seen: string }>()
+  if (candidate.auto !== null) {
+    const keys = [`agent:${candidate.auto.session}`, ...(candidate.auto.agent === 'claude' ? [`mirror:${candidate.auto.resume ?? candidate.auto.session}`] : [])]
+    for (const key of keys) {
+      const stored = await $.store.get(key) as ProgressMirror | undefined
+      const effective = key.startsWith('agent:') ? (await agentProjection($, key.slice(6), stored)).mirror : (await completedMirror($, key, stored)).mirror
+      if (effective !== undefined && (effective.updated > candidate.auto.updated || selected === null || !mirrorMatchesTask(effective, ref.project, selected, s))) return null
+      mirrors.set(key, { stored, seen: JSON.stringify(stored ?? null) })
+    }
+  }
+  let confirmed: ConfirmedTask | null = null
+  await rewrite($, path, text => {
+    if (confirmed !== null && confirmMatches(text, confirmed.ref, s)) return text
+    const next = confirmTask(text, ref, at, s)
+    if (next === null) return null
+    confirmed = next
+    return next.text
+  })
+  const found = confirmed as ConfirmedTask | null
+  if (found === null || !confirmMatches(await readText($, path), found.ref, s)) return null
+  const block = confirmedTarget(found.text, found.ref, s)
+  let isMirrorSaved = true
+  try {
+    for (const [key, { stored, seen }] of mirrors) {
+      // Another session may have accepted fresh work while this file write was pending.
+      // Its newer mirror must never be marked complete by an older selected row.
+      if (JSON.stringify((await $.store.get(key)) ?? null) !== seen) { isMirrorSaved = false; continue }
+      const overlay = stored !== undefined && Array.isArray(stored.tasks) ? completionOverlay(key, stored, at) : block === null ? null : completionOfBlock(key, found.ref.project, block, ref.expected, at)
+      if (overlay !== null) {
+        const overlayKey = completionKey(overlay)
+        await $.store.set(overlayKey, overlay)
+        if (JSON.stringify((await $.store.get(overlayKey)) ?? null) !== JSON.stringify(overlay) || JSON.stringify((await $.store.get(key)) ?? null) !== seen) isMirrorSaved = false
+      } else isMirrorSaved = false
+    }
+  } catch {
+    isMirrorSaved = false
+  }
+  await poll($)
+  return { ...found, isMirrorSaved }
 }
 
 // Tells the person, once across every open session, of a question another session or agent
@@ -2503,6 +2595,16 @@ export const register: Register = (on, options) => {
           )
           .then(() => update($, expanded, open => (open === row.key ? '' : open)))
           .catch(() => undefined)
+      },
+      confirmRow: row => {
+        if (row.confirm == null) return
+        enqueue(() => confirmOne($, row.confirm!))
+          .then(async confirmed => {
+            if (confirmed !== null) await journal($, confirmed.entries)
+            await update($, answer, current => current?.text === s.journalFailed ? current : ({ question: row.title, text: confirmed === null ? s.boardLineChanged : confirmed.isMirrorSaved ? s.confirmedDone(row.title) : s.boardWriteFailed, isAsking: false }))
+            if (confirmed !== null) await update($, expanded, open => open === row.key ? '' : open)
+          })
+          .catch(() => update($, answer, () => ({ question: row.title, text: s.boardWriteFailed, isAsking: false })))
       },
       takeOver: row => {
         submitOwn($, takeOverPrompt(row, s)).catch(() => undefined)

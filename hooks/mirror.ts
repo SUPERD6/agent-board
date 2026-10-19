@@ -1,12 +1,70 @@
-import type { ProgressMirror, ProgressMirrorTask, ProgressSessionState } from '../types'
+import type { ProgressMirror, ProgressMirrorTask, ProgressSessionState, ProgressTask } from '../types'
 import { ZH_TW } from './i18n'
 import type { Strings } from './i18n'
 import { sha256 } from './sha256'
+import { normalizeTurnOrder } from './inbox'
 
 // Claude's own task list, mirrored from the calls it makes (TaskCreate, TaskUpdate,
 // TodoWrite). The list is the source of truth; the file is a view of it.
 
 type Status = ProgressMirrorTask['status']
+
+export const confirmMirror = (mirror: ProgressMirror, now: number): ProgressMirror => ({
+  ...mirror,
+  state: 'done',
+  updated: now,
+  confirmedAt: now,
+  autoAsk: null,
+  tasks: mirror.tasks.map(task => ({ ...task, status: 'completed', waiting: null, blocked: null, blockedBy: [] })),
+})
+
+export type CompletionOverlay = {
+  owner: string
+  source: string
+  sourceOrder?: number
+  sourceMissing?: true
+  updated: number
+  completed: ProgressMirror
+}
+
+export const completionPrefix = (owner: string): string => `completion:${sha256(owner)}:`
+export const completionOverlay = (owner: string, source: ProgressMirror, now: number): CompletionOverlay => ({
+  owner,
+  source: sha256(JSON.stringify(source)),
+  ...(normalizeTurnOrder(source.turnOrder) === undefined ? {} : { sourceOrder: normalizeTurnOrder(source.turnOrder) }),
+  updated: now,
+  completed: confirmMirror(source, now),
+})
+export const completionKey = (overlay: CompletionOverlay): string => `${completionPrefix(overlay.owner)}${overlay.source}:${overlay.updated}`
+
+// An externally written block can predate its first inbox delivery. Keep its exact
+// selected fingerprint and completed steps without creating a mutable owner record.
+export const completionOfBlock = (owner: string, project: string, task: ProgressTask, fingerprint: string, now: number): CompletionOverlay | null => {
+  const auto = task.auto
+  if (auto === null || !/^[a-f0-9]{64}$/.test(fingerprint) || owner !== `agent:${auto.session}` && !(auto.agent === 'claude' && owner === `mirror:${auto.resume ?? auto.session}`)) return null
+  const sessionId = owner.slice(owner.indexOf(':') + 1)
+  const tasks: ProgressMirrorTask[] = task.steps.filter(step => step.status !== 'cancelled').map((step, index) => ({
+    id: String(index + 1), subject: step.text, status: 'completed', activeForm: '', waiting: null, why: null, ask: null, options: [], command: null, link: null, blocked: null, blockedBy: [],
+  }))
+  const completed = confirmMirror({ ...emptyMirror(sessionId, project, auto.updated, auto.dir ?? '', auto.agent), title: task.title, isTitleFinal: true, source: owner.startsWith('agent:') ? 'turns' : 'tasks', tasks, ...(auto.resume === null ? {} : { resume: auto.resume }) }, now)
+  return { owner, source: fingerprint, sourceMissing: true, updated: now, completed }
+}
+
+export const isCompletionOverlay = (value: unknown, owner: string): value is CompletionOverlay => {
+  if (value === null || typeof value !== 'object') return false
+  const one = value as Partial<CompletionOverlay>
+  return one.owner === owner && typeof one.source === 'string' && /^[a-f0-9]{64}$/.test(one.source) && typeof one.updated === 'number' && Number.isFinite(one.updated) && one.updated > 0 && (one.sourceMissing === undefined || one.sourceMissing === true) && (one.sourceOrder === undefined || Number.isSafeInteger(one.sourceOrder) && one.sourceOrder >= 0) && one.completed?.state === 'done' && one.completed.confirmedAt === one.updated && typeof one.completed.sessionId === 'string' && (owner === `agent:${one.completed.sessionId}` || owner === `mirror:${one.completed.sessionId}`) && typeof one.completed.agent === 'string' && Array.isArray(one.completed.tasks) && one.completed.tasks.every(task => task !== null && typeof task === 'object' && task.status === 'completed')
+}
+
+// Completion never writes the owner's mutable record. Exact source snapshots and
+// provably older ordered events can be projected complete; fresh work keeps its record.
+export const applyCompletionOverlay = (source: ProgressMirror, overlay: CompletionOverlay): ProgressMirror => {
+  if (source.sessionId !== overlay.completed.sessionId || source.agent !== overlay.completed.agent) return source
+  const order = normalizeTurnOrder(source.turnOrder)
+  if (overlay.sourceMissing === true) return order !== undefined && order < overlay.updated * 2 ? overlay.completed : source
+  const older = order !== undefined && overlay.sourceOrder !== undefined && order < overlay.sourceOrder && source.updated <= overlay.updated
+  return sha256(JSON.stringify(source)) === overlay.source || older ? overlay.completed : source
+}
 
 export type TaskCreateInput = { subject: string; activeForm?: string | undefined; metadata?: object | undefined }
 
@@ -433,8 +491,8 @@ export const resumeNote = (mirror: ProgressMirror, s: Strings = ZH_TW): string |
 // Only the mod's own per-session records age out of the store; a setting the person made
 // (closing the pane by hand) stays until they change it.
 export const isStaleStoreKey = (key: string, value: unknown, now: number, maxAge: number): boolean => {
-  // Immutable prompt barriers outlive paused writers. Age alone cannot prove that
-  // an old mirror will never be written again, so agentPrompt: is not age-reaped.
+  // Prompt and completion fences outlive paused writers. Age alone cannot prove
+  // that an old mirror will never return; new ordered work supersedes them on read.
   if (!['mirror:', 'hinted:', 'done:', 'agent:'].some(prefix => key.startsWith(prefix))) return false
   const stamp = typeof value === 'number' ? value : ((value as { updated?: number } | undefined)?.updated ?? 0)
 

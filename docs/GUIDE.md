@@ -47,7 +47,7 @@ node ~/.agent-board/agent-board.mjs --html
 | Mode | Result |
 | --- | --- |
 | `--serve` | Interactive local web board; reusable background service |
-| `--watch` | Terminal board; arrows/Enter to select, `x` tick, `a` archive, `h` hide, `u` restore, `i` idle tasks, `c` copy, `o` HTML, `q` quit |
+| `--watch` | Terminal board; arrows/Enter to select, `x` tick, `d` confirm done, `a` archive, `h` hide, `u` restore, `i` idle tasks, `c` copy, `o` HTML, `q` quit |
 | `--chat` | Compact plain text; no page, link, browser or writes |
 | `--html` | Writes/opens a read-only page; no message delivery |
 
@@ -66,6 +66,10 @@ Claude's explicit ask events also renew the question when its words stay the sam
 The board keeps local identity history in `progress-questions.json` beside `progress.md`, separately from `progress-answered.json`. Keep both when moving the board. Older indexed hides migrate after a stable, complete report when their normalized words match one question in one scoped session. Duplicate or unmappable originals remain stored without hiding a future question. Migration markers prevent a lost identity write from reassigning an old hide. A corrupt or unwritable identity file is preserved and a new hide fails visibly. Chat and one-shot readers do not write migration files. This identity history does not implement the separate 3-/7-day unanswered-question policy.
 
 Keep the accompanying `progress-questions-retired-*.json` and `progress-questions-consumed-*.json` files in backups and moves too. These immutable records contain only a version, kind and opaque hash. They prevent stale file writes from reviving retired identities or reusing migrated hides. They are never removed by age or task archiving. Unreadable, incomplete or unwritable records disable hiding until storage recovers; extra visible questions are safer than transferring an old hide.
+
+**Confirm done** finishes every open step at once, preserving canceled steps. Use the pane or page button, or `d` on a selected terminal task. It is available for manual tasks and agent blocks that ended or stopped writing for more than 12 hours. Changed or live tasks are refused. Each new tick goes to the journal; blocks become `state=done` with the current timestamp and follow the usual archive wait. It sends nothing to an agent. `progress.html` stays read-only.
+
+Local lifecycle updates preserve completed steps. A fresh explicit task report can introduce new work.
 
 The pane, terminal and pages identify work by task and agent. Connection inventory and session ids stay out of the display; supported resume commands are copied only on request.
 

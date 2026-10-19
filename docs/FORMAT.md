@@ -214,6 +214,12 @@ A block in state `working` or `waiting` whose `updated` is more than 12 hours ol
 
 ### Archive
 
+**Confirm done** on the pane or interactive board changes every open mark (`[ ]`, `[~]`, `[?]`, `[>]`, `[!]`) to `[x]`, preserving `[-]` and existing `[x]`. It is available for hand-kept tasks and ended/stopped agent blocks, with the same more-than-12-hour stopped rule above. A block also receives `state=done` and the current `updated` time. Each newly completed step is journaled. Changed selections and live blocks are refused, no message is sent, and the normal archive timing below still applies. The standalone `progress.html` remains read-only.
+
+When a cached owner exists, its rendered title, steps, statuses, context and binding must match the selected block before confirmation. Newer cache clocks and ambiguous content changes are refused even if the cached owner is ended/done or its clock equals the selected block's clock.
+
+The optional pane saves completion in immutable records separate from the owner's mutable mirror. Reads apply completion to the exact source snapshot or a provably older ordered snapshot; changed equal-order and newer work are preserved. If no cached owner exists, the record binds the selected block fingerprint, owner and completed steps to the confirmation time. It rejects an old first inbox delivery; a changed owner with a source time at/after confirmation, or with no provable source time, is preserved. These records have no age-only expiry, so a delayed owner cannot outlive its completion fence. The common local reporter adopts an exact owned board completion into its session JSON at the next lifecycle event, under its existing board lock; a fresh explicit task report can introduce new work. These are synthetic-tested contracts, not native model acceptance. Progress files and SDK storage remain separate writes using the existing read/write/readback protocol; this is not an atomic cross-process transaction, and passive polling does not repair an intervening writer's raw file. Writers that bypass these readers and the common local reporter do not receive completion in a private cache.
+
 Old work moves out of `progress.md` into a monthly file in the same folder, so the file stays about what is open.
 
 | What | When it leaves |
