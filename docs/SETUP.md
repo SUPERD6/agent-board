@@ -49,6 +49,17 @@ stale default directories are left alone. Its status records configuration, not 
 Generated board commands preserve literal paths with spaces or shell metacharacters on
 Windows and POSIX. Updating them still preserves personal edits and unrelated files.
 
+The optional connector requires Node.js 18+ for its native worker; setup and
+removal fail closed without it. Ownership, disable intent and last setup status
+live in `~/.agent-board/legacy-connect.json`, shared across Claude data roots and
+protected by the independent installer's home-level lock. Reload older plugin
+sessions before migration: writers that ignore the lock are not coordinated.
+Automatic probes run after pane/polling startup and outside the mutation lock.
+Removal records disable intent before cleanup, fencing delayed automatic setup.
+Damaged authority or recovery records are retained and reported rather than reset.
+Status may initialize recognized legacy display metadata; it does not change host
+configuration or prove native execution.
+
 ## Native status adapters
 
 | Host | Installed adapter | Separate acceptance / remaining limit |

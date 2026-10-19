@@ -108,6 +108,8 @@ Open a new Claude Code session; `/progress` opens the pane. It mirrors Task tool
 | `/progress lang en`, `zh-TW`, `zh-CN`, `auto` | Pane language |
 | `/progress notify on`, `off` | Desktop notifications |
 
+The optional connector requires Node.js 18+ and reloads of older plugin sessions before migration. Its native worker shares the installer lock across data roots, keeps removal disabled durably, and preserves foreign edits. Background probes start after the pane and polling; missing Node or damaged setup records fail closed. `connect status` describes configuration, not native execution.
+
 The optional `scripts/setup.sh` / `scripts/setup.ps1` manages Claude-specific Task-tool/profile and marketplace settings. Preview its documented scope before changing a profile. These scripts are not required for independent setup. The older plugin inbox connector can retain conversation data and use Claude summaries; it is separate from metadata-only independent hooks. [Security](../SECURITY.md).
 
 ## How it keeps itself tidy

@@ -258,6 +258,7 @@ export const ZH_TW = {
   connectReadFailed: (name: string, path: string): string => `讀不到 ${path}，${name} 維持原樣。`,
   connectBoardReadFailed: (path: string): string => `讀不到 ${path}。`,
   connectFailed: (name: string, path: string): string => `${name} 的設定檔寫不進去：${path}`,
+  connectWorkerFailed: (reason: string): string => `代理設定未能完成（${reason}）。`,
   connectBoardFailed: (path: string): string => `看板指令檔寫不進去：${path}`,
   connectReporterFailed: (path: string): string => `回報腳本寫不進去：${path}`,
   setupStatusTitle: 'Agent Board 各 agent 的狀態（上次接上時檢查的）：',

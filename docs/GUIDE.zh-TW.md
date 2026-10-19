@@ -108,6 +108,8 @@ claude plugin install agent-board@agent-board
 | `/progress lang en`、`zh-TW`、`zh-CN`、`auto` | 側欄語言 |
 | `/progress notify on`、`off` | 桌面通知 |
 
+選用連接器需要 Node.js 18+；遷移前請重新載入較舊的 plugin 工作階段。原生 worker 跨資料目錄共用安裝鎖，持續記住移除停用意圖，並保留外部修改。側欄與輪詢先啟動，版本檢查在背景進行；缺少 Node 或設定記錄損壞時不修改設定。`connect status` 表示設定結果，不證明原生執行。
+
 選用的 `scripts/setup.sh`／`scripts/setup.ps1` 處理 Claude 專用 Task 工具／profile 與 marketplace 設定。修改 profile 前先檢查範圍；獨立安裝不需要這些腳本。舊 plugin inbox 連接器可保留對話資料並呼叫 Claude 整理，和只記活動 metadata 的獨立 hooks 不同。[安全說明](../SECURITY.md)。
 
 ## 它怎麼保持整齊

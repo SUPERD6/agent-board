@@ -220,6 +220,7 @@ export const EN: Strings = {
   connectReadFailed: (name: string, path: string): string => `Could not read ${path}; ${name} was left as it is.`,
   connectBoardReadFailed: (path: string): string => `Could not read ${path}.`,
   connectFailed: (name: string, path: string): string => `Could not write ${name}'s config: ${path}`,
+  connectWorkerFailed: (reason: string): string => `Agent setup could not finish (${reason}).`,
   connectBoardFailed: (path: string): string => `Could not write the board command: ${path}`,
   connectReporterFailed: (path: string): string => `Could not write the reporting script: ${path}`,
   setupStatusTitle: 'Agent Board, agent by agent (as of the last connect):',

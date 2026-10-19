@@ -31,8 +31,8 @@ export const boardClient = address => {
   return {
     send: body => call('send', body),
     expect: body => call('expect', body),
-    attach: async ({ agent, session, surface, turn, scope = 'turn', verify, deliver, onError = () => undefined }) => {
-      if (typeof verify !== 'function' || typeof deliver !== 'function' || !await verify()) throw new Error('HOST_NOT_CONNECTED')
+    attach: async ({ agent, session, surface, turn, scope = 'turn', verify, canReceive, deliver, onError = () => undefined }) => {
+      if (typeof verify !== 'function' || typeof deliver !== 'function' || canReceive !== undefined && typeof canReceive !== 'function' || !await verify()) throw new Error('HOST_NOT_CONNECTED')
       const registered = await call('register', { agent, session, surface, turn, scope })
       const credentials = { connection: registered.id, secret: registered.secret }
       let isClosed = false, isPolling = false, leaseUntil = registered.expires
@@ -67,10 +67,16 @@ export const boardClient = address => {
           let isOwned = false
           try { isOwned = await verify() } catch (error) { await close(); onError(error); return }
           if (!isOwned || isClosed) { await close(); return }
+          // Being busy does not revoke ownership or sending authority. Keep the
+          // lease alive while leaving inbound messages durably queued, unclaimed.
+          let receive = true
+          if (canReceive) {
+            try { receive = await canReceive() === true } catch (error) { receive = false; onError(error) }
+          }
           try {
             const started = Date.now()
             if (started >= leaseUntil) throw new Error('CONNECTION_EXPIRED')
-            const result = await call('poll', { ...credentials, turn })
+            const result = await call('poll', { ...credentials, turn, ...(canReceive ? { receive } : {}) })
             if (!Array.isArray(result.messages) || !Number.isFinite(result.leaseMs) || result.leaseMs <= 0) throw new Error('INVALID_POLL_RESPONSE')
             // A delayed response cannot extend the lease beyond the request's
             // start plus its duration. Failed polls never renew this deadline.
