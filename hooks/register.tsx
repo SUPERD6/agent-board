@@ -112,7 +112,6 @@ import { agentName, answeredJson, answeredPath, buildView, mirrorMatchesTask, pa
 import type { StepRef, TaskRef, TaskRow, WaitingItem } from './view'
 import { acknowledgementKeys, emptyQuestions, isQuestionProof, isQuestionSnapshot, migratedAnswered, observeQuestions, parseQuestions, questionProofJson, questionProofOf, questionProofPath, questionsJson, questionsPath } from './questions'
 import type { QuestionProofs } from './questions'
-import { sha256 } from './sha256'
 
 const PANE = 'agent-board'
 const POLL_MS = 2000

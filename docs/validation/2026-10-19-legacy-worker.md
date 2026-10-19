@@ -132,3 +132,27 @@ All assertions and timeouts were retained. This accepts the integration on its o
 base only; the final integrated plugin/Node acceptance remains required after the
 parent confirms the latest main merge and the branch is rebased. No full Node run
 was started on the superseded base, and #93/#94 are not claimed closed.
+
+Integrated checkpoint on exact main merge `91dfa50cdba79dda78260a5e109aa1000f6cfaff`:
+the rebased foundation is `fc6f929`, followed by adapter `38d8a18`. The split pure
+helper was checked against main's complete connector implementation; only the
+injected bundle parameter and setup metadata sanitizer differ. All prompt hook
+groups/templates remain present. Duplicate SHA-256 imports from the automatic
+merge were removed before acceptance.
+
+- Exact Claude Code 2.1.301 full plugin: 486 passed, zero failed, eight files,
+  151.57 seconds (`issue-93-integrated-plugin.log`).
+- Serialized Node 24.12.0 full batch: 222 total, 218 passed, two failed, two existing
+  platform skips, 337.417 seconds (`issue-93-integrated-node.log`). Both failures
+  were the prompt-template fixture's old source path: it searched the new wrapper
+  rather than `connect-pure.ts`. Its path alone was corrected; both tests then
+  passed in 0.267 seconds (`issue-93-integrated-prompt-path.log`). Assertions and
+  expected release bytes are unchanged. No full unchanged rerun is claimed.
+- Supported strict standalone TypeScript, strict plugin validation, pinned Bun
+  bundle check and whitespace check passed after the correction. Integrated
+  released-table verification remains pending at this bounded checkpoint; the
+  prior old-base released-table check is not substituted for it.
+
+Frozen integrated input hashes are retained in `issue-93-integrated-inputs.txt`.
+All heavy readers exited and their lease was released. No native model/host or
+permanent configuration was used, and final root review/publication is outstanding.
