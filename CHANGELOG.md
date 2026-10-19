@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.23.3 — 2026-10-19
+
+- Break the release fingerprint cycle introduced by the native worker bundle. The bundle keeps historical board ownership and current command/reporter hashes, while the full generated table records the current board externally. Test: `the bundled release table excludes its current board fingerprint and retains historical ownership`.
+
 - Bound native worker failures to a short code so Node cannot flood the process output with the full verified data URL before reporting the error. Cleanup still checks the exact stage owner. Test: `a large verified module reports a bounded failure without embedding its data URL`.
 
 - **Persist remove intent before recovering an older connect.** Save the native disable flag before any journal recovery. Account for an already-applied step's ownership, then remove the old scope instead of replaying its connect; a delayed automatic request stays disabled and a later explicit connect can re-enable. Foreign drift and changed-bundle journals remain fail-closed without losing disable intent. Tests: `remove intent survives interruption before recovering an older partial connect and retains its ownership` (also after), `a remove before pending recovery retains disable intent on drift without replaying connect` (also bundle).
