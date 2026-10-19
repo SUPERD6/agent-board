@@ -2,8 +2,29 @@
 // someone else) · blocked [!] · cancelled [-]
 export type ProgressStepStatus = 'done' | 'doing' | 'todo' | 'waiting' | 'running' | 'blocked' | 'cancelled'
 
+export type QuestionRecord = {
+  id: string
+  scope: string
+  words: string
+  occurrence: number
+  copies: number
+  isWaiting: boolean
+  isPresent: boolean
+  firstObserved: number
+  incarnation: string
+  producer?: string
+}
+
+export type QuestionLedger = {
+  version: 1
+  next: number
+  records: QuestionRecord[]
+  legacy: Record<string, string>
+}
+export type QuestionProofs = { retired: string[]; consumed: string[] }
+
 // `line` (0-based) and `raw` (the line as written) let a press tick exactly this line.
-export type ProgressStep = { text: string; status: ProgressStepStatus; depth: number; line: number; raw: string }
+export type ProgressStep = { text: string; status: ProgressStepStatus; depth: number; line: number; raw: string; questionToken?: string }
 
 // working: Claude is mid-turn · waiting: idle with open steps · done: every step done ·
 // ended: the session closed with open steps
@@ -77,6 +98,7 @@ export type ProgressMirrorTask = {
   link: string | null
   blocked: string | null
   blockedBy: string[]
+  questionRevision?: string
 }
 
 export type ProgressMirror = {
@@ -96,6 +118,8 @@ export type ProgressMirror = {
   firstPrompt: string
   state: ProgressSessionState
   tasks: ProgressMirrorTask[]
+  // Retained even after a task is deleted, so reusing its id cannot reuse an ask revision.
+  questionSequence?: string
   updated: number
   // Where the steps come from: Claude's Task list, or each turn summed up when the session
   // has none (`turns`). A Task call replaces the summed-up steps.
@@ -147,6 +171,7 @@ declare module 'claude-code' {
       opened: string[]
       doneSeen: Record<string, number>
       hiddenAsks: string[]
+      questionLedger: QuestionLedger
       firstSeen: Record<string, number>
       revising: string
       lang: string

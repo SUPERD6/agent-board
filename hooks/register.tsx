@@ -94,8 +94,11 @@ import {
 } from './inbox'
 import type { AgentTurn } from './inbox'
 import { keepRecent, remindersOf } from './remind'
-import { agentName, answeredJson, answeredPath, buildView, keptAnswered, parseAnswered, parseSeen, seenJson, seenPath, statusLine, withAnswered, withSeen } from './view'
+import { agentName, answeredJson, answeredPath, buildView, parseAnswered, parseSeen, seenJson, seenPath, statusLine, withAnswered, withSeen } from './view'
 import type { StepRef, TaskRef, TaskRow, WaitingItem } from './view'
+import { acknowledgementKeys, emptyQuestions, isQuestionProof, isQuestionSnapshot, migratedAnswered, observeQuestions, parseQuestions, questionProofJson, questionProofOf, questionProofPath, questionsJson, questionsPath } from './questions'
+import type { QuestionProofs } from './questions'
+import { sha256 } from './sha256'
 
 const PANE = 'agent-board'
 const POLL_MS = 2000
@@ -139,6 +142,7 @@ const doneSeen = atom({ plugin: 'agent-board', key: 'doneSeen' } as const, {} as
 // Questions the person marked answered (view.ts askKeys), read from progress-answered.json
 // beside progress.md, which every session on this machine and the board script share.
 const hiddenAsks = atom({ plugin: 'agent-board', key: 'hiddenAsks' } as const, [] as string[])
+const questionLedger = atom({ plugin: 'agent-board', key: 'questionLedger' } as const, emptyQuestions())
 const firstSeen = atom({ plugin: 'agent-board', key: 'firstSeen' } as const, {} as Record<string, number>)
 // The review whose reply box Needs changes opened.
 const revising = atom({ plugin: 'agent-board', key: 'revising' } as const, '')
@@ -301,19 +305,97 @@ const pollAnswered = async ($: EngineInterface, path: string): Promise<void> => 
 // it still holds still (`mtimeMs`, `size`), on disk as well as in this session's last look: a
 // file another session or the board changed meanwhile waits for its own turn.
 let isPrunePending = false
+let questionWrite = 0
+const pendingQuestionProofs = new Map<string, { path: string; kind: keyof QuestionProofs; hash: string }>()
+const questionProofsFor = async ($: EngineInterface, path: string): Promise<QuestionProofs | null> => {
+  try {
+    if ([...pendingQuestionProofs.values()].some(proof => proof.path === path)) return null
+    const proofs: QuestionProofs = { retired: [], consumed: [] }
+    const parent = path.replace(/[\\/][^\\/]*$/, '')
+    for (const entry of await $.fs.list(parent)) {
+      const proof = questionProofOf(path, entry.name)
+      if (proof === null) continue
+      const file = questionProofPath(path, proof.kind, proof.hash)
+      if (entry.kind !== 'file' || !isQuestionProof(await $.fs.read(file), proof.kind, proof.hash)) return null
+      proofs[proof.kind].push(proof.hash)
+    }
+    return proofs
+  } catch {
+    return null
+  }
+}
+
+const keepQuestionProof = async ($: EngineInterface, path: string, kind: keyof QuestionProofs, hash: string): Promise<void> => {
+  const file = questionProofPath(path, kind, hash)
+  pendingQuestionProofs.set(file, { path, kind, hash })
+  const text = questionProofJson(kind, hash)
+  if (await $.fs.exists(file)) {
+    if (!isQuestionProof(await $.fs.read(file), kind, hash)) throw new Error('QUESTION_PROOF_UNREADABLE')
+  } else {
+    await $.fs.write(file, text)
+  }
+  if (await $.fs.read(file) !== text) throw new Error('QUESTION_PROOF_NOT_KEPT')
+  pendingQuestionProofs.delete(file)
+}
 const pruneAnswered = async ($: EngineInterface, path: string, projects: readonly ProgressProject[], mtimeMs: number, size: number): Promise<void> => {
-  const list = await read($, hiddenAsks)
-  if (keptAnswered(list, projects).length === list.length) return
-  await enqueue(async () => {
-    const snap = await read($, snapshot)
-    if (snap.path !== path || snap.mtimeMs !== mtimeMs || snap.size !== size) return null
-    const disk = await $.fs.stat(path).catch(() => undefined)
-    if (disk === undefined || disk.mtimeMs !== mtimeMs || disk.size !== size) return null
-    return rewrite($, answeredPath(path), before => {
-      const now = parseAnswered(before)
-      return now === null ? AGAIN : answeredJson(keptAnswered(now, projects))
+  // The ledger retires identities; old acknowledgement bytes remain available for migration.
+  const disk = await $.fs.stat(path).catch(() => undefined)
+  if (disk?.mtimeMs !== mtimeMs || disk.size !== size) return
+  await pollQuestions($, path, projects, true)
+}
+
+const pollQuestions = async ($: EngineInterface, path: string, projects: readonly ProgressProject[], isSettled = false): Promise<boolean> => {
+  const file = questionsPath(path)
+  const at = await $.clock.now()
+  const mirror = await read($, mine)
+  const answered = await read($, hiddenAsks)
+  const incarnation = `${await $.session.id()}:${at}:${questionWrite++}`
+  try {
+    for (const proof of [...pendingQuestionProofs.values()]) {
+      if (proof.path === path) await keepQuestionProof($, path, proof.kind, proof.hash)
+    }
+    let proofs = await questionProofsFor($, path)
+    if (proofs === null) return false
+    const source = await readText($, path)
+    if (!isQuestionSnapshot(source) || JSON.stringify(parseProgress(source)) !== JSON.stringify(projects)) return false
+    let expected = ''
+    await rewrite($, file, async before => {
+      if (await readText($, path) !== source) return AGAIN
+      const current = parseQuestions(before, before.trim() === '' && !(await $.fs.exists(file)))
+      if (current === null) return AGAIN
+      let observed = observeQuestions(current, projects, mirror, answered, at, isSettled, incarnation, proofs ?? undefined).ledger
+      for (const old of current.records) {
+        if (old.isPresent && !observed.records.some(record => record.id === old.id && record.isPresent && record.isWaiting)) await keepQuestionProof($, path, 'retired', sha256(old.id))
+      }
+      proofs = await questionProofsFor($, path)
+      if (proofs === null) return AGAIN
+      observed = observeQuestions(current, projects, mirror, answered, at, isSettled, incarnation, proofs).ledger
+      expected = questionsJson(observed)
+      return questionsJson(observed) === questionsJson(current) ? null : questionsJson(observed)
     })
-  })
+    const kept = parseQuestions(await readText($, file), !(await $.fs.exists(file)))
+    if (kept === null || expected !== questionsJson(kept)) return false
+    await update($, questionLedger, () => kept)
+    if (isSettled) {
+      await rewrite($, answeredPath(path), async before => {
+        const stat = await $.fs.stat(answeredPath(path)).catch(() => undefined)
+        const current = parseAnswered(before, stat === undefined ? 0 : at - stat.mtimeMs)
+        if (current === null) return AGAIN
+        const latestProofs = await questionProofsFor($, path)
+        if (latestProofs === null) return AGAIN
+        const next = migratedAnswered(current, kept, latestProofs.consumed)
+        for (const key of current) {
+          if (next.includes(key) && Object.hasOwn(kept.legacy, key) && !latestProofs.consumed.includes(sha256(key))) await keepQuestionProof($, path, 'consumed', sha256(key))
+        }
+        return answeredJson(next) === answeredJson(current) ? null : answeredJson(next)
+      })
+      const current = parseAnswered(await readText($, answeredPath(path)))
+      if (current !== null) await update($, hiddenAsks, () => current)
+    }
+    return true
+  } catch {
+    return false
+  }
 }
 
 // Marks one question answered, or lists it again: only progress-answered.json changes, never a
@@ -322,15 +404,26 @@ const pruneAnswered = async ($: EngineInterface, path: string, projects: readonl
 const setAnswered = async ($: EngineInterface, item: WaitingItem, isHidden: boolean): Promise<boolean> => {
   if (item.hideKey === '') return false
   const snap = await read($, snapshot)
+  if (!(await pollQuestions($, snap.path || (await progressPath($)), snap.projects))) return false
+  const ledger = await read($, questionLedger)
+  const currentView = buildView(snap.projects, [], await read($, mine), await $.clock.now(), 0, {}, await wordsOf($), await read($, hiddenAsks), {}, ledger, await questionProofsFor($, snap.path || (await progressPath($))))
+  if (![...currentView.waiting, ...currentView.hidden].some(one => one.hideKey === item.hideKey && one.project === item.project && one.text === item.text && one.note === item.note)) return false
   const file = answeredPath(snap.path || (await progressPath($)))
   const list = await enqueue(async () => {
+    const fresh = parseProgress(await readText($, snap.path || (await progressPath($))))
+    if (!(await pollQuestions($, snap.path || (await progressPath($)), fresh))) return null
+    const latest = await read($, questionLedger)
+    const current = buildView(fresh, [], await read($, mine), await $.clock.now(), 0, {}, await wordsOf($), await read($, hiddenAsks), {}, latest, await questionProofsFor($, snap.path || (await progressPath($))))
+    if (![...current.waiting, ...current.hidden].some(one => one.hideKey === item.hideKey && one.project === item.project && one.text === item.text && one.note === item.note)) return null
     await rewrite(
       $,
       file,
       async before => {
         const stat = await $.fs.stat(file).catch(() => undefined)
         const now = parseAnswered(before, stat === undefined ? 0 : (await $.clock.now()) - stat.mtimeMs)
-        return now === null ? AGAIN : answeredJson(withAnswered(now, [item.hideKey], isHidden))
+        const proofs = await questionProofsFor($, snap.path || (await progressPath($)))
+        if (proofs === null || (isHidden && proofs.retired.includes(sha256(item.hideKey)))) return AGAIN
+        return now === null ? AGAIN : answeredJson(withAnswered(now, isHidden ? [item.hideKey] : acknowledgementKeys(observeQuestions(latest, fresh, await read($, mine), now, await $.clock.now(), true).ledger, item.hideKey), isHidden))
       },
       check => parseAnswered(check)?.includes(item.hideKey) === isHidden,
     )
@@ -438,6 +531,7 @@ const poll = async ($: EngineInterface): Promise<void> => {
     const isSame = previous.path === path && previous.mtimeMs === stat.mtimeMs && previous.size === stat.size
     if (isSame && previous.error === null && !previous.isMissing) {
       await pollSeen($, path, previous.projects, false, isPrunePending ? { mtimeMs: stat.mtimeMs, size: stat.size } : null)
+      await pollQuestions($, path, previous.projects)
       if (isPrunePending) {
         isPrunePending = false
         // Not waited on: poll also runs inside queued jobs, which the prune would queue behind.
@@ -456,6 +550,7 @@ const poll = async ($: EngineInterface): Promise<void> => {
         projects,
       }))
       await pollSeen($, path, projects, true)
+      await pollQuestions($, path, projects)
       await noteDone($, projects)
       isPrunePending = true
       await refreshStatus($)
@@ -504,7 +599,7 @@ const writeDashboard = async ($: EngineInterface, force = false): Promise<string
   const path = dashboardPath(snap.path || (await progressPath($)))
   if (!force && at - dashboardAt < 60 * 1000) return path
   const s = await wordsOf($)
-  const view = buildView(snap.projects, [], null, at, await read($, today), await read($, doneSeen), s, await read($, hiddenAsks), await read($, firstSeen))
+  const view = buildView(snap.projects, [], null, at, await read($, today), await read($, doneSeen), s, await read($, hiddenAsks), await read($, firstSeen), await read($, questionLedger), await questionProofsFor($, snap.path || (await progressPath($))))
   const pending = await pendingTurns($)
   const date = new Date(at)
   const html = dashboardHtml(view, s, snap.path, s.dashStamp(`${localDay(at)} ${pad2(date.getHours())}:${pad2(date.getMinutes())}`), pending)
@@ -564,6 +659,8 @@ const refreshStatus = async ($: EngineInterface): Promise<void> => {
           s,
           await read($, hiddenAsks),
           await read($, firstSeen),
+          await read($, questionLedger),
+          await questionProofsFor($, await progressPath($)),
         ),
         s,
       )
@@ -1785,6 +1882,8 @@ const remindNow = async ($: EngineInterface): Promise<void> => {
     s,
     await read($, hiddenAsks),
     await read($, firstSeen),
+    await read($, questionLedger),
+    await questionProofsFor($, await progressPath($)),
   )
   const stored = await $.store.get('told')
   const told = stored !== null && typeof stored === 'object' ? (stored as Record<string, number>) : {}
@@ -2350,7 +2449,7 @@ export const register: Register = (on, options) => {
     const at = (await read($, now)) || (await $.clock.now())
     const s = await wordsOf($)
     const palette = paletteFor(await read($, theme))
-    const view = buildView(snap.projects, await read($, here), await read($, mine), at, await read($, today), await read($, doneSeen), s, await read($, hiddenAsks), await read($, firstSeen))
+    const view = buildView(snap.projects, await read($, here), await read($, mine), at, await read($, today), await read($, doneSeen), s, await read($, hiddenAsks), await read($, firstSeen), await read($, questionLedger), await questionProofsFor($, snap.path || (await progressPath($))))
     const ui: PaneUi = {
       Box: table.Box,
       Text: table.Text,

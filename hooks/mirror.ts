@@ -1,6 +1,7 @@
 import type { ProgressMirror, ProgressMirrorTask, ProgressSessionState } from '../types'
 import { ZH_TW } from './i18n'
 import type { Strings } from './i18n'
+import { sha256 } from './sha256'
 
 // Claude's own task list, mirrored from the calls it makes (TaskCreate, TaskUpdate,
 // TodoWrite). The list is the source of truth; the file is a view of it.
@@ -159,13 +160,24 @@ const withMetadata = (task: ProgressMirrorTask, metadata: object | undefined): P
 
 const NO_ASK = { ask: null, options: [], command: null, link: null }
 
+// Explicit producer asks advance only this task. Heartbeats, list reloads and unrelated
+// metadata keep its revision; decimal strings do not wrap a numeric counter.
+export const renewQuestion = (task: ProgressMirrorTask, floor = '0'): ProgressMirrorTask => ({
+  ...task,
+  questionRevision: ([task.questionRevision ?? '0', floor].filter(value => /^\d+$/.test(value)).reduce((latest, value) => BigInt(value) > latest ? BigInt(value) : latest, 0n) + 1n).toString(),
+})
+
+export const questionToken = (task: ProgressMirrorTask): string =>
+  /^[1-9]\d*$/.test(task.questionRevision ?? '') ? `${sha256(task.id)}:${task.questionRevision}` : ''
+
 export const applyTaskCreate = (
   mirror: ProgressMirror,
   input: TaskCreateInput,
   id: string,
   now: number,
 ): ProgressMirror => {
-  const task = withMetadata(
+  const previous = mirror.tasks.find(one => one.id === id)
+  const given = withMetadata(
     {
       id,
       subject: input.subject,
@@ -176,9 +188,11 @@ export const applyTaskCreate = (
       ...NO_ASK,
       blocked: null,
       blockedBy: [],
+      ...(previous?.questionRevision === undefined ? {} : { questionRevision: previous.questionRevision }),
     },
     input.metadata,
   )
+  const task = given.waiting === 'you' ? renewQuestion(given, mirror.questionSequence) : given
   // Steps summed up from turns give way to the real list the moment Claude starts one.
   const kept = mirror.source === 'turns' ? [] : mirror.tasks
   const tasks = [...kept.filter(one => one.id !== id), task]
@@ -186,6 +200,7 @@ export const applyTaskCreate = (
   return {
     ...mirror,
     tasks,
+    ...(given.waiting === 'you' ? { questionSequence: task.questionRevision } : {}),
     source: 'tasks',
     autoAsk: mirror.source === 'turns' ? null : mirror.autoAsk,
     answered: mirror.source === 'turns' ? {} : withoutMarks(mirror, [id]),
@@ -214,12 +229,13 @@ export const applyTaskUpdate = (mirror: ProgressMirror, input: TaskUpdateInput, 
     // Finishing a step clears what it was waiting on.
     const done = next.status === 'completed' ? { ...next, waiting: null, why: null, ...NO_ASK, blocked: null } : next
 
-    return withMetadata(done, next.status === 'completed' ? undefined : input.metadata)
+    const updated = withMetadata(done, next.status === 'completed' ? undefined : input.metadata)
+    return next.status !== 'completed' && asksYou(input.metadata) ? renewQuestion(updated, mirror.questionSequence) : updated
   })
   // Claude asking the person again brings the step back, even in the words they answered.
   const isAskedAgain = input.status !== 'completed' && asksYou(input.metadata)
 
-  return { ...mirror, tasks, answered: isAskedAgain ? withoutMarks(mirror, [input.taskId]) : mirror.answered, updated: now }
+  return { ...mirror, tasks, ...(isAskedAgain ? { questionSequence: tasks.find(task => task.id === input.taskId)?.questionRevision ?? mirror.questionSequence } : {}), answered: isAskedAgain ? withoutMarks(mirror, [input.taskId]) : mirror.answered, updated: now }
 }
 
 export const applyTodoWrite = (mirror: ProgressMirror, todos: readonly TodoInput[], now: number): ProgressMirror => ({
@@ -227,17 +243,21 @@ export const applyTodoWrite = (mirror: ProgressMirror, todos: readonly TodoInput
   source: 'tasks',
   autoAsk: null,
   answered: {},
-  tasks: todos.map((todo, index) => ({
-    id: String(index + 1),
-    subject: todo.content,
-    status: todo.status,
-    activeForm: todo.activeForm,
-    waiting: null,
-    why: null,
-    ...NO_ASK,
-    blocked: null,
-    blockedBy: [],
-  })),
+  tasks: todos.map((todo, index) => {
+    const previous = mirror.tasks.find(one => one.id === String(index + 1))
+    return {
+      id: String(index + 1),
+      subject: todo.content,
+      status: todo.status,
+      activeForm: todo.activeForm,
+      waiting: null,
+      why: null,
+      ...NO_ASK,
+      blocked: null,
+      blockedBy: [],
+      ...(previous?.questionRevision === undefined ? {} : { questionRevision: previous.questionRevision }),
+    }
+  }),
   updated: now,
 })
 
@@ -268,6 +288,7 @@ const readList = (mirror: ProgressMirror, listed: readonly ListedTask[], now: nu
       link: item.status === 'completed' ? null : (known?.link ?? null),
       blocked: item.status === 'completed' ? null : (known?.blocked ?? null),
       blockedBy: [...item.blockedBy],
+      ...(known?.questionRevision === undefined ? {} : { questionRevision: known.questionRevision }),
     }
   }),
   updated: now,

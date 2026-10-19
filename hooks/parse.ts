@@ -18,6 +18,7 @@ const STEP = /^([ \t]*)[-*+]\s+\[([ xX~?>!-])\]\s+(.*)$/
 const FENCE = /^\s*(```|~~~)/
 export const AUTO_START = /^<!--\s*auto\s+(.*?)\s*-->\s*$/
 export const AUTO_END = /^<!--\s*\/auto\b.*?-->\s*$/
+export const QUESTION = /^<!--\s*question=([a-f0-9]{64}:[1-9]\d*)\s*-->\s*$/
 const DUE = /(?:截止|\bdue)[:：\s]*((?:\d{4}[-/])?\d{1,2}[-/]\d{1,2})/i
 
 const STATUS: Record<string, ProgressStepStatus> = {
@@ -121,7 +122,7 @@ export const readable = (lines: readonly string[]): Array<string | null> => {
       if (end < 0) return null
       isComment = false
       line = line.slice(end + 3)
-    } else if (AUTO_START.test(raw) || AUTO_END.test(raw)) {
+    } else if (AUTO_START.test(raw) || AUTO_END.test(raw) || QUESTION.test(raw)) {
       return raw
     }
     line = line.replace(/<!--.*?-->/g, '')
@@ -184,6 +185,12 @@ export const parseProgress = (markdown: string): ProgressProject[] => {
       return
     }
     if (line.trim() === '') return
+    const question = QUESTION.exec(line)?.[1]
+    if (question !== undefined) {
+      const previous = task?.steps.at(-1)
+      if (openSession !== null && task?.auto?.session === openSession && previous !== undefined) previous.questionToken = question
+      return
+    }
 
     const projectMatch = PROJECT.exec(line)
     // A session's block never holds a `##`, so one always starts a project, and ends a block

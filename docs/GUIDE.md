@@ -55,7 +55,15 @@ Chat shows questions first, then unprocessed progress reports with their source 
 
 ### The board's page
 
-Questions appear first. Expand a task for its steps. You can tick manual steps, archive, paste a valid progress block, copy a reply or resume command, mark a question read and show it again. Mark read only changes the local hidden list; it sends nothing. The question returns when its words change. There is no general task-editing form.
+Questions appear first. Expand a task for its steps. You can tick manual steps, archive, paste a valid progress block, copy a reply or resume command, mark a question read and show it again. Mark read only changes the local hidden list; it sends nothing. A substantively new question appears again. There is no general task-editing form.
+
+An unchanged hidden question stays hidden when unrelated steps move or its whitespace changes. Questions with identical words have separate identities. Changing their number is ambiguous, so they reappear rather than inherit another question's hide. A question observed as resolved or absent gets a fresh identity if asked again; a new ask with identical words and no observed transition cannot be inferred from a report alone. **Show again** remains available. Hiding never answers, approves, completes or delivers anything.
+
+Claude's explicit ask events also renew the question when its words stay the same, without needing an intermediate refresh. A small revision annotation travels with that task in the progress file; it stays out of the board display. Other hidden questions and unrelated task updates keep their identities. The observation limit above applies to reports that provide neither a transition nor a producer revision.
+
+The board keeps local identity history in `progress-questions.json` beside `progress.md`, separately from `progress-answered.json`. Keep both when moving the board. Older indexed hides migrate after a stable, complete report when their normalized words match one question in one scoped session. Duplicate or unmappable originals remain stored without hiding a future question. Migration markers prevent a lost identity write from reassigning an old hide. A corrupt or unwritable identity file is preserved and a new hide fails visibly. Chat and one-shot readers do not write migration files. This identity history does not implement the separate 3-/7-day unanswered-question policy.
+
+Keep the accompanying `progress-questions-retired-*.json` and `progress-questions-consumed-*.json` files in backups and moves too. These immutable records contain only a version, kind and opaque hash. They prevent stale file writes from reviving retired identities or reusing migrated hides. They are never removed by age or task archiving. Unreadable, incomplete or unwritable records disable hiding until storage recovers; extra visible questions are safer than transferring an old hide.
 
 The pane, terminal and pages identify work by task and agent. Connection inventory and session ids stay out of the display; supported resume commands are copied only on request.
 

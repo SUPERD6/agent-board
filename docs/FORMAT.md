@@ -46,7 +46,7 @@ A step that comes before any `###` goes into a task with no title. A step or tas
 **Ignored regions.**
 
 - Fenced code. A line that starts (after optional spaces) with three backticks or three tildes toggles the fence, whichever character opens or closes it. Everything between, and the fence lines themselves, are skipped. An unclosed fence hides the rest of the file.
-- HTML comments. `<!-- … -->` is removed from a line, and a comment that opens without closing hides lines until `-->`. The exception is the block markers, which are read first, as whole lines.
+- HTML comments. `<!-- … -->` is removed from a line, and a comment that opens without closing hides lines until `-->`. Block markers and the optional question revision annotation below are read first as whole lines.
 
 A tool that rewrites the file skips the same regions: a marker or heading inside a fence or a comment (a block pasted as an example) is never replaced, moved or archived.
 
@@ -73,6 +73,8 @@ A step line is: optional indentation, a bullet (`-`, `*` or `+`), whitespace, `[
 | `[-]` | Cancelled. Counts as neither done nor open. | cancelled |
 
 Any other character between the brackets makes the line a non-step.
+
+An agent may put `<!-- question=<64 lowercase hex characters>:<positive decimal revision> -->` on its own line after a step inside its auto block. This optional annotation supplies a producer identity and revision for the preceding step; it is metadata and never visible step text. The Claude writer hashes the stable task id, scopes it to the owning session/project, and increments that task's revision on an explicit ask, including the same words asked again. List reloads, heartbeats, whitespace and unrelated task changes preserve it. Keep the annotation with its step when reordering. Identical duplicate annotations are ambiguous and cannot hide multiple independent questions. Existing steps without annotations remain valid and use conservative observation matching. An annotation inside a fenced example, another comment or outside an auto block has no effect. It conveys no answer, approval or delivery acknowledgement.
 
 **Counting.** A task's progress is the number of `[x]` steps over the number of steps that are not `[-]`, nested steps included. A task is complete when it has at least one counted step and all of them are `[x]`. The current step is the first `[~]`, or if there is none, the first step that is neither `[x]` nor `[-]`. A task row's one-line status takes the first blocked step, else the first waiting, else the first running, else the current step.
 
@@ -416,4 +418,4 @@ If you cannot write markers, write a plain hand-kept task (a `###` with steps) u
 
 This is version 1. The file carries no version field. What the version means is the set of rules above, as read by the parser in `hooks/parse.ts` (and, for the notes of a task, by `hooks/view.ts` and `hooks/ask.ts`).
 
-A change to this page must keep every file that is valid today valid and read the same way. New attributes go on the start marker, where readers that do not know them ignore them. New marks, new states and new line shapes are not backward-compatible and need a new version. Contributors: see [CONTRIBUTING.md](../CONTRIBUTING.md).
+A change to this page must keep every file that is valid today valid and read the same way. New metadata goes on the start marker or in an optional standalone hidden comment, where readers that do not know it ignore it. New visible marks, states and line shapes are not backward-compatible and need a new version. Contributors: see [CONTRIBUTING.md](../CONTRIBUTING.md).

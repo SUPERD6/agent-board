@@ -15,6 +15,9 @@ import { answerAgentPrompt, blockId, isInboxFile, withAgentPrompts } from '../ho
 import { emptyMirror } from '../hooks/mirror'
 import { applyDigest } from '../hooks/digest'
 import { upsertAutoBlock } from '../hooks/blocks'
+
+import { migrationKey, questionProofPath } from '../hooks/questions'
+import { sha256 } from '../hooks/sha256'
 import { RELEASE_0_18_1, RELEASE_0_20_5 } from './fixtures/released'
 
 const FILE = '/home/me/.claude/progress.md'
@@ -109,6 +112,7 @@ type World = {
   node?: string | null
   // Paths a write to fails (a read-only file, a folder that is not there).
   unwritable?: Set<string>
+  ignoreQuestionWrites?: boolean
   failStore?: (operation: 'get' | 'set', key: string) => boolean
   ignoreStore?: (key: string) => boolean
   beforeStoreSet?: (key: string) => void
@@ -289,6 +293,7 @@ const engineBeneath = (on: On, world: World): MockClock => {
   on('fs.write', async ($, e) => {
     const path = posix(e.path)
     if (world.unwritable?.has(path)) return { deny: 'EACCES' }
+    if (world.ignoreQuestionWrites && path.endsWith('-questions.json')) return { value: undefined }
     const hold = world.hold
     if (hold !== undefined && path === FILE) {
       world.hold = undefined
@@ -1728,6 +1733,141 @@ test('a question this session asks is answered from the pane, with the buttons i
 })
 
 const ANSWERED = '/home/me/.claude/progress-answered.json'
+const QUESTIONS = '/home/me/.claude/progress-questions.json'
+const storedQuestion = (world: World, words: string): string =>
+  (JSON.parse(world.files.get(QUESTIONS) ?? '{"records":[]}').records as Array<{ id: string; words: string; isWaiting: boolean }>).find(row => row.words === words && row.isWaiting)?.id ?? ''
+
+test('explicit Claude ask events renew the hidden question immediately while another hidden question stays hidden', async ($, on) => {
+  const world: World = { files: new Map(), mtime: 1, hasTasks: true, store: { opened: ['waiting', 'hidden'] } }
+  engineBeneath(on, world)
+  await start($, 'Check the release')
+  await $.tool.call({ tool: 'TaskCreate', subject: 'Ship', description: '', metadata: { waiting: 'you', why: 'Ready to publish?' } })
+  await $.tool.call({ tool: 'TaskCreate', subject: 'Docs', description: '', metadata: { waiting: 'you', why: 'Keep this example?' } })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop', props: PROPS })
+  await ui.press({ key: 'mine::1::hide' })
+  await ui.press({ key: 'mine::2::hide' })
+  const first = storedQuestion(world, 'Ship — Ready to publish?')
+  const other = storedQuestion(world, 'Docs — Keep this example?')
+  await $.tool.call({ tool: 'TaskUpdate', taskId: '1', metadata: { waiting: 'you' } })
+  expect(await ui.find({ type: 'Button', key: 'mine::1::hide' })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'mine::2::unhide' })).toBeDefined()
+  expect(storedQuestion(world, 'Ship — Ready to publish?') === first).toBe(false)
+  expect(storedQuestion(world, 'Docs — Keep this example?')).toBe(other)
+  expect(world.files.has(questionProofPath(FILE, 'retired', sha256(first)))).toBe(true)
+  await ui.press({ key: 'mine::1::hide' })
+  await $.turn.complete({ answer: 'Ready to publish?', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  expect(await ui.find({ type: 'Button', key: 'mine::1::hide' })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'mine::2::unhide' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a pane hide survives step movement and whitespace and a corrupt identity file refuses a new hide', async ($, on) => {
+  const board = `## data-pipeline\n<!-- auto session=a1b2c3d4 state=waiting updated=2026-10-16T11:50:00Z -->\n### Ship\n- [x] Read\n- [?] Ship it, OK?\n<!-- /auto session=a1b2c3d4 -->\n`
+  const world: World = { files: new Map([[FILE, board]]), mtime: 1, hasTasks: true, store: { opened: ['waiting', 'hidden'] } }
+  const clock = engineBeneath(on, world)
+  await $.session.start({ cwd: '/work/persona_framework', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop', props: PROPS })
+  await ui.press({ key: 'data-pipeline::Ship::1::hide' })
+  const hidden = world.files.get(ANSWERED)
+  world.files.set(FILE, board.replace('- [x] Read\n- [?] Ship it, OK?', '- [?] Ship  it,\tOK?\n- [x] Read\n- [x] Inserted'))
+  world.mtime += 1
+  await clock.advance(2100)
+  expect(await ui.find({ type: 'Button', key: 'data-pipeline::Ship::0::hide' })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', key: 'data-pipeline::Ship::0::unhide' })).toBeDefined()
+  expect(world.files.get(ANSWERED)).toBe(hidden)
+  await ui.press({ key: 'data-pipeline::Ship::0::unhide' })
+  world.files.set(QUESTIONS, '{')
+  world.mtime += 1
+  await clock.advance(2100)
+  await ui.press({ key: 'data-pipeline::Ship::0::hide' })
+  expect(world.files.get(QUESTIONS)).toBe('{')
+  expect(JSON.parse(world.files.get(ANSWERED) ?? '{}')).toEqual({ answered: [] })
+  expect(await ui.find({ type: 'Text', text: ZH_TW.hideFailed })).toBeDefined()
+  world.files.set(QUESTIONS, '')
+  world.mtime += 1
+  await clock.advance(2100)
+  await ui.press({ key: 'data-pipeline::Ship::0::hide' })
+  expect(world.files.get(QUESTIONS)).toBe('')
+  expect(JSON.parse(world.files.get(ANSWERED) ?? '{}')).toEqual({ answered: [] })
+  await ui.unmount()
+})
+
+test('an incomplete report cannot commit legacy migration and a falsely successful identity write cannot hide an ephemeral question', async ($, on) => {
+  const complete = `## data-pipeline\n<!-- auto session=a1b2c3d4 state=waiting updated=2026-10-16T11:50:00Z -->\n### Ship\n- [x] Read\n- [?] Ship it, OK?\n<!-- /auto session=a1b2c3d4 -->\n`
+  const original = JSON.stringify({ answered: ['a1b2c3d4 2 Ship it, OK?'] })
+  const world: World = { files: new Map([[FILE, complete.replace('<!-- /auto session=a1b2c3d4 -->', '')], [ANSWERED, original]]), mtime: 1, hasTasks: true, store: { opened: ['waiting', 'hidden'] } }
+  const clock = engineBeneath(on, world)
+  await $.session.start({ cwd: '/work/persona_framework', surface: 'desktop', isInteractive: true })
+  await clock.advance(4200)
+  expect(world.files.get(QUESTIONS)).toBeUndefined()
+  expect(world.files.get(ANSWERED)).toBe(original)
+  world.files.set(FILE, complete)
+  world.mtime += 1
+  await clock.advance(4200)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop', props: PROPS })
+  expect(await ui.find({ type: 'Button', key: 'data-pipeline::Ship::1::unhide' })).toBeDefined()
+  await ui.press({ key: 'data-pipeline::Ship::1::unhide' })
+  world.files.delete(QUESTIONS)
+  world.ignoreQuestionWrites = true
+  world.mtime += 1
+  await clock.advance(2100)
+  await ui.press({ key: 'data-pipeline::Ship::1::hide' })
+  expect(world.files.get(QUESTIONS)).toBeUndefined()
+  expect(JSON.parse(world.files.get(ANSWERED) ?? '{}')).toEqual({ answered: [] })
+  expect(await ui.find({ type: 'Text', text: ZH_TW.hideFailed })).toBeDefined()
+  await ui.unmount()
+})
+
+test('retirement proofs reject stale active replay and proof storage failures keep renewed questions visible', async ($, on) => {
+  const board = `## data-pipeline\n<!-- auto session=a1b2c3d4 state=waiting updated=2026-10-16T11:50:00Z -->\n### Ship\n- [?] Ship it, OK?\n<!-- /auto session=a1b2c3d4 -->\n`
+  const world: World = { files: new Map([[FILE, board]]), mtime: 1, hasTasks: true, store: { opened: ['waiting', 'hidden'] } }
+  const clock = engineBeneath(on, world)
+  await $.session.start({ cwd: '/work/persona_framework', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop', props: PROPS })
+  const key = 'data-pipeline::Ship::0'
+  await ui.press({ key: `${key}::hide` })
+  const stale = world.files.get(QUESTIONS) ?? ''
+  const oldHide = world.files.get(ANSWERED) ?? ''
+  const id1 = storedQuestion(world, 'Ship it, OK?')
+  world.files.set(FILE, board.replace('- [?]', '- [x]'))
+  world.mtime += 1
+  await clock.advance(2100)
+  const firstProof = questionProofPath(FILE, 'retired', sha256(id1))
+  expect(world.files.has(firstProof)).toBe(true)
+  world.files.set(FILE, board)
+  world.mtime += 1
+  await clock.advance(2100)
+  await ui.press({ key: `${key}::hide` })
+  world.files.set(QUESTIONS, stale)
+  world.files.set(ANSWERED, oldHide)
+  world.mtime += 1
+  await clock.advance(2100)
+  expect(await ui.find({ type: 'Button', key: `${key}::hide` })).toBeDefined()
+  const currentId = storedQuestion(world, 'Ship it, OK?')
+  await ui.press({ key: `${key}::hide` })
+  world.unwritable = new Set([questionProofPath(FILE, 'retired', sha256(currentId))])
+  world.files.set(FILE, board.replace('- [?]', '- [x]'))
+  world.mtime += 1
+  await clock.advance(2100)
+  world.files.set(FILE, board)
+  world.mtime += 1
+  await clock.advance(2100)
+  expect(await ui.find({ type: 'Button', key: `${key}::hide` })).toBeDefined()
+  await ui.press({ key: `${key}::hide` })
+  expect(await ui.find({ type: 'Text', text: ZH_TW.hideFailed })).toBeDefined()
+  world.unwritable.clear()
+  await clock.advance(2100)
+  world.files.set(firstProof, '{')
+  world.mtime += 1
+  await clock.advance(2100)
+  await ui.press({ key: `${key}::hide` })
+  expect(world.files.get(firstProof)).toBe('{')
+  expect(await ui.find({ type: 'Text', text: ZH_TW.hideFailed })).toBeDefined()
+  world.unlistable = new Set(['/home/me/.claude'])
+  await clock.advance(2100)
+  expect(await ui.find({ type: 'Button', key: `${key}::hide` })).toBeDefined()
+  await ui.unmount()
+})
 
 test('a question marked answered leaves Waiting on you until that session asks something new, and nothing is sent', async ($, on) => {
   const board = `# Project progress
@@ -1755,7 +1895,7 @@ test('a question marked answered leaves Waiting on you until that session asks s
   await ui.press({ key: `${key}::hide` })
   expect(submitted).toEqual([])
   expect(world.files.get(FILE)).toBe(board)
-  expect(JSON.parse(world.files.get(ANSWERED) ?? '{}')).toEqual({ answered: ['a1b2c3d4 1 Keep the old table, OK?'] })
+  expect(JSON.parse(world.files.get(ANSWERED) ?? '{}')).toEqual({ answered: [storedQuestion(world, 'Keep the old table, OK?')] })
   expect(await ui.find({ type: 'Button', key: `${key}::hide` })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: '● 0' })).toBeDefined()
   expect(await ui.find({ type: 'Button', key: 'section::hidden', text: '▸ 已回覆、隱藏的 1 項' })).toBeDefined()
@@ -1815,12 +1955,12 @@ test('a review this session asks offers Needs changes beside Looks good, and mar
   await ui.press({ key: 'mine::1::hide' })
   expect(submitted).toEqual(['關於「畫圖 2」：圖 2 的座標軸要從 0 開始'])
   expect(world.files.get(FILE)).toBe(block)
-  expect(JSON.parse(world.files.get(ANSWERED) ?? '{}')).toEqual({ answered: ['2be48af2 1 畫圖 2 — 圖 2 改好了，這樣可以嗎？'] })
+  expect(JSON.parse(world.files.get(ANSWERED) ?? '{}')).toEqual({ answered: [storedQuestion(world, '畫圖 2 — 圖 2 改好了，這樣可以嗎？')] })
   expect(await ui.find({ type: 'Button', key: 'mine::1::沒問題' })).toBeUndefined()
   await ui.unmount()
 })
 
-test('the answered list survives a session start, a read that fails and a press that cannot read it, and forgets a question that left the file', async ($, on) => {
+test('historical hide marks survive failed reads while an observed renewed question gets a fresh identity', async ($, on) => {
   const board = `# Project progress
 
 ## data-pipeline
@@ -1863,7 +2003,9 @@ test('the answered list survives a session start, a read that fails and a press 
   world.mtime += 1
   await clock.advance(2100)
   await clock.advance(2100)
-  expect(JSON.parse(world.files.get(ANSWERED) ?? '{}')).toEqual({ answered: [other] })
+  const migrated = JSON.parse(world.files.get(ANSWERED) ?? '{}').answered as string[]
+  expect(migrated.slice(0, 2)).toEqual([other, key])
+  expect(migrated.includes(migrationKey(key))).toBe(true)
   // Asked again in the same words later, it is a new question.
   world.files.set(FILE, board)
   world.mtime += 1
@@ -1872,7 +2014,7 @@ test('the answered list survives a session start, a read that fails and a press 
   await ui.unmount()
 })
 
-test('a mark for a question that is gone is cleared without holding up a write that looks at the file from inside the queue', async ($, on) => {
+test('an unmappable historical hide is retained without holding up a later queued hide', async ($, on) => {
   const board = `# Project progress
 
 ## data-pipeline
@@ -1898,11 +2040,11 @@ test('a mark for a question that is gone is cleared without holding up a write t
   // The mark went, and a press queued after it still lands.
   const item = "data-pipeline::Backfill last year's events::0"
   await ui.press({ key: `${item}::hide` })
-  expect(JSON.parse(world.files.get(ANSWERED) ?? '{}')).toEqual({ answered: ['a1b2c3d4 1 Keep the old table, OK?'] })
+  expect(JSON.parse(world.files.get(ANSWERED) ?? '{}')).toEqual({ answered: ['a1b2c3d4 1 Drop the old table, OK?', migrationKey('a1b2c3d4 1 Drop the old table, OK?'), storedQuestion(world, 'Keep the old table, OK?')] })
   await ui.unmount()
 })
 
-test('a clean-up of the answered list waits while progress.md moves, so a question hidden meanwhile stays hidden', async ($, on) => {
+test('question migration keeps concurrent historical marks while progress writes are queued', async ($, on) => {
   const board = `# Project progress
 
 ## data-pipeline
@@ -1944,7 +2086,12 @@ test('a clean-up of the answered list waits while progress.md moves, so a questi
   await $.command.run(TIDY)
   for (let look = 0; look < 3; look += 1) await clock.advance(2100)
   await $.command.run(TIDY)
-  expect(JSON.parse(world.files.get(ANSWERED) ?? '{}')).toEqual({ answered: [asked] })
+  const migrated = JSON.parse(world.files.get(ANSWERED) ?? '{}').answered as string[]
+  expect(migrated.slice(0, 2)).toEqual([stale, asked])
+  expect(world.files.has(questionProofPath(FILE, 'consumed', sha256(stale)))).toBe(true)
+  expect(world.files.has(questionProofPath(FILE, 'consumed', sha256(asked)))).toBe(true)
+  expect(migrated.includes(storedQuestion(world, 'Drop it — OK?'))).toBe(true)
+  expect(JSON.parse(world.files.get(QUESTIONS) ?? '{}').legacy[asked]).toBe(storedQuestion(world, 'Drop it — OK?'))
 })
 
 test('an answered list that is not JSON is left alone while it may be half-written, and written anew once it has stayed broken', async ($, on) => {
@@ -1978,7 +2125,7 @@ test('an answered list that is not JSON is left alone while it may be half-writt
   await clock.advance(6000)
   expect(await ui.find({ type: 'Button', key: `${item}::hide` })).toBeDefined()
   await ui.press({ key: `${item}::hide` })
-  expect(JSON.parse(world.files.get(ANSWERED) ?? '{}')).toEqual({ answered: [key] })
+  expect(JSON.parse(world.files.get(ANSWERED) ?? '{}')).toEqual({ answered: [storedQuestion(world, 'Keep the old table, OK?')] })
   await ui.unmount()
 })
 

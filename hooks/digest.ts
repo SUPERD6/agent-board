@@ -1,5 +1,5 @@
 import type { ProgressMirror, ProgressMirrorTask } from '../types'
-import { cleanContext, cleanTitle, clip, waitsOnYou, withoutMarks } from './mirror'
+import { cleanContext, cleanTitle, clip, renewQuestion, waitsOnYou, withoutMarks } from './mirror'
 
 // A session's progress without its Task list: what each turn finished, the next step and
 // the question it ended on, as the model sums the turn up. Also the question a turn ends
@@ -137,17 +137,28 @@ export const applyDigest = (mirror: ProgressMirror, given: Digest, now: number):
 // person: the step in progress (else the next one) waits on them, with the question as its
 // note, until they answer.
 export const markAsked = (mirror: ProgressMirror, question: string): ProgressMirror => {
-  if (mirror.tasks.some(one => waitsOnYou(mirror, one))) return mirror
+  const waiting = mirror.tasks.filter(one => waitsOnYou(mirror, one))
+  if (waiting.length > 0) {
+    const words = question.replace(/\s+/g, ' ').trim()
+    const matching = waiting.filter(one => [one.subject, one.why ?? ''].some(text => text.replace(/\s+/g, ' ').trim() === words))
+    if (matching.length !== 1) return mirror
+    const target = matching[0]
+    if (target === undefined) return mirror
+    const renewed = renewQuestion(target, mirror.questionSequence)
+    return { ...mirror, questionSequence: renewed.questionRevision, tasks: mirror.tasks.map(one => one.id === target.id ? renewed : one) }
+  }
   const target = mirror.tasks.find(one => one.status === 'in_progress') ?? mirror.tasks.find(one => one.status === 'pending')
   if (target === undefined) return mirror
+  const renewed = renewQuestion({ ...target, waiting: 'you', why: question, ask: null, options: [], command: null, link: null }, mirror.questionSequence)
 
   return {
     ...mirror,
     autoAsk: target.id,
+    questionSequence: renewed.questionRevision,
     // Asked again, even in the words the person answered: it waits on them again, as a plain
     // question. The kind, options, command and link Claude set were for the one they answered.
     answered: withoutMarks(mirror, [target.id]),
-    tasks: mirror.tasks.map(one => (one.id === target.id ? { ...one, waiting: 'you', why: question, ask: null, options: [], command: null, link: null } : one)),
+    tasks: mirror.tasks.map(one => (one.id === target.id ? renewed : one)),
   }
 }
 
