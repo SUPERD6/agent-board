@@ -47,3 +47,11 @@ The complete 11-file CI Node suite ran with concurrency 1: **257 passed, zero fa
 After both readers exited, merged the actual published release ancestor `5610ce6a051ba772ee074ac50bdcbc22c6195f6f`. Runtime and fixture SHA-256 inputs remained identical to the frozen suite snapshot. Pinned Bun `build-released.ts --check` passed with the published `agent-board--v0.23.3` tag visible (`issue-102-integrated-released.log`); the ownership table was not edited by hand.
 
 Exact-head CI and root trust/final review remain required. These are local synthetic checks, not an actual native hook-approval claim. No real host API, model, permanent settings or trust mutation was used.
+
+## Combined question-aging validation
+
+Merged actual main `04950f102ca8a4d644badbefb0c0bdea5e2dcf79` at frozen runtime `364db438be5d790537b74c4411a3fe57c2438f37`. Preserved both features' Unreleased/guide text and the separate 0.23.3 entries, regenerated the bundle with pinned Bun, and retained the release fingerprint loader and type/API guards. Supported standalone strict TypeScript, strict plugin validation, both Bun generated-file checks and whitespace validation passed before the readers.
+
+The fresh exact Claude 2.1.301 plugin suite finished **515 passed, one failed**, 516 tests across ten files in 225.59 seconds (`issue-102-combined-plugin.log`). The existing `an invalid input does not prevent a later valid session from reaching the board` fixture reported 6878.24 ms and only `Error: timed out after 5000 ms`, without a failed assertion or stack. Its test body is unchanged by the merge and passed in 911.92 ms on the earlier runtime, which does not establish this timeout's cause. No timeout increase, assertion change, runtime fix or full plugin retry followed this result.
+
+The fresh complete 11-file Node suite ran with concurrency 1: **259 passed, zero failed, two platform skips**, 261 total in 318.549 seconds (`issue-102-combined-node.log`). All runtime and test SHA-256 inputs match the snapshot captured before the readers. The combined plugin timeout remains unresolved; prior green counts are not reused as combined acceptance. Root trust/final review and exact-head CI remain required.
