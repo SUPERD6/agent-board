@@ -854,6 +854,17 @@ export const isSetupState = (value: unknown): value is StoredSetupState => {
   )
 }
 
+// Only recognized display metadata crosses the migration boundary. In particular,
+// unknown fields and old free-form prose are not copied into worker argv plans.
+export const setupSeed = (value: unknown): SetupState | undefined => {
+  if (!isSetupState(value)) return undefined
+  return {
+    agents: value.agents.map(({ agent, label, hook, board }) => ({ agent, label, hook, board })),
+    problems: value.problems.filter(isSetupProblem).filter((one): one is { key: string } & SetupNotice => !('text' in one)).map(({ key, message, args }) => ({ key, message, args: [...args] }) as SetupProblem),
+    node: typeof value.node === 'string' ? value.node : null,
+  }
+}
+
 // Each agent's way to show the board, so the person sees every agent's work from whichever
 // one they are in. Gemini CLI and OpenCode paste a command's output into the prompt before
 // the model reads it; the others read skills, whose model runs the command. Most of them

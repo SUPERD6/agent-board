@@ -61,3 +61,74 @@ modules. Strict plugin validation, the pinned Bun bundle/released checks and
 whitespace validation passed. The worker bundle is 389,327 characters; staging
 tests exercise the actual generated bundle and reject recursive bundle growth.
 These are synthetic native-process fixtures, not native AI host/model acceptance.
+
+## Adapter checkpoint (uncommitted, 2026-10-19)
+
+The current working tree routes connect/remove/automatic setup/language/status/
+notification acknowledgement through the verified native transport. The worker
+owns the canonical record after migration; an authority marker makes a missing
+record fail closed instead of importing stale SDK flags again. Pane and inbox
+timers start before background probes. These changes are not yet ready to merge.
+
+The second adapter plugin run passed 364 of 403 tests and failed 39
+(`issue-93-adapter-second.log`). The five new adapter cases passed: startup/polling
+while a version probe is blocked, removal fencing that delayed automatic setup,
+and fail-closed Node/bootstrap/worker/corrupt-state boundaries. Existing tests
+still assume synchronous startup, SDK ownership/status writes, shell-based
+removal, or configuration without Node. There are also unresolved language
+precedence and first-cutover status compatibility cases. These need focused
+resolution before another frozen full run; the failures must not be treated as
+only fixture timing changes.
+
+Strict plugin validation and standalone TypeScript checks passed for this working
+tree. The pinned Bun bundle was regenerated (390,786 characters), and whitespace
+validation passed. The native Node batch above belongs to foundation commit
+`6fcbb1390105353e90a3c4d06494e932586419c4`; it has not been rerun against this
+adapter integration. All readers exited before this checkpoint, and no native
+AI host, model, permanent host configuration, or GitHub mutation was used.
+
+Slice 6 fixes explicit-connect language precedence while leaving delayed automatic
+SDK language seeds unable to revert the native choice. Initial status migrates
+recognized structured display metadata only; unknown fields and free-form legacy
+prose do not enter worker argv plans. Four focused native tests passed: initial
+disabled authority, language/notification revisions, initial status migration,
+and explicit language versus delayed automatic seeds. Strict standalone TypeScript,
+strict plugin validation (`issue-93-adapter-slice6-validate.log`), pinned Bun
+bundle/released checks, and whitespace checks passed. The bundle is now 391,298
+characters. Existing setup fixtures await a worker acknowledgement explicitly and
+assert canonical ownership/native deletion/Node fail-closed behavior. Their fresh
+full plugin run and the final full Node batch remain pending; the prior 364/39
+result is still the latest full plugin evidence. The shared heavy-reader lease
+was held by #66 and then reserved for #98, so this checkpoint starts no competing
+batch. Runtime and fixtures are frozen for the next acceptance run; no commit is
+claimed ready yet.
+
+Slice 7 full exact-Claude-2.1.301 evidence is retained separately:
+
+- `issue-93-adapter-slice7-plugin.log`: 329 passed, 74 failed, 403 total,
+  150.27 seconds. All failures were classified: 44 duplicate `ui.notify` fixture
+  registrations, and 30 calls to unsupported test Engine `session.id()`.
+- Root approved only those two causal fixture corrections. Notification capture
+  now uses the existing `outside` handler; the acknowledgement barrier follows
+  with supported `command.run(connect status)`. No assertions, timeouts or runtime
+  behavior changed. Strict validation passed; SHA-256 inputs and red classification
+  are retained in `issue-93-adapter-slice7-inputs.txt`.
+- `issue-93-adapter-slice7-corrected-plugin.log`: 402 passed, one failed, 403 total,
+  109.89 seconds. The sole failure was a deterministic fixture wait: the Node-16
+  case awaited setup failure completion without registering `outside`, where its
+  notification completion signal lives. That one case now registers the existing
+  handler. Its fresh full rerun is pending; no unchanged retry or timeout increase
+  was used. Both completed readers released their heavy-reader lease immediately.
+
+The final Node batch remains unrun because plugin acceptance is not yet green.
+Production/runtime hashes stayed fixed throughout both readers. The fixture-only
+last correction is uncommitted and must not be described as a passing full suite.
+
+The authorized final full plugin run after that one-line Node-16 handler fix passed
+403/403 tests across five files with exact offline Claude Code 2.1.301 in 155.66
+seconds (`issue-93-adapter-slice7-final-plugin.log`). Its fixture SHA-256 is
+`8640388a8435423e532a85c14d707f8638d70934db26d42d8e8cc63ce12198de`.
+All assertions and timeouts were retained. This accepts the integration on its old
+base only; the final integrated plugin/Node acceptance remains required after the
+parent confirms the latest main merge and the branch is rebased. No full Node run
+was started on the superseded base, and #93/#94 are not claimed closed.

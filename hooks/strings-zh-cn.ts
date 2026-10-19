@@ -219,6 +219,7 @@ export const ZH_CN: Strings = {
   connectReadFailed: (name: string, path: string): string => `读不到 ${path}，${name} 维持原样。`,
   connectBoardReadFailed: (path: string): string => `读不到 ${path}。`,
   connectFailed: (name: string, path: string): string => `${name} 的配置文件写不进去：${path}`,
+  connectWorkerFailed: (reason: string): string => `代理设置未能完成（${reason}）。`,
   connectBoardFailed: (path: string): string => `看板命令文件写不进去：${path}`,
   connectReporterFailed: (path: string): string => `汇报脚本写不进去：${path}`,
   setupStatusTitle: 'Agent Board 各 agent 的状态（上次接上时检查的）：',

@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -107,6 +107,32 @@ test('a delayed automatic request cannot undo remove and explicit connect re-ena
   assert.equal(f.run(f.request('connect')).state.disabled, false)
 }))
 
+test('the first disabled automatic seed becomes durable and a missing migrated authority fails closed', () => fixture(async f => {
+  const initial = f.run(f.request('auto', { seed: { disabled: true } }))
+  assert.equal(initial.result, null)
+  assert.equal(JSON.parse(readFileSync(f.control)).disabled, true)
+  assert.equal(f.run(f.request('auto', { seed: { disabled: false } })).state.disabled, true)
+  const original = readFileSync(f.config, 'utf8')
+  unlinkSync(f.control)
+  const missing = f.command(f.request('auto', { seed: { disabled: false } }))
+  assert.notEqual(missing.status, 0)
+  assert.ok((missing.stderr + missing.stdout).includes('MISSING_CONNECT_STATE'))
+  assert.equal(readFileSync(f.config, 'utf8'), original)
+  assert.equal(existsSync(f.control), false)
+}))
+
+test('language and notification metadata use native revisions without changing disable authority', () => fixture(async f => {
+  const first = f.run(f.request('auto', { seed: { disabled: true, boardLang: 'en' } }))
+  const chosen = f.run(f.request('language', { boardLang: 'zh-TW' }))
+  assert.equal(chosen.state.boardLang, 'zh-TW')
+  assert.equal(chosen.state.disabled, true)
+  f.run(f.request('ack', { acknowledgement: { revision: first.state.revision, keys: ['old'] } }))
+  const status = f.run(f.request('status'))
+  assert.equal(status.state.revision, chosen.state.revision)
+  assert.equal(status.state.boardLang, 'zh-TW')
+  assert.deepEqual(status.state.notified, [])
+}))
+
 test('native connect preserves edited generated files and rejects drift without staging host bodies', () => fixture(async f => {
   f.run(f.request('connect'))
   const board = join(f.home, 'data-a', 'agent-board.mjs')
@@ -200,6 +226,25 @@ test('a killed remove keeps its disable intent and a delayed auto finishes recov
   } finally {
     if (held.process.exitCode === null && held.process.signalCode === null) { held.process.kill(); await held.exited }
   }
+}))
+
+test('initial native status migrates only recognized display metadata and ignores later SDK seeds', () => fixture(async f => {
+  const setup = { agents: [{ agent: 'codex', label: 'Codex', hook: 'configured', board: 'ready', unknown: 'ignored' }], problems: [{ key: 'node:missing', message: 'setupNodeMissing', args: [18], unknown: 'ignored' }, { key: 'unknown', message: 'notAStringKey', args: [] }, { key: 'old', text: 'old unstructured prose' }], node: null, unknown: 'ignored' }
+  const before = readFileSync(f.config, 'utf8')
+  const initial = f.run(f.request('status', { seed: { setup } }))
+  assert.deepEqual(initial.state.setup, { agents: [{ agent: 'codex', label: 'Codex', hook: 'configured', board: 'ready' }], problems: [{ key: 'node:missing', message: 'setupNodeMissing', args: [18] }], node: null })
+  assert.equal(readFileSync(f.config, 'utf8'), before)
+  assert.deepEqual(f.run(f.request('status', { seed: { setup: { agents: [], problems: [], node: process.version } } })).state.setup, initial.state.setup)
+}))
+
+test('native language preference at an explicit connect wins and delayed automatic seeds cannot revert it', () => fixture(async f => {
+  f.run(f.request('connect', { seed: { boardLang: 'en' } }))
+  const changed = f.run(f.request('connect', { boardLang: 'zh-TW' }))
+  assert.equal(changed.state.boardLang, 'zh-TW')
+  const delayed = f.run(f.request('auto', { seed: { boardLang: 'en' } }))
+  assert.equal(delayed.state.boardLang, 'zh-TW')
+  assert.ok(readFileSync(join(f.home, 'data-a', 'agent-board.mjs'), 'utf8').startsWith('globalThis.AGENT_BOARD = '))
+  assert.ok(readFileSync(join(f.home, 'data-a', 'agent-board.mjs'), 'utf8').split('\n')[0].includes('zh-TW'))
 }))
 
 test('concurrent native connect and remove serialize their ownership and disable state', () => fixture(async f => {

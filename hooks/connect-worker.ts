@@ -53,7 +53,7 @@ export const workerRequest = (value: unknown): string | null => {
   if (value === null || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !['mode', 'home', 'progress', 'lang', 'node', 'openclawVersion', 'boardLang', 'dirs', 'seed', 'acknowledgement'].includes(key))) return null
   const seed = (value as { seed?: unknown }).seed
   if (seed !== undefined) {
-    if (seed === null || typeof seed !== 'object' || Array.isArray(seed) || Object.keys(seed).some(key => !['owned', 'disabled', 'notified'].includes(key))) return null
+    if (seed === null || typeof seed !== 'object' || Array.isArray(seed) || Object.keys(seed).some(key => !['owned', 'disabled', 'notified', 'boardLang', 'setup'].includes(key))) return null
     const owned = (seed as { owned?: unknown }).owned
     if (owned !== undefined && (owned === null || typeof owned !== 'object' || Array.isArray(owned) || Object.values(owned).some(hash => typeof hash !== 'string' || !/^[a-f0-9]{64}$/.test(hash)))) return null
   }

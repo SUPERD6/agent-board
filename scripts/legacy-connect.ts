@@ -1,4 +1,3 @@
-import { existsSync } from 'node:fs'
 import { reporterPs1, reporterSh, agentHooks, boardLangOf, boardScriptFor, COLLISION, DELETE, generatedFile, hasOurHook, isNodeSupported, isReleased, isReleasedBoard, NODE_MIN, OPENCLAW_MIN, openclawSavedBy, openclawTooOld, setupAgents, setupLines, setupProblemText, worseHook } from '../hooks/connect-pure'
 import type { AgentSetup, HookState, SetupNotice, SetupProblem, SetupState } from '../hooks/connect-pure'
 import { langOf, STRINGS } from '../hooks/strings'
@@ -6,7 +5,7 @@ import type { ConnectTransaction, LegacyConnectRequest } from './connect-transac
 
 const skillFolder = (file: string): string | null => /[\\/]SKILL\.md$/.test(file) ? file.replace(/[\\/][^\\/]*$/, '') : null
 
-export const connectLegacy = (transaction: ConnectTransaction, request: LegacyConnectRequest, bundle: string): { text: string; lines: string[]; done: string[]; problems: SetupProblem[] } => {
+export const connectLegacy = (transaction: ConnectTransaction, request: LegacyConnectRequest, bundle: string, isWin: boolean): { text: string; lines: string[]; done: string[]; problems: SetupProblem[] } => {
   const mode = request.mode
   const remove = mode === 'remove'
   const isAuto = mode === 'auto'
@@ -15,7 +14,7 @@ export const connectLegacy = (transaction: ConnectTransaction, request: LegacyCo
   const readMaybe = (file: string): string | null => transaction.maybe(file)
   const path = request.progress
   const home = request.home
-  const isWin = process.platform === 'win32'
+  const existsSync = (file: string): boolean => transaction.exists(file)
   const sep = isWin ? '\\' : '/'
   const codexHome = request.dirs?.codex ?? [home, '.codex'].join(sep)
   const grokHome = request.dirs?.grok ?? [home, '.grok'].join(sep)
