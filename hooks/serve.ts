@@ -1,5 +1,5 @@
 import type { AskKind } from './ask'
-import { answersOf, boardItems, fingerprint } from './board'
+import { answersOf, boardItems, fingerprint, remainingInbox } from './board'
 import type { BoardItem, PendingTurn } from './board'
 import { htmlLang, vars } from './dashboard'
 import { RELAY, ZH_TW } from './i18n'
@@ -158,6 +158,7 @@ export type ServeRow = {
 
 // A question marked answered, listed so it can be shown again.
 export type ServeHidden = { key: string; project: string; agent: string; task: string; text: string }
+export type ServeRetained = { project: string; agent: string; task: string; text: string; note: string; context: string; when: string }
 
 export type ServeTurn = { key: string; project: string; agent: string; text: string; isQuestion: boolean; info: string }
 
@@ -165,6 +166,8 @@ export type ServeModel = {
   counts: { waiting: number; active: number; due: number; today: number }
   asks: ServeAsk[]
   hidden: ServeHidden[]
+  reminder: ServeRetained[]
+  older: ServeRetained[]
   idle: ServeRow[]
   groups: Array<{ project: string; rows: ServeRow[] }>
   turns: ServeTurn[]
@@ -221,7 +224,7 @@ export const serveModel = (view: View, pending: readonly PendingTurn[], s: Strin
         command: ask.command,
         link: ask.link,
         canTick: ask.step !== null,
-        canHide: ask.hideKey !== '',
+        canHide: ask.hideKey !== '' && ask.canHide !== false,
         send,
         session: connection?.session ?? ask.target?.session ?? '',
         fp: fingerprint(item, items),
@@ -286,16 +289,18 @@ export const serveModel = (view: View, pending: readonly PendingTurn[], s: Strin
       agent: turn.agent,
       text: turn.text,
       isQuestion: turn.isQuestion,
-      // A turn still in the inbox is from a session that has not closed (its end drops it).
+      // Connection closure does not answer an unresolved inbox question.
       info: turn.isQuestion ? infoOf(SENDERS.has(turn.agent) ? 'open' : 'none', turn.agent, '', '', s) : '',
     })
   }
 
   return {
-    counts: { ...view.overview, waiting: view.overview.waiting + pending.filter(turn => turn.isQuestion).length },
+    counts: { ...view.overview, waiting: view.overview.waiting + remainingInbox(view, pending).filter(turn => turn.isQuestion).length },
     asks,
     idle,
     hidden: view.hidden.map(item => ({ key: `hidden:${item.hideKey}`, project: item.project, agent: item.agent, task: item.task, text: item.text })),
+    reminder: (view.reminder ?? []).map(({ project, agent, task, text, note, context, when }) => ({ project, agent, task, text, note, context, when })),
+    older: (view.older ?? []).map(({ project, agent, task, text, note, context, when }) => ({ project, agent, task, text, note, context, when })),
     groups: [...groups].map(([project, rows]) => ({ project, rows })),
     turns,
     recent: view.recent.map(item => ({ project: item.project, title: item.title, when: item.when })),
@@ -353,7 +358,7 @@ const actionOf = (items: readonly BoardItem[], request: ServeRequest, s: Strings
     return ref === null ? { type: 'refuse', note: s.boardTickGone } : { type: 'tick', ref }
   }
   // Marked answered sends nothing: only the hidden list is written.
-  if (request.type === 'hide') return item.type === 'ask' && item.ask.hideKey !== '' ? { type: 'hide', key: item.ask.hideKey, text: item.ask.text } : { type: 'refuse', note: '' }
+  if (request.type === 'hide') return item.type === 'ask' && item.ask.hideKey !== '' && item.ask.canHide !== false ? { type: 'hide', key: item.ask.hideKey, text: item.ask.text } : { type: 'refuse', note: '' }
   if (request.type === 'archive') {
     if (item.type === 'row' && item.row.archive !== null) return { type: 'archive', ref: item.row.archive, title: item.row.title }
     const isLive = item.type === 'row' && (item.row.auto === 'working' || item.row.auto === 'waiting') || item.type === 'ask' && item.ask.where !== 'manual'
@@ -464,6 +469,10 @@ const PAGE_WORDS = [
   'countDue',
   'countToday',
   'sectionWaiting',
+  'sectionQuestionReminders',
+  'sectionOlderQuestions',
+  'questionAgingHint',
+  'questionReviewOnly',
   'nothingForYou',
   'empty',
   'boardInbox',
@@ -820,6 +829,18 @@ const PAGE_SCRIPT = String.raw`
     add(board, el('h2', 'n-waiting', '● ' + w('sectionWaiting')));
     if (model.asks.length === 0) add(board, el('div', 'n-today', w('nothingForYou')));
     model.asks.forEach(function (ask) { board.appendChild(askCard(ask)); });
+    [['reminder', 'sectionQuestionReminders'], ['older', 'sectionOlderQuestions']].forEach(function (pair) {
+      var questions = model[pair[0]] || [];
+      if (!questions.length) return;
+      var retained = el('details', 'card');
+      retained.open = opened[pair[0] + ':'] === true;
+      retained.addEventListener('toggle', function () { opened[pair[0] + ':'] = retained.open; });
+      add(retained, add(el('summary'), el('span', 'quiet', w(pair[1]) + ' (' + questions.length + ')')), el('p', 'quiet', w('questionAgingHint')), el('p', 'quiet', w('questionReviewOnly')));
+      questions.forEach(function (one) {
+        add(retained, add(el('div'), el('div', 'where', [one.project, one.agent, one.task, one.when].filter(Boolean).join(' · ')), el('div', 'q', one.text), el('div', '', one.note), el('div', 'quiet', one.context)));
+      });
+      board.appendChild(retained);
+    });
     if (model.hidden.length) {
       var shelf = el('details', 'card');
       shelf.open = opened['hidden:'] === true;

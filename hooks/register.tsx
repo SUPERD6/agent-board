@@ -63,7 +63,6 @@ import {
   noticesOf,
   resumeNote,
   stateOf,
-  withoutMarks,
 } from './mirror'
 import type { ListedTask } from './mirror'
 import { baseName, countSteps, doneKey, isHereProject, isTaskComplete, parseProgress, STALE_MS } from './parse'
@@ -110,8 +109,8 @@ import type { AgentTurn } from './inbox'
 import { keepRecent, remindersOf } from './remind'
 import { agentName, answeredJson, answeredPath, buildView, mirrorMatchesTask, parseAnswered, parseSeen, seenJson, seenPath, statusLine, withAnswered, withSeen } from './view'
 import type { StepRef, TaskRef, TaskRow, WaitingItem } from './view'
-import { acknowledgementKeys, emptyQuestions, isQuestionProof, isQuestionSnapshot, migratedAnswered, observeQuestions, parseQuestions, questionProofJson, questionProofOf, questionProofPath, questionsJson, questionsPath } from './questions'
-import type { QuestionProofs } from './questions'
+import { acknowledgementKeys, archiveQuestionsKept, captureHashOf, captureJson, capturePath, emptyQuestions, parseCapture, withCaptures, isQuestionProof, isQuestionSnapshot, migratedAnswered, observeQuestions, parseQuestions, questionProofJson, questionProofOf, questionProofPath, questionsJson, questionsPath } from './questions'
+import type { QuestionCapture, QuestionProofs, QuestionRecord } from './questions'
 
 const PANE = 'agent-board'
 const POLL_MS = 2000
@@ -301,6 +300,27 @@ const pollAnswered = async ($: EngineInterface, path: string): Promise<void> => 
 let isPrunePending = false
 let questionWrite = 0
 const pendingQuestionProofs = new Map<string, { path: string; kind: keyof QuestionProofs; hash: string }>()
+const questionCapturesFor = async ($: EngineInterface, path: string): Promise<QuestionCapture[] | null> => {
+  try {
+    const captures: QuestionCapture[] = []
+    for (const entry of await $.fs.list(path.replace(/[\\/][^\\/]*$/, ''))) {
+      const hash = captureHashOf(path, entry.name)
+      if (hash === null) continue
+      const capture = entry.kind === 'file' ? parseCapture(await $.fs.read(capturePath(path, hash)), hash) : null
+      if (capture === null) return null
+      captures.push(capture)
+    }
+    return captures
+  } catch {
+    return null
+  }
+}
+const keepQuestionCapture = async ($: EngineInterface, path: string, record: QuestionRecord, disposition: QuestionCapture['disposition']): Promise<void> => {
+  const text = captureJson(record, disposition)
+  const file = capturePath(path, sha256(text))
+  if (!(await $.fs.exists(file))) await $.fs.write(file, text)
+  if (await $.fs.read(file) !== text) throw new Error('QUESTION_RETENTION_FAILED')
+}
 const questionProofsFor = async ($: EngineInterface, path: string): Promise<QuestionProofs | null> => {
   try {
     if ([...pendingQuestionProofs.values()].some(proof => proof.path === path)) return null
@@ -338,11 +358,12 @@ const pruneAnswered = async ($: EngineInterface, path: string, projects: readonl
   await pollQuestions($, path, projects, true)
 }
 
-const pollQuestions = async ($: EngineInterface, path: string, projects: readonly ProgressProject[], isSettled = false): Promise<boolean> => {
+const pollQuestions = async ($: EngineInterface, path: string, projects: readonly ProgressProject[], isSettled = false, captured: readonly PendingTurn[] = []): Promise<boolean> => {
   const file = questionsPath(path)
   const at = await $.clock.now()
   const mirror = await read($, mine)
   const answered = await read($, hiddenAsks)
+  const pending = [...(await pendingTurns($)), ...captured]
   const incarnation = `${await $.session.id()}:${at}:${questionWrite++}`
   try {
     for (const proof of [...pendingQuestionProofs.values()]) {
@@ -355,20 +376,29 @@ const pollQuestions = async ($: EngineInterface, path: string, projects: readonl
     let expected = ''
     await rewrite($, file, async before => {
       if (await readText($, path) !== source) return AGAIN
-      const current = parseQuestions(before, before.trim() === '' && !(await $.fs.exists(file)))
-      if (current === null) return AGAIN
-      let observed = observeQuestions(current, projects, mirror, answered, at, isSettled, incarnation, proofs ?? undefined).ledger
+      const parsed = parseQuestions(before, before.trim() === '' && !(await $.fs.exists(file)))
+      const captures = await questionCapturesFor($, path)
+      if (parsed === null || captures === null) return AGAIN
+      const current = withCaptures(parsed, captures)
+      let observed = observeQuestions(current, projects, mirror, answered, at, isSettled, incarnation, proofs ?? undefined, pending).ledger
+      for (const record of observed.records) {
+        if (record.source === undefined) continue
+        if (record.isUnresolved && !captures.some(capture => captureJson(capture.record, capture.disposition) === captureJson(record, 'unresolved'))) await keepQuestionCapture($, path, record, 'unresolved')
+        if (record.isUnresolved === false && current.records.some(old => old.id === record.id && old.isUnresolved === true)) await keepQuestionCapture($, path, record, 'resolved')
+      }
       for (const old of current.records) {
         if (old.isPresent && !observed.records.some(record => record.id === old.id && record.isPresent && record.isWaiting)) await keepQuestionProof($, path, 'retired', sha256(old.id))
       }
       proofs = await questionProofsFor($, path)
       if (proofs === null) return AGAIN
-      observed = observeQuestions(current, projects, mirror, answered, at, isSettled, incarnation, proofs).ledger
+      observed = observeQuestions(current, projects, mirror, answered, at, isSettled, incarnation, proofs, pending).ledger
       expected = questionsJson(observed)
-      return questionsJson(observed) === questionsJson(current) ? null : questionsJson(observed)
+      return questionsJson(observed) === questionsJson(parsed) ? null : questionsJson(observed)
     })
-    const kept = parseQuestions(await readText($, file), !(await $.fs.exists(file)))
-    if (kept === null || expected !== questionsJson(kept)) return false
+    const parsed = parseQuestions(await readText($, file), !(await $.fs.exists(file)))
+    const captures = await questionCapturesFor($, path)
+    const kept = parsed === null || captures === null ? null : withCaptures(parsed, captures)
+    if (parsed === null || kept === null || expected !== questionsJson(parsed)) return false
     await update($, questionLedger, () => kept)
     if (isSettled) {
       await rewrite($, answeredPath(path), async before => {
@@ -400,15 +430,15 @@ const setAnswered = async ($: EngineInterface, item: WaitingItem, isHidden: bool
   const snap = await read($, snapshot)
   if (!(await pollQuestions($, snap.path || (await progressPath($)), snap.projects))) return false
   const ledger = await read($, questionLedger)
-  const currentView = buildView(snap.projects, [], await read($, mine), await $.clock.now(), 0, {}, await wordsOf($), await read($, hiddenAsks), {}, ledger, await questionProofsFor($, snap.path || (await progressPath($))))
-  if (![...currentView.waiting, ...currentView.hidden].some(one => one.hideKey === item.hideKey && one.project === item.project && one.text === item.text && one.note === item.note)) return false
+  const currentView = buildView(snap.projects, [], await read($, mine), await $.clock.now(), 0, {}, await wordsOf($), await read($, hiddenAsks), {}, ledger, await questionProofsFor($, snap.path || (await progressPath($))), await pendingTurns($))
+  if (![...currentView.waiting, ...(currentView.reminder ?? []), ...(currentView.older ?? []), ...currentView.hidden].some(one => (!isHidden || one.canHide !== false) && one.hideKey === item.hideKey && one.project === item.project && one.text === item.text && one.note === item.note)) return false
   const file = answeredPath(snap.path || (await progressPath($)))
   const list = await enqueue(async () => {
     const fresh = parseProgress(await readText($, snap.path || (await progressPath($))))
     if (!(await pollQuestions($, snap.path || (await progressPath($)), fresh))) return null
     const latest = await read($, questionLedger)
-    const current = buildView(fresh, [], await read($, mine), await $.clock.now(), 0, {}, await wordsOf($), await read($, hiddenAsks), {}, latest, await questionProofsFor($, snap.path || (await progressPath($))))
-    if (![...current.waiting, ...current.hidden].some(one => one.hideKey === item.hideKey && one.project === item.project && one.text === item.text && one.note === item.note)) return null
+    const current = buildView(fresh, [], await read($, mine), await $.clock.now(), 0, {}, await wordsOf($), await read($, hiddenAsks), {}, latest, await questionProofsFor($, snap.path || (await progressPath($))), await pendingTurns($))
+    if (![...current.waiting, ...(current.reminder ?? []), ...(current.older ?? []), ...current.hidden].some(one => (!isHidden || one.canHide !== false) && one.hideKey === item.hideKey && one.project === item.project && one.text === item.text && one.note === item.note)) return null
     await rewrite(
       $,
       file,
@@ -563,11 +593,14 @@ const dashboardPath = (path: string): string => `${path.replace(/\.md$/i, '')}.h
 const pad2 = (n: number): string => String(n).padStart(2, '0')
 
 // Pending turns are optional: an unavailable inbox must not stop the board or its reminders.
+let pendingCache: { key: string; turns: PendingTurn[] } | null = null
 const pendingTurns = async ($: EngineInterface): Promise<PendingTurn[]> => {
   try {
     const path = await progressPath($)
     const dir = inboxPath(path)
     const done = await readInboxRecord($, 'inboxDone').catch(() => ({} as Record<string, string>))
+    const cacheKey = JSON.stringify([path, await $.clock.now(), done])
+    if (pendingCache?.key === cacheKey) return pendingCache.turns
     const entries = (await $.fs.list(dir))
       .filter(entry => entry.kind === 'file' && isInboxFile(entry.name) && done[entry.name] === undefined)
       .sort((a, b) => b.mtimeMs - a.mtimeMs)
@@ -579,7 +612,9 @@ const pendingTurns = async ($: EngineInterface): Promise<PendingTurn[]> => {
     }
     const home = ((await $.env.get('USERPROFILE')) ?? (await $.env.get('HOME')) ?? '').replace(/[\\/]+$/, '')
     const isWin = await isWindows($, path)
-    return peekInbox(files, () => '', text => redact(text, home, isWin))
+    const turns = peekInbox(files, () => '', text => redact(text, home, isWin))
+    pendingCache = { key: cacheKey, turns }
+    return turns
   } catch {
     return []
   }
@@ -593,7 +628,7 @@ const writeDashboard = async ($: EngineInterface, force = false): Promise<string
   const path = dashboardPath(snap.path || (await progressPath($)))
   if (!force && at - dashboardAt < 60 * 1000) return path
   const s = await wordsOf($)
-  const view = buildView(snap.projects, [], null, at, await read($, today), await read($, doneSeen), s, await read($, hiddenAsks), await read($, firstSeen), await read($, questionLedger), await questionProofsFor($, snap.path || (await progressPath($))))
+  const view = buildView(snap.projects, [], null, at, await read($, today), await read($, doneSeen), s, await read($, hiddenAsks), await read($, firstSeen), await read($, questionLedger), await questionProofsFor($, snap.path || (await progressPath($))), await pendingTurns($))
   const pending = await pendingTurns($)
   const date = new Date(at)
   const html = dashboardHtml(view, s, snap.path, s.dashStamp(`${localDay(at)} ${pad2(date.getHours())}:${pad2(date.getMinutes())}`), pending)
@@ -655,6 +690,7 @@ const refreshStatus = async ($: EngineInterface): Promise<void> => {
           await read($, firstSeen),
           await read($, questionLedger),
           await questionProofsFor($, await progressPath($)),
+          await pendingTurns($),
         ),
         s,
       )
@@ -1130,9 +1166,9 @@ const takeAgentTurns = async ($: EngineInterface, turns: readonly AgentTurn[], a
   const promptBarrier = normalizeTurnOrder(stored?.promptOrder) ?? -1
   const barrier = Math.max(stored?.confirmedAt ?? 0, completion.barrier)
   const isNewer = (turn: AgentTurn): boolean => (turnOrder(turn) ?? newest) >= newest && (promptBarrier < 0 || (turnOrder(turn) ?? -1) >= promptBarrier) && (barrier === 0 || (turnOrder(turn) ?? -1) > barrier * 2 + 1)
-  const digested = turnsToDigest(turns)
+  const digested = turnsToDigest(turns.map(turn => turn.event === 'end' && lastQuestion(turn.answer, true) !== null ? { ...turn, event: 'turn' as const } : turn))
   for (const [index, turn] of turns.entries()) {
-    if (turn.event !== 'turn' || !isNewer(turn)) continue
+    if ((turn.event !== 'turn' && lastQuestion(turn.answer, true) === null) || !isNewer(turn)) continue
     let { prompt, answer } = turn
     // Codex's Stop carries the reply but not the request; the session log has both.
     if ((answer === '' || prompt === '') && isTranscriptPath(turn.transcript) && (digested.has(index) || mirror.firstPrompt === '')) {
@@ -1346,7 +1382,7 @@ const startAutoConnect = ($: EngineInterface, options: PluginOptions): void => {
 // why it failed is in the store's `inboxFailed`. The inbox is let go of before the model is
 // asked, so a slow answer never stops the next look. The reporter script clears files older
 // than two days that no session took.
-type Taken = { path: string; name: string; attempt: number; turn: AgentTurn | null | undefined; error?: string }
+type Taken = { path: string; name: string; attempt: number; turn: AgentTurn | null | undefined; body?: string; error?: string }
 
 const inboxFailure = (error: unknown): string => /\b(?:E[A-Z]{2,15}|[A-Z]{3,}_[A-Z_]+)\b/.exec(messageOf(error))?.[0] ?? 'INBOX_FAILED'
 const inboxNotice = async ($: EngineInterface, path: string, reason: string): Promise<void> => {
@@ -1465,6 +1501,7 @@ const drainInbox = async ($: EngineInterface): Promise<void> => {
         return undefined
       })
       if (typeof body !== 'string') continue
+      one.body = body
       try {
         one.turn = readTurn(one.name, body)
       } catch {
@@ -1516,6 +1553,10 @@ const drainInbox = async ($: EngineInterface): Promise<void> => {
       if (group.length === 0) continue
       const isLastTry = group.some(one => one.attempt >= MAX_TRIES)
       try {
+        const path = await progressPath($)
+        const home = ((await $.env.get('USERPROFILE')) ?? (await $.env.get('HOME')) ?? '').replace(/[\\/]+$/, '')
+        const questions = peekInbox(group.flatMap(one => one.body === undefined ? [] : [{ name: one.name, body: one.body, at }]), () => '', text => redact(text, home, isWin)).filter(turn => turn.isQuestion)
+        if (questions.length > 0 && !(await pollQuestions($, path, parseProgress(await readText($, path)), false, questions))) throw new Error('QUESTION_RETENTION_FAILED')
         await takeAgentTurns($, group.flatMap(one => (one.turn === null || one.turn === undefined ? [] : [one.turn])), 0, isLastTry)
         settled.push(...group)
       } catch (error) {
@@ -1636,6 +1677,12 @@ const archiveOne = async ($: EngineInterface, ref: TaskRef): Promise<boolean> =>
   const s = await wordsOf($)
   const archived = new Set<string>()
   const wrote = await rewrite($, path, async text => {
+    const projects = parseProgress(text)
+    const hasQuestions = projects.some(project => project.name === ref.project && project.tasks.some(task => (ref.session === null ? task.title === ref.title : task.auto?.session === ref.session) && task.steps.some(step => step.status === 'waiting')))
+    if (hasQuestions && (!(await pollQuestions($, path, projects, true)) || !archiveQuestionsKept(projects, ref, await read($, questionLedger)))) throw new Error('QUESTION_RETENTION_FAILED')
+    if (hasQuestions) for (const record of (await read($, questionLedger)).records) {
+      if (record.isUnresolved && record.source?.project === ref.project && record.source.task === ref.title) await keepQuestionCapture($, path, record, 'archived')
+    }
     const taken = takeTask(text, ref, at, s)
     if (taken === null) return null
     await appendArchive($, archivePath(path, at), taken.entries.filter(entry => !archived.has(entry)), s)
@@ -1731,6 +1778,7 @@ const remindNow = async ($: EngineInterface): Promise<void> => {
     await read($, firstSeen),
     await read($, questionLedger),
     await questionProofsFor($, await progressPath($)),
+    await pendingTurns($),
   )
   const stored = await $.store.get('told')
   const told = stored !== null && typeof stored === 'object' ? (stored as Record<string, number>) : {}
@@ -1918,6 +1966,7 @@ const answerHere = async ($: EngineInterface): Promise<void> => {
 
 export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
+    pendingCache = null
     knownPath = await findProgressPath($)
     await settleLang($, options)
     const words = await wordsOf($)
@@ -2293,7 +2342,7 @@ export const register: Register = (on, options) => {
     const at = (await read($, now)) || (await $.clock.now())
     const s = await wordsOf($)
     const palette = paletteFor(await read($, theme))
-    const view = buildView(snap.projects, await read($, here), await read($, mine), at, await read($, today), await read($, doneSeen), s, await read($, hiddenAsks), await read($, firstSeen), await read($, questionLedger), await questionProofsFor($, snap.path || (await progressPath($))))
+    const view = buildView(snap.projects, await read($, here), await read($, mine), at, await read($, today), await read($, doneSeen), s, await read($, hiddenAsks), await read($, firstSeen), await read($, questionLedger), await questionProofsFor($, snap.path || (await progressPath($))), await pendingTurns($))
     const ui: PaneUi = {
       Box: table.Box,
       Text: table.Text,
@@ -2343,10 +2392,10 @@ export const register: Register = (on, options) => {
         if (ref === null) return
         enqueue(() => archiveOne($, ref))
           .then(isTaken =>
-            update($, answer, () => ({ question: row.title, text: isTaken ? s.archivedOne(row.title) : s.archiveGone, isAsking: false })),
+            update($, answer, () => ({ question: row.title, text: isTaken === true ? s.archivedOne(row.title) : s.archiveGone, isAsking: false })),
           )
           .then(() => update($, expanded, open => (open === row.key ? '' : open)))
-          .catch(() => undefined)
+          .catch(error => update($, answer, () => ({ question: row.title, text: error instanceof Error && error.message === 'QUESTION_RETENTION_FAILED' ? s.questionRetentionFailed : s.boardWriteFailed, isAsking: false })))
       },
       confirmRow: row => {
         if (row.confirm == null) return
@@ -2397,21 +2446,29 @@ export const register: Register = (on, options) => {
       },
       answer: (item, text) => {
         if (item.where !== 'here') return
-        // This session's items are keyed `mine::<task id>`. The press is the answer: the step
-        // stops waiting on the person now, and waits again if the answer cannot be sent.
+        // A dropped or rejected submission is not resolution evidence. Keep the exact ask
+        // until delivery succeeds, then recheck its producer revision and full source.
         const id = item.key.replace(/^mine::/, '')
-        const unmark = () => saveMine($, one => ({ ...one, answered: withoutMarks(one, [id]) }), true).then(() => settle($))
-        saveMine($, one => markAnswered(one, [id]), true)
-          .then(() => settle($))
-          .then(() => submitOwn($, s.answerText(item.text, text)))
-          .then(
-            async entered => {
-              if (entered.drop !== undefined) return unmark()
-              await update($, answer, () => ({ question: item.text, text: s.answered(text), isAsking: false }))
-            },
-            unmark,
-          )
-          .catch(() => undefined)
+        const send = async (): Promise<void> => {
+          const before = await read($, mine)
+          const task = before?.tasks.find(one => one.id === id)
+          if (before === null || task === undefined || task.subject !== item.text || (task.why ?? '') !== item.note) return
+          const source = JSON.stringify({ session: before.sessionId, project: before.project, title: before.title, context: before.context, task })
+          const matches = (one: ProgressMirror): boolean => source === JSON.stringify({ session: one.sessionId, project: one.project, title: one.title, context: one.context, task: one.tasks.find(row => row.id === id) })
+          const isSameAsk = async (one: ProgressMirror): Promise<boolean> => {
+            const view = buildView([], [], one, await $.clock.now(), 0, {}, s, await read($, hiddenAsks), {}, await read($, questionLedger), await questionProofsFor($, await progressPath($)))
+            return [...view.waiting, ...(view.reminder ?? []), ...(view.older ?? [])].some(ask => ask.key === item.key && ask.questionId === item.questionId && ask.text === item.text && ask.note === item.note)
+          }
+          if (!(await isSameAsk(before))) return
+          const entered = await submitOwn($, s.answerText(item.text, text))
+          if (entered.drop !== undefined) return
+          const latest = await read($, mine)
+          if (latest === null || !matches(latest) || !(await isSameAsk(latest))) return
+          await saveMine($, one => matches(one) ? markAnswered(one, [id]) : one, true)
+          await settle($)
+          await update($, answer, () => ({ question: item.text, text: s.answered(text), isAsking: false }))
+        }
+        send().catch(() => undefined)
       },
       copyCommand: (item, surface) => {
         if (item.command === null) return

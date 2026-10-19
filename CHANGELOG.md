@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Keep reminder identity stable when an unresolved question moves into retained storage. A native pane reply creates resolution evidence only after submission succeeds and the exact producer revision and source are rechecked; a dropped or failed submission leaves the original ask unread. Tests: `a question another agent asks notifies once, not the ones already there at the start`, `a pane button whose answer does not reach Claude leaves its step waiting on you, buttons and all`, `an accepted pane reply cannot mark a same-word producer renewal made during submission answered`, `retaining a question changes no reminder identity while a new producer incarnation can notify`.
+
+- Fix Mark read on live reminder/older questions in the native pane and terminal: validate every age shelf at the action write boundary while retaining exact identity, source and retirement checks. Label retained copies and served-page shelves as review only where no mutation is supported. Tests: `Mark read on reminder and older terminal shelves saves the exact identity in every language`, `aged shelf hide actions keep identity and stale fingerprints while retained sources are explicitly review only`, and the six `aged pane questions hide and restore their exact identity` cases.
+
+- **Age unanswered questions independently of connection activity.** Keep questions prominent through three days, group reminders through seven days, then retain them in a discoverable older shelf without actionable counts. Preserve immutable, content-addressed full source copies and original age across restart, inbox processing and explicit archive; end events never answer a pending ask, and multiple same-owner asks survive source cleanup and stale index writes; automatic archive retains unresolved sources. Opening a shelf grants no approval or completion. Exact resolved producer-token replays cannot recreate an unanswered incarnation; a new revision or changed question still resurfaces. Tests: `question age is pending at three days, a reminder through seven days, and older only after seven days`, `own, stopped external, manual and inbox questions share exact age shelves and actionable counts on every reader`, `complete retained source questions remain recoverable after explicit archival and storage checks refuse an uncopied replacement`, `automatic archive never removes an unresolved question even in an ended or done block beyond seven days`, `question retention failure refuses explicit archive and preserves the original source`.
+
 ## 0.23.3 — 2026-10-19
 
 - Break the release fingerprint cycle introduced by the native worker bundle. The bundle keeps historical board ownership and current command/reporter hashes, while the full generated table records the current board externally. Test: `the bundled release table excludes its current board fingerprint and retains historical ownership`.
@@ -2386,4 +2392,3 @@ Interactive pane: rows open to their steps and actions, 完成 / 完成這步 /
 ## 0.2.0
 
 Mirrors Claude's Task list, survives compaction, plain-language pane.
-
