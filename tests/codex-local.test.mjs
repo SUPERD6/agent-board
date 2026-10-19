@@ -209,6 +209,32 @@ test('Codex hook replays are no-ops and a Stop never invents task completion', (
   assert.match(readFileSync(f.progress, 'utf8'), /state=done/)
 }))
 
+test('native lifecycle events retain a board-confirmed completion in session JSON instead of reopening old steps', () => fixture(f => {
+  assert.equal(f.install('--apply').status, 0)
+  for (const agent of ['codex', 'cursor', 'opencode', 'gemini', 'grok', 'muse', 'hermes', 'openclaw', 'antigravity', 'deepseek']) {
+    const id = `native-confirm-${agent}-123`
+    const report = (state, steps) => f.command(['--codex-report', '--agent', agent, '--session', id], { title: `${agent} task`, state, steps })
+    assert.equal(report('ended', ['- [ ] Old task', '- [-] Canceled']).status, 0)
+    const confirmed = f.command(['--keys', 'd'])
+    assert.equal(confirmed.status, 0, confirmed.stderr)
+    const idle = () => agent === 'codex' || agent === 'cursor'
+      ? f.command(['--codex-event', '--agent', agent], { session_id: id, hook_event_name: agent === 'cursor' ? 'stop' : 'Stop', generation_id: 'turn-1', turn_id: 'turn-1' })
+      : f.command(['--agent-status', '--agent', agent, '--state', 'waiting'], agent === 'antigravity' ? { conversationId: id } : { session_id: id })
+    const idleResult = idle()
+    assert.equal(idleResult.status, 0, idleResult.stderr)
+    const recordPath = join(f.root, 'sessions', createHash('sha256').update(`${agent}:${id}`).digest('hex') + '.json')
+    const record = JSON.parse(readFileSync(recordPath))
+    assert.equal(record.state, 'done', agent)
+    assert.deepEqual(record.steps, ['- [x] Old task', '- [-] Canceled'], agent)
+    const settled = readFileSync(f.progress, 'utf8')
+    assert.equal(idle().status, 0)
+    assert.equal(readFileSync(f.progress, 'utf8'), settled, agent)
+    assert.equal(report('working', ['- [ ] Genuinely new work']).status, 0)
+    assert.deepEqual(JSON.parse(readFileSync(recordPath)).steps, ['- [ ] Genuinely new work'], agent)
+    assert.equal(report('done', ['- [x] Genuinely new work']).status, 0)
+  }
+}))
+
 test('Codex lifecycle hooks never read transcripts or retain conversation and approval payloads', () => fixture(f => {
   f.install('--apply')
   const secret = 'DO-NOT-STORE-THIS-PRIVATE-TEXT'

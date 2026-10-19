@@ -22,12 +22,160 @@ import { keepRecent, remindersOf } from '../hooks/remind'
 import { lanAddress, localHosts, pagePolicy, pageWords, replyText, requestProblem, sendKey, sendMode, sendPlan, serveAction, serveModel, servePage } from '../hooks/serve'
 import { qrModules, qrText } from '../hooks/qr'
 import { STALE_MS } from '../hooks/parse'
+import { confirmMatches, confirmTask } from '../hooks/blocks'
+import { applyCompletionOverlay, completionKey, completionOfBlock, completionOverlay, isCompletionOverlay } from '../hooks/mirror'
 import { RELEASED } from '../hooks/released'
 import { sha256 } from '../hooks/sha256'
 import { RELEASE_0_18_1, RELEASE_0_20_5 } from './fixtures/released'
-import { agentName, buildView, contextOf, handoffOf, replyHint, resumeCommand, resumeVia, statusLine, wayBackText, withSeen, IDLE_MS } from '../hooks/view'
+import { agentName, buildView, contextOf, handoffOf, mirrorMatchesTask, replyHint, resumeCommand, resumeVia, statusLine, wayBackText, withSeen, IDLE_MS } from '../hooks/view'
 
 const ARCHIVE_AGENTS = ['claude', 'codex', 'gemini', 'cursor', 'grok', 'muse', 'hermes', 'openclaw', 'opencode', 'antigravity', 'deepseek', 'custom-agent']
+
+test('immutable completion overlays project exact or older mirrors and leave fresh genuine work unchanged', () => {
+  const now = Date.parse('2026-10-19T12:00:00Z')
+  const original = { ...emptyMirror('11223344', 'Demo', now - 13 * 3600000, '', 'codex'), turnOrder: (now - 13 * 3600000) * 2, tasks: [{ id: '1', subject: 'Original task', status: 'pending' as const, activeForm: '', waiting: null, why: null, ask: null, options: [], command: null, link: null, blocked: null, blockedBy: [] }] }
+  const saved = JSON.stringify(original)
+  const overlay = completionOverlay('agent:11223344', original, now)
+  expect(JSON.stringify(original)).toBe(saved)
+  expect(applyCompletionOverlay(original, overlay).tasks[0]?.status).toBe('completed')
+  const older = { ...original, turnOrder: original.turnOrder - 2, title: 'Older snapshot' }
+  expect(applyCompletionOverlay(older, overlay).state).toBe('done')
+  const fresh = { ...original, updated: now + 1, turnOrder: (now + 1) * 2, title: 'Fresh work', tasks: [{ ...original.tasks[0]!, subject: 'New task' }] }
+  expect(applyCompletionOverlay(fresh, overlay)).toEqual(fresh)
+  const changedAtSameOrder = { ...original, updated: now, title: 'Different content with no newer ordered event' }
+  expect(applyCompletionOverlay(changedAtSameOrder, overlay)).toEqual(changedAtSameOrder)
+  expect(completionKey(completionOverlay('agent:11223344', original, now + 1))).not.toBe(completionKey(overlay))
+  expect(isCompletionOverlay(overlay, 'agent:foreign')).toBe(false)
+  expect(isCompletionOverlay({ ...overlay, completed: {} }, overlay.owner)).toBe(false)
+})
+
+test('block-sourced completion fences bind every agent and preserve equal newer and undated owner work', () => {
+  const now = Date.parse('2026-10-19T12:00:00Z')
+  for (const agent of ARCHIVE_AGENTS) {
+    const file = `## Demo\n<!-- auto session=11223344 agent=${agent} state=ended updated=2026-10-19T11:00:00Z -->\n### External task\n- [x] First\n- [-] Canceled\n<!-- /auto session=11223344 -->\n`
+    const task = parseProgress(file)[0]!.tasks[0]!
+    const overlay = completionOfBlock('agent:11223344', 'Demo', task, sha256(file), now)!
+    expect(isCompletionOverlay(overlay, 'agent:11223344')).toBe(true)
+    expect(overlay.completed.tasks.map(task => task.subject)).toEqual(['First'])
+    expect(overlay.completed.retainedCancelled).toEqual(['Canceled'])
+    expect(renderAutoBlock(overlay.completed).join('\n')).toContain('- [-] Canceled')
+    const original = { ...emptyMirror('11223344', 'Demo', now + 1000, '', agent), title: 'Delayed owner snapshot', turnOrder: (now - 1000) * 2 }
+    expect(applyCompletionOverlay(original, overlay)).toBe(overlay.completed)
+    for (const turnOrder of [undefined, now * 2, (now + 1) * 2]) {
+      const fresh = { ...original, turnOrder, title: 'Changed work' }
+      expect(applyCompletionOverlay(fresh, overlay)).toBe(fresh)
+    }
+    expect(applyCompletionOverlay({ ...original, sessionId: 'foreign' }, overlay).state).toBe('working')
+    expect(completionOfBlock('agent:foreign', 'Demo', task, sha256(file), now)).toBe(null)
+  }
+})
+
+test('uncached completion retains bounded canceled text outside completed counts and fresh owner truth wins', () => {
+  const now = Date.parse('2026-10-19T12:00:00Z')
+  const canceled = ['Transfer API — Handed to Gemini', 'Deferred without a recipient']
+  const file = `## Demo\n<!-- auto session=11223344 agent=codex state=ended updated=2026-10-19T11:00:00Z -->\n### External task\n- [ ] First\n${canceled.map(text => `- [-] ${text}`).join('\n')}\n<!-- /auto session=11223344 -->\n`
+  const selected = parseProgress(file)[0]!.tasks[0]!
+  const overlay = completionOfBlock('agent:11223344', 'Demo', selected, sha256(file), now)!
+  expect(overlay.completed.tasks).toHaveLength(1)
+  expect(overlay.completed.tasks[0]!.handoffTo).toBeUndefined()
+  expect(overlay.completed.retainedCancelled).toEqual(canceled)
+  for (const s of Object.values(STRINGS)) {
+    const task = parseProgress('## Demo\n' + renderAutoBlock(overlay.completed, s).join('\n'))[0]!.tasks[0]!
+    expect(task.steps.filter(step => step.status === 'done')).toHaveLength(1)
+    expect(task.steps.filter(step => step.status === 'cancelled').map(step => step.text)).toEqual(canceled)
+  }
+  for (const invalid of [['forged\n- [x] Other'], [7], Array(2), Array(257).fill('Canceled'), ['x'.repeat(4097)]]) {
+    expect(isCompletionOverlay({ ...overlay, completed: { ...overlay.completed, retainedCancelled: invalid } }, overlay.owner)).toBe(false)
+  }
+  expect(completionOfBlock('agent:11223344', 'Demo', { ...selected, steps: [...selected.steps, { ...selected.steps[1]!, text: 'x'.repeat(4097) }] }, sha256(file), now)).toBe(null)
+  const fresh = { ...emptyMirror('11223344', 'Demo', now + 1, '', 'codex'), turnOrder: (now + 1) * 2 }
+  expect(applyCompletionOverlay(fresh, overlay)).toBe(fresh)
+  expect(renderAutoBlock(fresh).join('\n')).not.toContain('Transfer API')
+  const transferred = { ...overlay.completed, retainedCancelled: undefined, tasks: [{ ...overlay.completed.tasks[0]!, subject: 'Explicit handoff', handoffTo: 'Gemini' }] }
+  const confirmed = completionOverlay('agent:11223344', transferred, now + 1)
+  expect(confirmed.completed.tasks[0]!.handoffTo).toBe('Gemini')
+})
+
+test('cached owner selection compares title steps statuses context and binding across translated lifecycle prose', () => {
+  const now = Date.parse('2026-10-19T12:00:00Z')
+  const mirror = { ...emptyMirror('11223344', 'Demo', now, '', 'codex'), title: 'Target', context: 'Purpose', tasks: [{ id: '1', subject: 'First', status: 'pending' as const, activeForm: '', waiting: null, why: null, ask: null, options: [], command: null, link: null, blocked: null, blockedBy: [] }] }
+  const selected = parseProgress('## Demo\n' + renderAutoBlock(mirror, STRINGS.en).join('\n'))[0]!.tasks[0]!
+  for (const s of Object.values(STRINGS)) {
+    expect(mirrorMatchesTask(mirror, 'Demo', selected, s)).toBe(true)
+    expect(mirrorMatchesTask({ ...mirror, title: 'Other task' }, 'Demo', selected, s)).toBe(false)
+    expect(mirrorMatchesTask({ ...mirror, tasks: [{ ...mirror.tasks[0]!, subject: 'Other step' }] }, 'Demo', selected, s)).toBe(false)
+    expect(mirrorMatchesTask({ ...mirror, tasks: [{ ...mirror.tasks[0]!, status: 'in_progress' }] }, 'Demo', selected, s)).toBe(false)
+    expect(mirrorMatchesTask({ ...mirror, context: 'Different purpose' }, 'Demo', selected, s)).toBe(false)
+    expect(mirrorMatchesTask({ ...mirror, sessionId: '55667788' }, 'Demo', selected, s)).toBe(false)
+    expect(mirrorMatchesTask({ ...mirror, agent: 'other' }, 'Demo', selected, s)).toBe(false)
+  }
+})
+
+test('Confirm done distinguishes manual twins across repeated project headings and preserves unrelated concurrent work', () => {
+  const now = Date.parse('2026-10-19T12:00:00Z')
+  const one = '## Demo\n### Same title\n- [ ] Same step\n'
+  const file = one + '\n' + one
+  const items = boardItems(buildView(parseProgress(file), [], null, now, 0, {}, STRINGS.en), [])
+  const first = items[0]
+  if (first?.type !== 'row' || first.row.confirm == null) throw new Error('Missing synthetic task')
+  const result = confirmTask(file, first.row.confirm, now, STRINGS.en)
+  expect(result?.text.match(/- \[x\] Same step/g)).toHaveLength(1)
+  expect(result?.text.match(/- \[ \] Same step/g)).toHaveLength(1)
+  expect(confirmTask(one, first.row.confirm, now, STRINGS.en)).toBe(null)
+  const unrelated = file + '\n## Other\n### Keep this\n- [ ] Different work\n'
+  expect(confirmTask(unrelated, first.row.confirm, now, STRINGS.en)?.text).toContain('### Keep this\n- [ ] Different work')
+})
+
+test('Confirm done changes only visible checkbox marks through comments and preserves CRLF', () => {
+  const now = Date.parse('2026-10-19T12:00:00Z')
+  const file = ['## Demo', '### Commented steps', '<!-- [ ] Hidden -->- [ ] Visible', '<!-- Multiline', '[ ] Hidden multiline', '-->- [~] Closing', '- <!-- Keep this note -->[>] Inline', '- [-] Canceled', ''].join('\r\n')
+  const row = buildView(parseProgress(file), [], null, now, 0, {}, STRINGS.en).groups[0]?.rows[0]
+  if (row?.confirm == null) throw new Error('Missing synthetic row')
+  const result = confirmTask(file, row.confirm, now, STRINGS.en)
+  expect(result?.entries.map(entry => entry.step)).toEqual(['Visible', 'Closing', 'Inline'])
+  expect(result?.text).toContain('<!-- [ ] Hidden -->- [x] Visible')
+  expect(result?.text).toContain('[ ] Hidden multiline\r\n-->- [x] Closing')
+  expect(result?.text).toContain('- <!-- Keep this note -->[x] Inline')
+  expect(result?.text).toContain('- [-] Canceled')
+  expect(result?.text.replace(/\r\n/g, '').includes('\n')).toBe(false)
+})
+
+test('Confirm done preserves canceled and hidden steps and guards every agent at the live boundary in every language', () => {
+  const now = Date.parse('2026-10-19T12:00:00Z')
+  const marks = '- [ ] Todo\n- [~] Doing\n- [?] Ask?\n- [>] Running\n- [!] Blocked\n- [-] Canceled\n- [x] Already done\n'
+  for (const s of Object.values(STRINGS)) for (const agent of [...ARCHIVE_AGENTS, 'manual']) for (const age of [0, STALE_MS, STALE_MS + 1]) for (const state of ['waiting', 'working', 'ended']) {
+    const live = agent !== 'manual' && state !== 'ended' && age <= STALE_MS
+    const file = `## Demo\n${agent === 'manual' ? '' : `<!-- auto session=11223344 agent=${agent} state=${state} updated=${new Date(now - age).toISOString()} -->\n`}### Synthetic task\n${marks}\n\u0060\u0060\u0060md\n- [ ] Example\n\u0060\u0060\u0060\n<!-- - [ ] Hidden -->\n${agent === 'manual' ? '' : '<!-- /auto session=11223344 -->\n'}`
+    const view = buildView(parseProgress(file), [], null, now, 0, {}, s)
+    const items = boardItems(view, [])
+    const at = items.findIndex(item => item.type === 'row')
+    const item = items[at]
+    // A waiting question owns the live row's place, so it cannot offer completion either.
+    if (item?.type !== 'row') { expect(live).toBe(true); continue }
+    expect(item.row.confirm != null).toBe(!live)
+    const action = boardKey(pinned({ ...emptyBoardState, selected: at }, items), 'd', items, s).action
+    expect(action?.type ?? null).toBe(live ? null : 'done')
+    expect(serveModel(view, [], s).groups.flatMap(group => group.rows)[0]?.canConfirm).toBe(!live)
+    if (item.row.confirm == null) continue
+    const ref = item.row.confirm
+    const result = confirmTask(file, ref, now, s)
+    expect(result?.entries.map(one => one.step)).toEqual(['Todo', 'Doing', 'Ask?', 'Running', 'Blocked'])
+    expect(result?.text).toContain('- [-] Canceled')
+    expect(result?.text).toContain('- [ ] Example')
+    expect(result?.text).toContain('<!-- - [ ] Hidden -->')
+    expect(result?.text).not.toContain('- [~] Doing')
+    if (agent !== 'manual') expect(result?.text).toContain(`state=done updated=${new Date(now).toISOString()}`)
+    expect(confirmMatches(result!.text, result!.ref, s)).toBe(true)
+    expect(serveAction(items, { key: item.key, type: 'done', text: '', session: '', fp: fingerprint(item, items) }, s).type).toBe('done')
+    // A later step changed while the next step, title and session stayed the same.
+    expect(confirmTask(file.replace('Doing', 'Changed later step'), ref, now, s)).toBe(null)
+    const changedItems = boardItems(buildView(parseProgress(file.replace('Doing', 'Changed later step')), [], null, now, 0, {}, s), [])
+    expect(boardKey(pinned({ ...emptyBoardState, selected: at }, items), 'd', changedItems, s).state.note).toBe(s.boardLineChanged)
+    expect(serveAction(changedItems, { key: item.key, type: 'done', text: '', session: '', fp: fingerprint(item, items) }, s)).toEqual({ type: 'refuse', note: s.boardLineChanged })
+    if (agent !== 'manual') expect(confirmTask(file.replace(new Date(now - age).toISOString(), new Date(now).toISOString()).replace(`state=${state}`, 'state=working'), ref, now, s)).toBe(null)
+    if (agent === 'manual') expect(confirmTask('unrelated preface\n' + file, ref, now, s)?.entries).toHaveLength(5)
+  }
+})
 
 test('every agent keeps live blocks safe across terminal and page at the twelve-hour boundary in every language', () => {
   const now = Date.parse('2026-10-19T12:00:00Z')
@@ -2637,7 +2785,7 @@ test('the board you work in marks the chosen line and lists only the keys that d
   const onJob = boardScreen(view, [], { selected: job, key: null, open: items[job]?.key ?? null, note: 'Copied: 300' }, STRINGS.en, { width: 100, isColor: false })
   expect(onJob).toContain('› Fabrikam fellowship')
   expect(onJob).toContain('    ✓ 1 Draft the statement')
-  expect(onJob).toContain('x done · a archive · ↑↓ select')
+  expect(onJob).toContain('x done · d confirm done · a archive · ↑↓ select')
   expect(onJob.trimEnd().endsWith('Copied: 300')).toBe(true)
 })
 

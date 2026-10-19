@@ -48,6 +48,21 @@ const failed = (result, path, code) => {
   assert.ok(!(result.stdout + result.stderr).includes('nothing changed'))
 }
 
+test('Confirm done leaves every step open when its journal cannot be replaced and retries without duplicate ticks', () => fixture(({ paths, play }) => {
+  const file = FILE + '- [~] Second new step\n- [-] Canceled\n- [x] Already done\n'
+  writeFileSync(paths.board, file)
+  const fault = `const original = fs.renameSync\nfs.renameSync = (from, to) => { if (String(to) === ${JSON.stringify(paths.journal)}) throw Object.assign(new Error('injected rename failure'), { code: 'EIO' }); return original(from, to) }`
+  failed(play('d', fault), paths.journal, 'EIO')
+  assert.equal(readFileSync(paths.board, 'utf8'), file)
+  assert.equal(readFileSync(paths.journal, 'utf8'), HISTORY)
+  assert.equal(play('d').status, 0)
+  const history = readFileSync(paths.journal, 'utf8')
+  assert.equal(history.split('Verify the result').length - 1, 1)
+  assert.equal(history.split('Second new step').length - 1, 1)
+  assert.ok(!history.includes('Canceled') && !history.includes('Already done'))
+  assert.equal(readFileSync(paths.board, 'utf8'), file.replace('[ ]', '[x]').replace('[~]', '[x]'))
+}))
+
 for (const kind of ['board', 'archive', 'journal']) {
   for (const code of ['EACCES', 'EIO']) {
     test(`an ${code} reading the ${kind} aborts the action and preserves every existing file`, () => fixture(({ dir, paths, play }) => {

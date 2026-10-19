@@ -138,6 +138,7 @@ export type ServeRow = {
   steps: ServeStep[]
   next: string | null
   canArchive: boolean
+  canConfirm: boolean
   archiveNote: string
   resume: string | null
   handoff: string
@@ -260,6 +261,7 @@ export const serveModel = (view: View, pending: readonly PendingTurn[], s: Strin
         steps: row.steps.map(step => ({ text: step.text, note: step.note, status: step.status, isCurrent: step.isCurrent })),
         next: row.next?.step ?? null,
         canArchive: row.archive !== null,
+        canConfirm: row.confirm != null,
         archiveNote: row.auto === 'working' || row.auto === 'waiting' ? s.archiveLive : '',
         // The command to resume a session names its folder, and the account with it: the computer's only.
         resume: isLan ? null : row.resume,
@@ -307,6 +309,7 @@ export type ServeRequest = { key: string; type: string; text: string; session: s
 export type ServeAction =
   | { type: 'tick'; ref: StepRef }
   | { type: 'archive'; ref: TaskRef; title: string }
+  | { type: 'done'; ref: import('./blocks').ConfirmRef; title: string }
   | { type: 'hide'; key: string; text: string }
   | { type: 'unhide'; key: string | null }
   | { type: 'send'; target: AgentTarget; text: string; title: string }
@@ -330,7 +333,7 @@ export const replyText = (raw: string): string =>
 // the computer, and the network's page is plain HTTP that others on the network could read.
 export const serveAction = (items: readonly BoardItem[], request: ServeRequest, s: Strings = ZH_TW, isLan = false, connections: readonly Connection[] = [], isMessaging = false, allowResume = false): ServeAction => {
   const action = actionOf(items, request, s, isLan, connections, isMessaging, allowResume)
-  if (action.type !== 'tick' && action.type !== 'archive' && action.type !== 'send' && action.type !== 'message') return action
+  if (action.type !== 'tick' && action.type !== 'archive' && action.type !== 'done' && action.type !== 'send' && action.type !== 'message') return action
   // The key is a project and a title, which another session's block can take over, and a step
   // can be reworded under it: the press goes through only on the block and words the page drew.
   const item = items.find(one => one.key === request.key)
@@ -355,6 +358,9 @@ const actionOf = (items: readonly BoardItem[], request: ServeRequest, s: Strings
     if (item.type === 'row' && item.row.archive !== null) return { type: 'archive', ref: item.row.archive, title: item.row.title }
     const isLive = item.type === 'row' && (item.row.auto === 'working' || item.row.auto === 'waiting') || item.type === 'ask' && item.ask.where !== 'manual'
     return { type: 'refuse', note: isLive ? s.archiveLive : s.archiveGone }
+  }
+  if (request.type === 'done') {
+    return item.type === 'row' && item.row.confirm != null ? { type: 'done', ref: item.row.confirm, title: item.row.title } : { type: 'refuse', note: s.boardLineChanged }
   }
   if (request.type !== 'send' && request.type !== 'message') return { type: 'refuse', note: '' }
   const text = replyText(request.text)
@@ -467,6 +473,7 @@ const PAGE_WORDS = [
   'serveOffline',
   'serveTickNext',
   'serveArchive',
+  'confirmDone',
   'serveCopy',
   'serveCopyResume',
   'serveCopyCommand',
@@ -780,6 +787,7 @@ const PAGE_SCRIPT = String.raw`
     var actions = el('div', 'actions');
     if (row.next) actions.appendChild(button(w('serveTickNext', row.next), function () { act(row.key, 'tick', row.next, '', '', '', row.fp); }, 'primary'));
     if (row.canArchive) actions.appendChild(button(w('serveArchive'), function () { act(row.key, 'archive', '', '', '', '', row.fp); }));
+    if (row.canConfirm) actions.appendChild(button(w('confirmDone'), function () { act(row.key, 'done', '', '', '', '', row.fp); }));
     if (row.resume) actions.appendChild(button(w('serveCopyResume'), function () { copy(row.resume); }));
     if (actions.childNodes.length) add(body, actions);
     if (row.send === 'send' || row.send === 'connected') add(body, replyBox(row.key, w('serveMessagePlaceholder', agentName(row.agent)), row.send, row.agent, row.where, row.isSending, row.session, asked, row.fp, row.delivery));

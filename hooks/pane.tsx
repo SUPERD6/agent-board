@@ -62,6 +62,7 @@ export type PaneActions = {
   copyResume: (row: TaskRow, surface: RenderSurface) => void
   // Moves one task to the archive file now: an ended session's block or a hand-kept task.
   archiveRow: (row: TaskRow) => void
+  confirmRow: (row: TaskRow) => void
   report: (surface: RenderSurface) => void
   toggleNotify: () => void
   toggleLegend: () => void
@@ -332,6 +333,7 @@ export const drawPane = (ui: PaneUi, model: PaneModel, actions: PaneActions): Re
   // What a row offers once opened: take it over here, reopen the session that left it, tick
   // its step, hand it to Claude, or put it in the archive now instead of waiting for cleanup.
   const rowActions = (row: TaskRow) => {
+    const confirm = row.confirm == null ? null : <Button key={`${row.key}::done`} onPress={() => actions.confirmRow(row)}>{s.confirmDone}</Button>
     const archive = row.archive === null ? null : (
       <Button key={`${row.key}::archive`} onPress={() => actions.archiveRow(row)}>
         {s.archiveThis}
@@ -344,6 +346,7 @@ export const drawPane = (ui: PaneUi, model: PaneModel, actions: PaneActions): Re
           <Box flexDirection="column">
             {muted(s.continueElsewhere(row.project))}
             {archive !== null && <Box marginTop={1}>{archive}</Box>}
+            {confirm}
           </Box>
         )
       }
@@ -361,6 +364,7 @@ export const drawPane = (ui: PaneUi, model: PaneModel, actions: PaneActions): Re
             </Button>
           )}
           {archive}
+          {confirm}
         </Box>
       )
     }
@@ -379,6 +383,7 @@ export const drawPane = (ui: PaneUi, model: PaneModel, actions: PaneActions): Re
           {s.handOver}
         </Button>
         {archive}
+        {confirm}
       </Box>
     )
   }

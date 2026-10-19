@@ -42,7 +42,7 @@ export const codexEvent = (previous: CodexReport | null, input: Record<string, u
   if (turn && previous?.events?.includes(key)) return previous
   if (previous?.turn && turn && previous.turn !== turn && event !== 'UserPromptSubmit') throw new Error('STALE_TURN')
   const working = event === 'UserPromptSubmit'
-  const state = event === 'SessionStart' ? previous?.state === 'ended' ? 'waiting' : previous?.state ?? 'waiting' : event === 'SessionEnd' ? 'ended' : working ? 'working' : previous?.state === 'done' ? 'done' : 'waiting'
+  const state = event === 'SessionStart' ? previous?.state === 'ended' ? 'waiting' : previous?.state ?? 'waiting' : event === 'SessionEnd' ? previous?.state === 'done' ? 'done' : 'ended' : working ? 'working' : previous?.state === 'done' ? 'done' : 'waiting'
   return {
     session, turn: turn ?? previous?.turn ?? null, state,
     title: previous?.title ?? s.codexTask,
@@ -72,6 +72,25 @@ export const codexReport = (previous: CodexReport | null, session: string, input
     events: previous?.events ?? [], retiredTurns: previous?.retiredTurns ?? [],
     ...(previous?.activity === undefined ? {} : { activity: previous.activity }),
   }
+}
+
+// A board completion is authoritative only for this exact owned task. Lifecycle
+// metadata reads it under the existing board lock before reusing its session cache.
+// Explicit task reports carry fresh intent and deliberately supersede this projection.
+export const boardConfirmedReport = (text: string, previous: CodexReport, owner: string): CodexReport => {
+  const lines = text.split(/\r?\n/)
+  const spans = scanBlocks(lines).filter(span => span.session === owner.slice(0, 8))
+  const span = spans[0]
+  if (spans.length !== 1 || span === undefined || !span.isClosed || span.state !== 'done') return previous
+  const attrs = parseAttrs(lines[span.start] ?? '')
+  if (attrs.owner !== owner || attrs.agent !== (previous.agent ?? 'codex')) return previous
+  const at = Date.parse(attrs.updated ?? '')
+  if (!Number.isFinite(at) || at < Date.parse(previous.updated)) return previous
+  const steps = previous.steps.map(step => step.replace(/^(- \[)[ ~?>!](\] .*)$/, '$1x$2'))
+  const expected = [`### ${previous.title}`, ...steps].join('\n')
+  if (lines.slice(span.start + 1, span.end).join('\n') !== expected) return previous
+  if (previous.state === 'done' && at === Date.parse(previous.updated) && JSON.stringify(steps) === JSON.stringify(previous.steps)) return previous
+  return { ...previous, state: 'done', steps, updated: new Date(at).toISOString() }
 }
 
 // The full digest prevents an eight-character collision or a pasted block from acquiring ownership.

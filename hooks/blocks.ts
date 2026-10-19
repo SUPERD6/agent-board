@@ -1,13 +1,15 @@
-import type { ProgressMirror, ProgressMirrorTask, ProgressSessionState } from '../types'
+import type { ProgressMirror, ProgressMirrorTask, ProgressSessionState, ProgressTask } from '../types'
 import { prWords } from './github'
 import { ZH_TW } from './i18n'
 import type { Strings } from './i18n'
 import { localDay } from './journal'
-import { fallbackTitle, isAnswered, questionToken } from './mirror'
+import { fallbackTitle, isAnswered, questionToken, retainedCancelledOf } from './mirror'
 import { AUTO_END, AUTO_START, autoOf, doneKey, isTaskComplete, parseAttrs, parseProgress, projectHead, readable, RESUME, STALE_MS } from './parse'
 import type { QuickEntry } from './quick'
 import type { StepRef, TaskRef } from './view'
 import { sha256 } from './sha256'
+import { isStale } from './parse'
+import type { JournalEntry } from './journal'
 
 // Each session's mod owns one block of the file, between its own markers, and rewrites
 // only that block: whatever people or other sessions wrote elsewhere stays byte for byte.
@@ -106,6 +108,7 @@ export const renderAutoBlock = (mirror: ProgressMirror, s: Strings = ZH_TW): str
       const token = questionToken(task)
       return [`- [${markOf(task)}] ${stepWords(task, s)}`, ...(token === '' ? [] : [`<!-- question=${token} -->`])]
     }),
+    ...retainedCancelledOf(mirror).map(text => `- [-] ${text}`),
     `<!-- /auto session=${id} -->`,
   ]
 }
@@ -305,6 +308,65 @@ export const isArchivable = (span: BlockSpan, now: number, isNow = false): boole
 }
 
 export type Archived = { text: string; entries: string[] }
+
+export type ConfirmRef = TaskRef & { expected: string }
+
+// All words and marks are part of this action, including steps below the next one. The
+// twin count prevents a same-word manual task from taking another task's selected row.
+export const confirmKey = (project: string, task: ProgressTask, twins: number): string =>
+  sha256(JSON.stringify([project, task.title, task.auto, task.notes, task.steps.map(step => step.raw), task.auto === null ? twins : 0]))
+
+export const confirmedTarget = (text: string, ref: ConfirmRef, s: Strings): ProgressTask | null => {
+  const tasks = parseProgress(text).filter(project => (project.name || s.uncategorized) === ref.project).flatMap(project => project.tasks)
+  const twins = tasks.filter(task => task.title === ref.title).length
+  const matches = tasks.filter(task => task.title === ref.title && (task.auto?.session ?? null) === ref.session && confirmKey(ref.project, task, twins) === ref.expected)
+  return matches.find(task => task.line === ref.line) ?? (matches.length === 1 ? matches[0] ?? null : null)
+}
+
+export const confirmMatches = (text: string, ref: ConfirmRef, s: Strings = ZH_TW): boolean => confirmedTarget(text, ref, s) !== null
+
+export type ConfirmedTask = { text: string; ref: ConfirmRef; entries: Array<Omit<JournalEntry, 'at'>>; auto: ProgressTask['auto'] }
+
+// A person's completion changes only the exact task drawn, and only after its agent
+// stopped. Recheck here, inside each caller's read/change/write retry.
+export const confirmTask = (text: string, ref: ConfirmRef, now: number, s: Strings = ZH_TW): ConfirmedTask | null => {
+  const task = confirmedTarget(text, ref, s)
+  if (task === null || task.line < 0 || task.auto !== null && task.auto.state !== 'ended' && !isStale(task.auto, now)) return null
+  const lines = linesOf(text)
+  const spans = scanBlocks(lines)
+  const span = ref.session === null ? undefined : spans.find(one => one.session === ref.session)
+  if (ref.session !== null && (span === undefined || !span.isClosed || spans.filter(one => one.session === ref.session).length !== 1)) return null
+  if (ref.session === null && spans.some(one => task.line >= one.start && task.line <= one.end)) return null
+  const open = task.steps.filter(step => step.status !== 'done' && step.status !== 'cancelled')
+  if (open.length === 0) return null
+  for (const step of open) {
+    const raw = lines[step.line] ?? ''
+    // A legal visible step can follow an inline comment or the end of a multiline
+    // comment. Probe only checkbox characters; never tick a hidden example in that line.
+    const match = [...raw.matchAll(/\[[ ~?>!]\]/g)].find(one => {
+      const index = one.index + 1
+      const probe = [...lines]
+      probe[step.line] = raw.slice(0, index) + 'x' + raw.slice(index + 1)
+      return STEP.exec(readable(probe)[step.line] ?? '')?.[2] === 'x'
+    })
+    if (match === undefined) return null
+    const index = match.index + 1
+    lines[step.line] = raw.slice(0, index) + 'x' + raw.slice(index + 1)
+  }
+  if (span !== undefined) {
+    let marker = lines[span.start] ?? ''
+    for (const [name, value] of [['state', 'done'], ['updated', new Date(now).toISOString()]]) {
+      const attr = new RegExp(`\\b${name}=(?:"[^"]*"|'[^']*'|[^\\s]+)`)
+      marker = attr.test(marker) ? marker.replace(attr, `${name}=${value}`) : marker.replace(/\s*-->$/, ` ${name}=${value} -->`)
+    }
+    lines[span.start] = marker
+  }
+  const after = lines.join(eolOf(text)) + (text.endsWith('\n') ? eolOf(text) : '')
+  const changed = parseProgress(after).flatMap(project => project.tasks).find(one => one.line === task.line)
+  if (changed === undefined || changed.steps.some(step => step.status !== 'done' && step.status !== 'cancelled')) return null
+  const twins = parseProgress(after).filter(project => (project.name || s.uncategorized) === ref.project).flatMap(project => project.tasks).filter(one => one.title === ref.title).length
+  return { text: after, ref: { ...ref, expected: confirmKey(ref.project, changed, twins) }, auto: task.auto, entries: open.map(step => ({ project: ref.project, task: ref.title, step: step.text })) }
+}
 
 // Moves old blocks out; each entry is the block without its markers, under a dated heading,
 // ready to append to progress-archive.md.

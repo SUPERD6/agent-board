@@ -3,11 +3,12 @@ import { askOf, askRank } from './ask'
 import { ZH_TW } from './i18n'
 import type { Strings } from './i18n'
 import type { AskKind } from './ask'
-import { shortId, stepWords } from './blocks'
+import { confirmKey, shortId, stepWords, upsertAutoBlock } from './blocks'
+import type { ConfirmRef } from './blocks'
 import { ciWords, prWords } from './github'
 import { doingTask, fallbackTitle, isAnswered, waitsOnYou } from './mirror'
 import type { Tone } from './palette'
-import { countSteps, currentStepIndex, doneKey, isHereProject, isStale, isTaskComplete, RESUME } from './parse'
+import { countSteps, currentStepIndex, doneKey, isHereProject, isStale, isTaskComplete, parseProgress, RESUME } from './parse'
 import { sha256 } from './sha256'
 import { observeQuestions, questionScope, questionSlot } from './questions'
 import type { QuestionLedger, QuestionProofs } from './questions'
@@ -141,6 +142,7 @@ export type TaskRow = {
   // Set when the person may take the row out now: a hand-kept task, or a block whose session
   // ended or stopped. A live session's block is that session's to change.
   archive: TaskRef | null
+  confirm?: ConfirmRef | null
   // Another agent's session the row is; null for Claude's and hand-kept ones.
   target: AgentTarget | null
 }
@@ -239,6 +241,16 @@ export const contextOf = (task: ProgressTask): string => {
     .map(note => note.replace(DUE_WORDS, '').replace(/^[\s·・,，]+|[\s·・,，]+$/g, ''))
     .filter(note => note !== '')
     .join(' · ')
+}
+
+// A row cannot certify a different cached task, even when their clocks tie. Compare
+// the owner's rendered meaning; translated lifecycle prose is not task content.
+export const mirrorMatchesTask = (mirror: ProgressMirror, project: string, task: ProgressTask, s: Strings = ZH_TW): boolean => {
+  const rendered = parseProgress(upsertAutoBlock('', mirror, s))[0]
+  const source = rendered?.tasks[0]
+  if (source === undefined || rendered?.name !== project || source.auto?.session !== task.auto?.session || source.auto?.agent !== task.auto?.agent) return false
+  const steps = (one: ProgressTask): string => JSON.stringify(one.steps.filter(step => step.status !== 'cancelled').map(step => [step.text, step.status, step.depth]))
+  return source.title === task.title && steps(source) === steps(task) && contextOf(source) === contextOf(task) && handoffOf(source) === handoffOf(task)
 }
 
 // `isAsked` leaves out a question the person marked answered.
@@ -750,6 +762,9 @@ export const buildView = (
         // Only an agent whose resume by id is known gets a command.
         resume: auto === 'ended' && task.auto?.resume ? resumeCommand(task.auto.resume, task.auto.dir, task.auto.agent) : null,
         handoff: handoffOf(task),
+        confirm: (isManual && task.line >= 0 || auto === 'ended')
+          ? { project: name, title: task.title, line: task.line, session: task.auto?.session ?? null, expected: confirmKey(name, task, projects.filter(one => (one.name || s.uncategorized) === name).flatMap(one => one.tasks).filter(one => one.title === task.title).length) }
+          : null,
         archive:
           isManual && task.line >= 0
             ? { project: name, title: task.title, line: task.line, session: null }

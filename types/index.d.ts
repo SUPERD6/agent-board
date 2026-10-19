@@ -120,6 +120,9 @@ export type ProgressMirror = {
   firstPrompt: string
   state: ProgressSessionState
   tasks: ProgressMirrorTask[]
+  // Exact canceled text from an uncached completed block, outside completed-work counts.
+  // A fresh producer mirror can supersede this snapshot without guessing a recipient.
+  retainedCancelled?: string[]
   // Retained even after a task is deleted, so reusing its id cannot reuse an ask revision.
   questionSequence?: string
   updated: number
@@ -145,6 +148,8 @@ export type ProgressMirror = {
   // Newest prompt receipt, on the same binary timestamp scale as turnOrder. Kept
   // separately so adding prompt events never reinterprets saved turn/end ranks.
   promptOrder?: number
+  // A person's completion rejects older (or undated) inbox turns without stopping new work.
+  confirmedAt?: number
   // Claude's steps the person has answered since they were asked: task id to the stepKey of
   // the words they answered. A step stops waiting on them while its words match, until Claude
   // asks again (a TaskUpdate that sets waiting to the person, or a turn that ends on a

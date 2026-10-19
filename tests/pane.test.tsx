@@ -1,6 +1,7 @@
 import type { On, PromptOrigin, RenderPropsOf } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 import type { Engine, MockClock } from 'claude-code/testing'
+import type { ProgressMirrorTask } from '../types'
 import { agentHooks, boardScript, isSetupState, NODE_MIN, openclawPlugin, RELEASE_PATHS } from '../hooks/connect'
 import { STRINGS } from '../hooks/strings'
 
@@ -12,7 +13,7 @@ import { buildView, IDLE_MS, parseSeen, seenJson, seenPath, withSeen } from '../
 import { parseProgress } from '../hooks/parse'
 import { chatText, peekInbox } from '../hooks/board'
 import { answerAgentPrompt, blockId, isInboxFile, withAgentPrompts } from '../hooks/inbox'
-import { emptyMirror } from '../hooks/mirror'
+import { completionKey, completionOverlay, emptyMirror } from '../hooks/mirror'
 import { applyDigest } from '../hooks/digest'
 import { upsertAutoBlock } from '../hooks/blocks'
 
@@ -146,8 +147,8 @@ type World = {
   unwritable?: Set<string>
   ignoreQuestionWrites?: boolean
   failStore?: (operation: 'get' | 'set', key: string) => boolean
-  ignoreStore?: (key: string) => boolean
   beforeStoreSet?: (key: string) => void
+  ignoreStore?: (key: string) => boolean
   afterMove?: (from: string, to: string) => boolean
   // A removal that fails, or reports success while the file still exists.
   unremovable?: Set<string>
@@ -368,6 +369,252 @@ const PROBE_BODY = JSON.stringify({ session_id: 'pr53-fixture', cwd: '/work/synt
 const PROBE_REPLY = 'TITLE: fixture\nCONTEXT: synthetic\nDONE: Saved first result\nNEXT: Verify recovery\nASK: -'
 const probeWorld = (): World => ({ files: new Map([[FILE, '# Progress\n'], [`${INBOX}/${PROBE_NAME}`, PROBE_BODY]]), mtime: 1, hasTasks: true, asked: [], store: { inboxDone: {}, autoConnectOff: true }, reply: () => PROBE_REPLY })
 const probeStart = async ($: Engine): Promise<void> => { await $.session.start({ cwd: '/work/persona_framework', surface: 'desktop', isInteractive: true }) }
+const confirmStep = (subject: string, id = '1'): ProgressMirrorTask => ({ id, subject, status: 'pending', activeForm: '', waiting: null, why: null, ask: null, options: [], command: null, link: null, blocked: null, blockedBy: [] })
+
+for (const lang of ['en', 'zh-TW', 'zh-CN'] as const) test(`Confirm done on the pane journals every new tick and protects the stopped mirror from late turns in ${lang}`, { options: { language: lang } }, async ($, on) => {
+  const at = Date.parse('2026-10-16T12:00:00Z')
+  const id = blockId('codex', 'synthetic-confirm-session')
+  const steps = '- [ ] Todo\n- [~] Doing\n- [?] Ask?\n- [>] Running\n- [!] Blocked\n- [-] Canceled\n- [x] Already done\n'
+  const file = `## Demo\n### Manual\n${steps}\n<!-- auto session=11223344 agent=claude state=ended updated=2026-10-16T11:00:00Z -->\n### Ended Claude\n${steps}<!-- /auto session=11223344 -->\n<!-- auto session=${id} agent=codex state=waiting updated=2026-10-15T23:00:00Z -->\n### Stopped Codex\n${steps}<!-- /auto session=${id} -->\n<!-- auto session=55667788 agent=codex state=working updated=2026-10-16T12:00:00Z -->\n### Live task\n- [ ] Leave this open\n<!-- /auto session=55667788 -->\n`
+  const stored = { ...emptyMirror(id, 'Demo', at - 13 * 3600000, '', 'codex'), title: 'Stopped Codex', source: 'turns', tasks: [confirmStep('Todo'), { ...confirmStep('Doing', '2'), status: 'in_progress' }, { ...confirmStep('Ask?', '3'), waiting: 'you' }, { ...confirmStep('Running', '4'), waiting: 'run' }, { ...confirmStep('Blocked', '5'), blocked: '' }, { ...confirmStep('Already done', '6'), status: 'completed' }] }
+  const world: World = { files: new Map([[FILE, file]]), mtime: 1, hasTasks: true, asked: [], store: { inboxDone: {}, autoConnectOff: true, opened: ['others'], [`agent:${id}`]: stored } }
+  const clock = engineBeneath(on, world)
+  await probeStart($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop', props: PROPS })
+  for (const title of ['Manual', 'Ended Claude', 'Stopped Codex']) {
+    await ui.press({ key: `Demo::${title}` })
+    expect(await ui.find({ type: 'Button', key: `Demo::${title}::done`, text: STRINGS[lang].confirmDone })).toBeDefined()
+    await ui.press({ key: `Demo::${title}::done` })
+    expect(await ui.find({ type: 'Text', text: STRINGS[lang].confirmedDone(title) })).toBeDefined()
+  }
+  expect((world.files.get(JOURNAL) ?? '').split('\n').filter(line => line.startsWith('- '))).toHaveLength(15)
+  expect(world.files.get(JOURNAL)).not.toContain('Canceled')
+  expect(world.files.get(JOURNAL)).not.toContain('Already done')
+  expect(world.files.get(FILE)?.match(/- \[-\] Canceled/g)).toHaveLength(3)
+  expect(world.store![`agent:${id}`]).toEqual(stored)
+  const overlay = Object.values(world.store!).find(value => value !== null && typeof value === 'object' && 'owner' in value && value.owner === `agent:${id}`)
+  expect(overlay).toMatchObject({ completed: { state: 'done', confirmedAt: at } })
+  await ui.press({ key: 'Demo::Live task' })
+  expect(await ui.find({ type: 'Button', key: 'Demo::Live task::done' })).toBeUndefined()
+  const before = world.files.get(FILE)
+  world.files.set(`${INBOX}/codex-turn-${Math.floor((at - 1000) / 1000)}-9.json`, JSON.stringify({ session_id: 'synthetic-confirm-session', cwd: '/work/Demo', prompt: 'old work', last_assistant_message: 'An old turn must not reopen this.' }))
+  world.mtime += 1
+  await clock.advance(5000)
+  expect(world.files.get(FILE)).toBe(before)
+  expect(world.asked).toHaveLength(0)
+  await ui.unmount()
+})
+
+test('Confirm done fences the first delayed legacy delivery even when the owner cache did not exist', async ($, on) => {
+  const at = Date.parse('2026-10-16T12:00:00Z')
+  const id = blockId('codex', 'first-cache-session')
+  const file = `## Demo\n<!-- auto session=${id} agent=codex state=ended updated=2026-10-16T11:00:00Z -->\n### External task\n- [ ] Old step\n<!-- /auto session=${id} -->\n`
+  const world: World = { files: new Map([[FILE, file]]), mtime: 1, hasTasks: true, asked: [], store: { inboxDone: {}, autoConnectOff: true, opened: ['others'] }, reply: () => 'TITLE: External task\nCONTEXT: Synthetic\nDONE: -\nNEXT: Reopened old step\nASK: -' }
+  const clock = engineBeneath(on, world)
+  await probeStart($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop', props: PROPS })
+  await ui.press({ key: 'Demo::External task' })
+  await ui.press({ key: 'Demo::External task::done' })
+  const confirmed = world.files.get(FILE)
+  expect(confirmed).toContain('- [x] Old step')
+  world.files.set(`${INBOX}/codex-turn-${Math.floor((at - 1000) / 1000)}-1.json`, JSON.stringify({ session_id: 'first-cache-session', cwd: '/work/Demo', prompt: 'Old request', last_assistant_message: 'Old work must stay complete.' }))
+  world.mtime += 1
+  await clock.advance(5000)
+  expect(world.files.get(FILE)).toBe(confirmed)
+  expect(world.asked).toHaveLength(0)
+  expect(world.store![`agent:${id}`]).toBeUndefined()
+  expect(Object.keys(world.store!).some(key => key.startsWith('completion:'))).toBe(true)
+  world.files.set(`${INBOX}/codex-turn-${Math.floor((at + 6000) / 1000)}-2.json`, JSON.stringify({ session_id: 'first-cache-session', cwd: '/work/Demo', prompt: 'Fresh request', last_assistant_message: 'New work after confirmation.' }))
+  world.mtime += 1
+  await clock.advance(5000)
+  expect(world.files.get(FILE)).toContain('Reopened old step')
+  expect(world.files.get(FILE)).toContain('- [x] Old step')
+  expect(world.asked).toHaveLength(1)
+  await ui.unmount()
+})
+
+for (const [when, delta] of [['older', -1000], ['equal', 0], ['newer', 1000]] as const) test(`uncached completion retains canceled pointers through the first old inbox and ${when} prompt`, async ($, on) => {
+  const at = Date.parse('2026-10-16T12:00:00Z')
+  const session = 'uncached-canceled-session'
+  const id = blockId('codex', session)
+  const canceled = '- [-] Transfer API — Transferred to Gemini\n- [-] Deferred without a recipient'
+  const file = `## Demo\n<!-- auto session=${id} agent=codex state=ended updated=2026-10-16T11:00:00Z resume=${session} -->\n### External task\n- [ ] Old step\n${canceled}\n<!-- /auto session=${id} -->\n`
+  const world: World = { files: new Map([[FILE, file]]), mtime: 1, hasTasks: true, asked: [], reads: [], store: { inboxDone: {}, autoConnectOff: true, opened: ['others'] } }
+  const clock = engineBeneath(on, world)
+  await probeStart($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop', props: PROPS })
+  await ui.press({ key: 'Demo::External task' })
+  await ui.press({ key: 'Demo::External task::done' })
+  const confirmed = world.files.get(FILE)
+  expect(confirmed).toContain('- [x] Old step')
+  expect(confirmed).toContain(canceled)
+  world.files.set(`${INBOX}/codex-turn-${at - 1000}-1.json`, JSON.stringify({ session_id: session, cwd: '/work/Demo', prompt: 'Old request', last_assistant_message: 'Old work must stay complete.' }))
+  world.mtime += 1
+  await clock.advance(5000)
+  expect(world.files.get(FILE)).toBe(confirmed)
+  world.files.set(`${INBOX}/codex-prompt-${at + delta}-2.json`, JSON.stringify({ session_id: session, prompt: 'PRIVATE_NEW_INPUT', transcript_path: '/private/rollout-canceled.jsonl' }))
+  world.mtime += 1
+  await clock.advance(5000)
+  expect(world.files.get(FILE)).toContain(canceled)
+  expect(world.files.get(FILE)).toContain(`state=${when === 'newer' ? 'working' : 'done'}`)
+  if (when !== 'newer') expect(world.files.get(FILE)).toBe(confirmed)
+  const steps = parseProgress(world.files.get(FILE)!).flatMap(project => project.tasks).flatMap(task => task.steps)
+  expect(steps.filter(step => step.status === 'done')).toHaveLength(1)
+  expect(steps.filter(step => step.status === 'cancelled')).toHaveLength(2)
+  expect(world.asked).toEqual([])
+  expect(world.reads?.some(path => path.includes('rollout-canceled'))).toBe(false)
+  expect(world.files.get(FILE)).not.toContain('PRIVATE_NEW_INPUT')
+  await ui.unmount()
+})
+
+test('an absent owner becoming fresh during completion storage is preserved without false success', async ($, on) => {
+  const at = Date.parse('2026-10-16T12:00:00Z')
+  const id = blockId('codex', 'missing-owner-race')
+  const file = `## Demo\n<!-- auto session=${id} agent=codex state=ended updated=2026-10-16T11:00:00Z -->\n### External task\n- [ ] Old step\n<!-- /auto session=${id} -->\n`
+  const newer = { ...emptyMirror(id, 'Demo', at + 1, '', 'codex'), turnOrder: (at + 1) * 2, title: 'Fresh accepted work' }
+  const world: World = { files: new Map([[FILE, file]]), mtime: 1, hasTasks: true, store: { inboxDone: {}, autoConnectOff: true, opened: ['others'] } }
+  engineBeneath(on, world)
+  await probeStart($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop', props: PROPS })
+  await ui.press({ key: 'Demo::External task' })
+  world.beforeStoreSet = key => { if (key.startsWith('completion:')) { world.store![`agent:${id}`] = newer; world.beforeStoreSet = undefined } }
+  await ui.press({ key: 'Demo::External task::done' })
+  expect(world.store![`agent:${id}`]).toEqual(newer)
+  expect(world.files.get(JOURNAL)).toContain(' · Old step\n')
+  expect(await ui.find({ type: 'Text', text: ZH_TW.boardWriteFailed })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: ZH_TW.confirmedDone('External task') })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('an old completion fence survives owner pruning and rejects delayed work while allowing a genuinely newer turn', async ($, on) => {
+  const at = Date.parse('2026-10-16T12:00:00Z')
+  const day = 24 * 3600000
+  const id = blockId('codex', 'old-completion-session')
+  const source = { ...emptyMirror(id, 'Demo', at - 40 * day, '', 'codex'), turnOrder: (at - 40 * day) * 2, title: 'Old task', tasks: [{ id: '1', subject: 'Old step', status: 'pending' as const, activeForm: '', waiting: null, why: null, ask: null, options: [], command: null, link: null, blocked: null, blockedBy: [] }] }
+  const overlay = completionOverlay(`agent:${id}`, source, at - 35 * day)
+  const key = completionKey(overlay)
+  const file = '## Demo\n### Keep manual work\n- [ ] Keep open\n'
+  const world: World = { files: new Map([[FILE, file], [`${INBOX}/codex-turn-${Math.floor((at - 36 * day) / 1000)}-1.json`, JSON.stringify({ session_id: 'old-completion-session', cwd: '/work/Demo', prompt: 'Old request', last_assistant_message: 'Old work must stay complete.' })]]), mtime: 1, hasTasks: true, asked: [], store: { inboxDone: {}, autoConnectOff: true, [key]: overlay }, reply: () => 'TITLE: New work\nCONTEXT: Synthetic\nDONE: -\nNEXT: Genuinely newer step\nASK: -' }
+  const clock = engineBeneath(on, world)
+  await probeStart($)
+  await clock.advance(5000)
+  expect(world.store![key]).toEqual(overlay)
+  expect(world.store![`agent:${id}`]).toBeUndefined()
+  expect(world.files.get(FILE)).toBe(file)
+  expect(world.asked).toHaveLength(0)
+  world.files.set(`${INBOX}/codex-turn-${Math.floor((at + 6000) / 1000)}-2.json`, JSON.stringify({ session_id: 'old-completion-session', cwd: '/work/Demo', prompt: 'Fresh request', last_assistant_message: 'Start new work.' }))
+  world.mtime += 1
+  await clock.advance(5000)
+  expect(world.files.get(FILE)).toContain('Genuinely newer step')
+  expect(world.files.get(FILE)).toContain('### Keep manual work\n- [ ] Keep open')
+  expect(world.asked).toHaveLength(1)
+})
+
+test('repeated Confirm done presses journal each new step once', async ($, on) => {
+  const world: World = { files: new Map([[FILE, '## Demo\n### Target\n- [ ] First\n- [~] Second\n- [-] Canceled\n']]), mtime: 1, hasTasks: true, store: { inboxDone: {}, autoConnectOff: true, opened: ['others'] } }
+  engineBeneath(on, world)
+  await probeStart($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop', props: PROPS })
+  await ui.press({ key: 'Demo::Target' })
+  await Promise.all([ui.press({ key: 'Demo::Target::done' }), ui.press({ key: 'Demo::Target::done' })])
+  expect(world.files.get(FILE)).toContain('- [x] First\n- [x] Second\n- [-] Canceled')
+  expect((world.files.get(JOURNAL) ?? '').split(' · First\n')).toHaveLength(2)
+  expect((world.files.get(JOURNAL) ?? '').split(' · Second\n')).toHaveLength(2)
+  await ui.unmount()
+})
+
+test('Confirm done preserves a failed journal notice and retries every new entry once', async ($, on) => {
+  const world: World = { files: new Map([[FILE, '## Demo\n### Target\n- [ ] First\n- [~] Second\n']]), mtime: 1, hasTasks: true, store: { inboxDone: {}, autoConnectOff: true, opened: ['others'] }, unwritable: new Set([JOURNAL]) }
+  engineBeneath(on, world)
+  await probeStart($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop', props: PROPS })
+  await ui.press({ key: 'Demo::Target' })
+  await ui.press({ key: 'Demo::Target::done' })
+  expect(world.files.get(FILE)).toContain('- [x] First\n- [x] Second')
+  expect(await ui.find({ type: 'Text', text: ZH_TW.journalFailed })).toBeDefined()
+  world.unwritable?.clear()
+  await $.turn.start({ text: 'Continue synthetic work', turnId: 'confirm-journal-retry' })
+  expect((world.files.get(JOURNAL) ?? '').split(' · First\n')).toHaveLength(2)
+  expect((world.files.get(JOURNAL) ?? '').split(' · Second\n')).toHaveLength(2)
+  await $.turn.start({ text: 'Continue synthetic work again', turnId: 'confirm-journal-retry-again' })
+  expect((world.files.get(JOURNAL) ?? '').split(' · First\n')).toHaveLength(2)
+  await ui.unmount()
+})
+
+test('Confirm done still journals its saved ticks and reports a completion overlay write failure', async ($, on) => {
+  const id = blockId('codex', 'confirm-store-failure')
+  const file = `## Demo\n<!-- auto session=${id} agent=codex state=ended updated=2026-10-16T11:00:00Z -->\n### Target\n- [ ] First\n<!-- /auto session=${id} -->\n`
+  const world: World = { files: new Map([[FILE, file]]), mtime: 1, hasTasks: true, store: { inboxDone: {}, autoConnectOff: true, opened: ['others'], [`agent:${id}`]: { ...emptyMirror(id, 'Demo', Date.parse('2026-10-15T23:00:00Z'), '', 'codex'), title: 'Target', tasks: [confirmStep('First')] } }, failStore: (operation, key) => operation === 'set' && key.startsWith('completion:') }
+  engineBeneath(on, world)
+  await probeStart($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop', props: PROPS })
+  await ui.press({ key: 'Demo::Target' })
+  await ui.press({ key: 'Demo::Target::done' })
+  expect(world.files.get(FILE)).toContain('- [x] First')
+  expect(world.files.get(JOURNAL)).toContain(' · First\n')
+  expect(await ui.find({ type: 'Text', text: ZH_TW.boardWriteFailed })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: ZH_TW.confirmedDone('Target') })).toBeUndefined()
+  await ui.unmount()
+})
+
+for (const phase of ['before press', 'during write', 'between final get and set'] as const) test(`Confirm done preserves a newer stopped-session mirror ${phase}`, async ($, on) => {
+  const at = Date.parse('2026-10-16T12:00:00Z')
+  const id = blockId('codex', 'confirm-concurrent-mirror')
+  const file = `## Demo\n<!-- auto session=${id} agent=codex state=ended updated=2026-10-15T23:00:00Z -->\n### Target\n- [ ] First\n<!-- /auto session=${id} -->\n`
+  const original = { ...emptyMirror(id, 'Demo', at - 13 * 3600000, '', 'codex'), state: 'ended', title: 'Target', tasks: [confirmStep('First')] }
+  const newer = { ...original, state: 'working', title: 'New work accepted', updated: at }
+  const world: World = { files: new Map([[FILE, file]]), mtime: 1, hasTasks: true, store: { inboxDone: {}, autoConnectOff: true, opened: ['others'], [`agent:${id}`]: original } }
+  engineBeneath(on, world)
+  await probeStart($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop', props: PROPS })
+  await ui.press({ key: 'Demo::Target' })
+  if (phase === 'before press') world.store![`agent:${id}`] = newer
+  else if (phase === 'during write') world.afterWrite = () => { world.store![`agent:${id}`] = newer; return world.files.get(FILE)! }
+  else world.beforeStoreSet = key => { if (key === `agent:${id}` || key.startsWith('completion:')) { world.store![`agent:${id}`] = newer; world.beforeStoreSet = undefined } }
+  await ui.press({ key: 'Demo::Target::done' })
+  expect(world.store![`agent:${id}`]).toEqual(newer)
+  if (phase === 'before press') {
+    expect(world.files.get(FILE)).toBe(file)
+    expect(world.files.has(JOURNAL)).toBe(false)
+  } else expect(world.files.get(JOURNAL)).toContain(' · First\n')
+  expect(await ui.find({ type: 'Text', text: ZH_TW.confirmedDone('Target') })).toBeUndefined()
+  await ui.unmount()
+})
+
+for (const state of ['ended', 'done'] as const) for (const change of ['newer clock', 'equal-clock content'] as const) test(`Confirm done refuses cached ${state} work with ${change} before capture`, async ($, on) => {
+  const at = Date.parse('2026-10-16T12:00:00Z')
+  const id = blockId('codex', 'stale-selection-session')
+  const file = `## Demo\n<!-- auto session=${id} agent=codex state=ended updated=2026-10-16T11:00:00Z -->\n### Target\n- [ ] First\n<!-- /auto session=${id} -->\n`
+  const stored = { ...emptyMirror(id, 'Demo', change === 'newer clock' ? at : at - 3600000, '', 'codex'), title: 'Target', state, tasks: [confirmStep('Different newer task')] }
+  const world: World = { files: new Map([[FILE, file]]), mtime: 1, hasTasks: true, store: { inboxDone: {}, autoConnectOff: true, opened: ['others'], [`agent:${id}`]: stored } }
+  engineBeneath(on, world)
+  await probeStart($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop', props: PROPS })
+  await ui.press({ key: 'Demo::Target' })
+  await ui.press({ key: 'Demo::Target::done' })
+  expect(world.files.get(FILE)).toBe(file)
+  expect(world.files.has(JOURNAL)).toBe(false)
+  expect(world.store![`agent:${id}`]).toEqual(stored)
+  expect(Object.keys(world.store!).some(key => key.startsWith('completion:'))).toBe(false)
+  expect(await ui.find({ type: 'Text', text: ZH_TW.boardLineChanged })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a pane Confirm done rechecks changed words and resumed sessions before writing', async ($, on) => {
+  const file = '## Demo\n<!-- auto session=11223344 agent=codex state=ended updated=2026-10-16T11:00:00Z -->\n### Target\n- [ ] First\n- [ ] Later\n<!-- /auto session=11223344 -->\n'
+  const world: World = { files: new Map([[FILE, file]]), mtime: 1, hasTasks: true, store: { inboxDone: {}, autoConnectOff: true, opened: ['others'] } }
+  engineBeneath(on, world)
+  await probeStart($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop', props: PROPS })
+  await ui.press({ key: 'Demo::Target' })
+  const changed = file.replace('Later', 'Changed later step').replace('state=ended', 'state=working').replace('11:00:00Z', '12:00:00Z')
+  world.files.set(FILE, changed)
+  await ui.press({ key: 'Demo::Target::done' })
+  expect(world.files.get(FILE)).toBe(changed)
+  expect(world.files.has(JOURNAL)).toBe(false)
+  expect(await ui.find({ type: 'Text', text: ZH_TW.boardLineChanged })).toBeDefined()
+  await ui.unmount()
+})
 
 const PROMPT_AT = Date.parse('2026-10-16T11:59:00Z')
 const PROMPT_SESSION = 'prompt-owner'
@@ -385,6 +632,58 @@ const addPrompt = (world: World, at: number, session = PROMPT_SESSION): string =
 }
 
 const effectivePromptMirror = (world: World) => withAgentPrompts(world.store![`agent:${PROMPT_ID}`] as ReturnType<typeof emptyMirror>, Object.entries(world.store!).filter(([key]) => key.startsWith(`agentPrompt:${PROMPT_ID}:`)).map(([, value]) => value), Date.parse('2026-10-16T13:00:00Z'))!
+
+for (const [when, delta] of [['older', -1000], ['equal', 0], ['newer', 1000]] as const) test(`raw-owner completion and ${when} prompts compose without restoring prior questions`, async ($, on) => {
+  const { world, mirror } = questionWorld()
+  const confirmedAt = PROMPT_AT + 5000
+  const overlay = completionOverlay(`agent:${PROMPT_ID}`, mirror, confirmedAt)
+  world.store![completionKey(overlay)] = overlay
+  world.files.set(FILE, upsertAutoBlock(world.files.get(FILE)!, overlay.completed, ZH_TW))
+  const completed = world.files.get(FILE)
+  addPrompt(world, confirmedAt + delta)
+  const clock = engineBeneath(on, world)
+  await probeStart($)
+  await clock.advance(5000)
+  expect(world.store![`agent:${PROMPT_ID}`]).toEqual(mirror)
+  expect(world.store![completionKey(overlay)]).toEqual(overlay)
+  expect(overlay.source).toBe(sha256(JSON.stringify(mirror)))
+  expect(world.files.get(FILE)).toContain(`state=${when === 'newer' ? 'working' : 'done'}`)
+  if (when !== 'newer') expect(world.files.get(FILE)).toBe(completed)
+  expect(parseProgress(world.files.get(FILE)!).flatMap(project => project.tasks).flatMap(task => task.steps).some(step => step.status === 'waiting')).toBe(false)
+  expect(world.files.get(FILE)).not.toContain('Use staging?')
+  expect(world.asked).toEqual([])
+  expect(world.reads?.some(path => path.includes('rollout-prompt'))).toBe(false)
+})
+
+test('a held older model summary cannot stand over a pane confirmation on its raw owner', async ($, on) => {
+  const { world, mirror } = questionWorld()
+  const ended = { ...mirror, state: 'ended' as const }
+  world.store![`agent:${PROMPT_ID}`] = ended
+  world.store!.opened = ['others']
+  world.files.set(FILE, upsertAutoBlock(world.files.get(FILE)!, ended, ZH_TW))
+  let reached!: () => void, release!: () => void
+  const entered = new Promise<void>(resolve => { reached = resolve })
+  const held = new Promise<void>(resolve => { release = resolve })
+  world.holdComplete = { reached, release: held }
+  world.files.set(`${INBOX}/codex-turn-${PROMPT_AT + 1000}-1.json`, JSON.stringify({ session_id: PROMPT_SESSION, cwd: '/demo', prompt: 'Older work', last_assistant_message: 'OLD_QUESTION?' }))
+  const clock = engineBeneath(on, world)
+  await probeStart($)
+  await clock.advance(5000)
+  await entered
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop', props: PROPS })
+  await ui.press({ key: 'demo::Migration' })
+  await ui.press({ key: 'demo::Migration::done' })
+  expect(await ui.find({ type: 'Text', text: ZH_TW.confirmedDone('Migration') })).toBeDefined()
+  const completed = world.files.get(FILE)
+  expect(completed).toContain('state=done')
+  release()
+  await clock.advance(1000)
+  expect(world.files.get(FILE)).toBe(completed)
+  expect(world.files.get(FILE)).not.toContain('OLD_QUESTION')
+  expect(world.store![`agent:${PROMPT_ID}`]).toEqual(ended)
+  expect(world.asked).toHaveLength(1)
+  await ui.unmount()
+})
 
 test('another agent prompt immediately answers its visible question without a model or transcript read', async ($, on) => {
   const { world, mirror } = questionWorld()
@@ -3420,12 +3719,17 @@ test('an inbox turn the board will not take stays in the inbox and reaches the b
   expect(world.files.get(FILE)).toBe('# Progress\n')
   expect(takenOf(world)).toHaveLength(1)
 
-  // Written again once the board takes writes and the claim's time is up.
+  // Seed expiry directly: fifteen mock minutes run unrelated poll timers and
+  // obscure the retained claim's ownership, age and retry behavior.
+  const claim = takenOf(world)[0]!
+  const expired = `${ours}.deadbeef-${Date.parse('2026-10-16T11:00:00Z').toString(36)}-1.taking`
+  world.files.set(expired, world.files.get(claim)!)
+  world.files.delete(claim)
   world.unwritable = new Set()
-  await clock.advance(15 * 60 * 1000)
   world.mtime += 1
   await clock.advance(5000)
   expect(world.files.get(FILE) ?? '').toContain('## api-gateway\n')
+  expect(world.files.has(expired)).toBe(false)
   expect(takenOf(world)).toEqual([])
 })
 
