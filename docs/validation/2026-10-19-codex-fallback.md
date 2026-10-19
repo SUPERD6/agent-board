@@ -88,3 +88,21 @@ The new `mock file timestamps isolate sidecar writes and preserve explicit progr
 The initial internal-write-only fix left direct sidecar replacements unstamped. Expanded the same regression with a direct same-size metadata replacement and native Map get/set checks. Before the instance setter fix it failed in 12.15 ms: expected metadata timestamp greater than 11, received 11 (`issue-102-mtime-direct-red.log`). The unchanged expanded test passed in 12.64 ms afterward (`issue-102-mtime-direct-green.log`), under the same 5000 ms limit; its normalized body SHA-256 is `5f9045ab744f0d6c94d84ae8c127dfa389d44b1fa8c33360f3408241b8d84ca3` in both runs. Two unreadable-file fixture setups replaced their Map after startup; they now clear/reseed that same instance so its setter remains installed, with their assertions untouched. No `mtimes[FILE]` seed was found.
 
 No full suite was run after this change. The focused regression proves timestamp isolation and direct-replacement compatibility, not the cause or resolution of full-suite timeouts or prior large Node walltime stalls. Final-input hashes are retained in `issue-102-mtime-inputs.json`; all previous full-suite failures remain retained. Parent-owned board timeout guards are outside this scoped commit.
+
+## Bounded page fixtures
+
+The next complete 11-file Node attempt on actual-main merge `720a952` was interrupted
+without a final suite summary. Two page cases had failed after reporting
+849953.37 ms and 1294043.54 ms; the cause remains unproven. Its partial log is
+`issue-102-final-node.log`, with interruption evidence retained separately. It is
+not a green full-suite result. The exact test runner was no longer present in a
+subsequent normalized-command process check; no unrelated processes were killed.
+
+The page test helper now bounds HTTP requests at 5000 ms, synchronous VM script
+evaluation at 1000 ms and the forged-archive terminal subprocess at 5000 ms.
+Original assertions and outer 30000 ms test limits remain unchanged. The two
+previously stalled cases passed **2/2** in 12.162 seconds: live-block archive
+protection in 2223.94 ms and three-language Confirm done in 4544.56 ms
+(`issue-102-bounded-pages.log`). This proves the bounded helper's positive paths,
+not the cause of the earlier stalls. Final complete suites and exact-head CI
+remain required.

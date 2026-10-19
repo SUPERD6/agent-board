@@ -774,6 +774,7 @@ setTimeout(() => process.stdout.write('Redis it is; wiring it up now.\\n'), 1000
         res.on('data', chunk => (data += chunk))
         res.on('end', () => done({ status: res.statusCode, headers: res.headers, body: data, json: () => JSON.parse(data) }))
       })
+      req.setTimeout(5000, () => req.destroy(new Error('Fixture HTTP request timed out')))
       req.on('error', fail)
       req.end(body === undefined ? undefined : JSON.stringify(body))
     })
@@ -819,7 +820,7 @@ test('live blocks of every agent refuse forged web archives without writes and t
       assert.equal(readFileSync(board.path, 'utf8'), file)
       assert.deepEqual(readdirSync(board.dir).sort(), files)
     }
-    const terminal = execFileSync(process.execPath, [join(board.dir, 'agent-board.mjs'), '--keys', Array.from({ length: 24 }, () => 'a down').join(' ')], { env: { ...process.env, CLAUDE_PROGRESS_FILE: '', NO_COLOR: '1' }, encoding: 'utf8' })
+    const terminal = execFileSync(process.execPath, [join(board.dir, 'agent-board.mjs'), '--keys', Array.from({ length: 24 }, () => 'a down').join(' ')], { env: { ...process.env, CLAUDE_PROGRESS_FILE: '', NO_COLOR: '1' }, encoding: 'utf8', timeout: 5000 })
     assert.match(terminal, /Still running; archive after it stops\./)
     assert.equal(readFileSync(board.path, 'utf8'), file)
     assert.deepEqual(readdirSync(board.dir).sort(), files)
@@ -1566,7 +1567,7 @@ const pageDom = async (html, first, { post, confirm, messaging } = {}) => {
       if (post) return post(requests.at(-1))
       return { ok: true, json: async () => ({ note: '' }) }
     },
-  })
+  }, { timeout: 1000 })
   const flush = () => new Promise(done => setImmediate(done))
   await flush()
   const buttons = node => node.childNodes.flatMap(child => [...(child.tag === 'button' ? [child] : []), ...buttons(child)])
