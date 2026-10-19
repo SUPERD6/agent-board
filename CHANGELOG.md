@@ -3,6 +3,7 @@
 ## Unreleased
 
 - **Recover temporary message-poll failures within the existing lease.** Retry only polling after a network failure, timeout or HTTP 5xx; preserve the exact verified binding without renewing its lease on failure. Disconnect on ownership loss, authentication errors, stale turns or expiry. Never replay a durable claim or infer an ACK from recovery. Tests: `a temporary poll failure preserves a verified connection and delivers a queued message once`, `a lost poll response after durable claiming is never replayed or turned into an ACK`, `a forbidden or stale heartbeat closes the connection instead of retrying authentication`, `temporary board failures cannot keep an expired connection alive`, `native ownership loss during poll recovery closes the exact binding`. These use synthetic local transports, with no new native-model acceptance claim.
+  Temporary message-store locks (`EPERM`, `EBUSY`, `EAGAIN`) return HTTP 503 instead of disconnecting a valid binding as a conflict. Empty polls leave durable state untouched. Tests: `a transient message-store rename failure recovers polling without replaying delivery`, `an idle or already claimed poll preserves the exact durable state`.
 
 ## 0.23.1 — 2026-10-19
 

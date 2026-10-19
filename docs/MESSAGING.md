@@ -13,6 +13,9 @@ renews that lease; failures do not. Invalid ownership, authentication, stale tur
 expired leases disconnect immediately. Recovery never registers another session or
 replays a claimed message. If a poll response is lost after claiming, the message stays
 uncertain until reconciled; a later heartbeat cannot turn it into an ACK.
+Temporary store locks (`EPERM`, `EBUSY`, `EAGAIN`) report HTTP 503 so polling can
+recover within that deadline. Idle polls do not rewrite the message file. Sending
+and receipts are never automatically retried, including after a store lock.
 
 Use the existing reply box on the session's card. Its Copy button becomes Send Codex
 (or that receiver's agent name) only when the full native session id and agent match a

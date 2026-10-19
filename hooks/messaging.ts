@@ -57,6 +57,7 @@ export const queueMessage = (state: MessageState, input: Record<string, unknown>
 export const claimMessages = (state: MessageState, target: Connection, now: number): { state: MessageState; messages: Message[] } => {
   const busy = state.messages.some(one => one.target === target.id && ['uncertain', 'accepted'].includes(one.status))
   const messages = busy ? [] : state.messages.filter(one => one.target === target.id && one.turn === target.turn && one.status === 'queued').slice(0, 1)
+  if (messages.length === 0) return { state, messages }
   return { state: { messages: state.messages.map(one => messages.includes(one) ? { ...one, status: 'uncertain', updated: now } : one) }, messages }
 }
 export const messageReceipt = (state: MessageState, target: Connection, input: Record<string, unknown>, now: number): MessageState => {

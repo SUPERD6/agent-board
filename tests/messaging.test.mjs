@@ -38,6 +38,15 @@ test('AB-TEST-001 deduplicates exact retries and rejects conflicting contents or
   assert.equal(disconnectMessages(claimed.state, target.id, 1003).messages[0].status, 'uncertain')
 })
 
+test('an idle or already claimed poll preserves the exact durable state', () => {
+  const empty = { messages: [] }
+  assert.equal(claimMessages(empty, target, 1000).state, empty)
+  const queued = queueMessage(empty, input, 'board', target, 1000).state
+  const claimed = claimMessages(queued, target, 1001)
+  assert.notEqual(claimed.state, queued)
+  assert.equal(claimMessages(claimed.state, target, 1002).state, claimed.state)
+})
+
 test('a connection observation requires one exact newer report, never a relay claim or ACK', () => {
   const one = { id: 'link1', agent: 'codex', session: 'native1', surface: 'Synthetic desktop', created: 10000, deadline: 20000, baseline: 9000, observed: null }
   for (const reports of [[], [{ agent: 'gemini', session: 'native1', updated: 11000 }], [{ agent: 'codex', session: 'native', updated: 11000 }], [{ agent: 'codex', session: 'native1', updated: 9000 }], [{ agent: 'codex', session: 'native1', updated: 13000 }]]) assert.equal(observeSession(one, reports, 12000), one)
@@ -69,12 +78,14 @@ test('transport acceptance is distinct from an actual reply and cannot grant too
   assert.throws(() => messageReceipt(ack, target, { id: input.id, status: 'rejected' }, 1004), /RECEIPT_CONFLICT/)
 })
 
-const start = async dir => {
+const start = async (dir, fault = '') => {
   const runtime = join(dir, 'runtime'); mkdirSync(runtime, { recursive: true })
   const script = join(dir, 'board.mjs'), progress = join(dir, 'progress.md')
   writeFileSync(script, `globalThis.AGENT_BOARD = ${JSON.stringify({ path: progress, lang: 'en' })}\n${BOARD_SCRIPT}`)
   if (!readFileSyncSafe(progress)) writeFileSync(progress, '# Synthetic board\n')
-  const child = spawn(process.execPath, [script, '--serve-child', '--messages-dir', join(dir, 'messages')], { windowsHide: true, env: { ...process.env, CLAUDE_PROGRESS_FILE: '', XDG_RUNTIME_DIR: runtime }, stdio: ['ignore', 'pipe', 'pipe'] })
+  const preload = join(dir, 'message-fault.cjs')
+  if (fault) writeFileSync(preload, `const fs = require('node:fs')\nconst path = require('node:path')\nconst directory = ${JSON.stringify(dir)}\n${fault}\nrequire('node:module').syncBuiltinESMExports()\n`)
+  const child = spawn(process.execPath, [...(fault ? ['-r', preload] : []), script, '--serve-child', '--messages-dir', join(dir, 'messages')], { windowsHide: true, env: { ...process.env, CLAUDE_PROGRESS_FILE: '', XDG_RUNTIME_DIR: runtime }, stdio: ['ignore', 'pipe', 'pipe'] })
   const exited = new Promise(done => child.once('exit', done))
   const address = await new Promise((done, fail) => {
     let out = '', err = ''
@@ -92,9 +103,9 @@ const start = async dir => {
   return { address, call, close }
 }
 const readFileSyncSafe = file => { try { return readFileSync(file, 'utf8') } catch { return null } }
-const fixture = async fn => {
+const fixture = async (fn, fault = '') => {
   const dir = mkdtempSync(join(tmpdir(), 'board-messages-'))
-  const board = await start(dir)
+  const board = await start(dir, fault)
   try { await fn(board, dir) } finally { await board.close().catch(() => undefined); rmSync(dir, { recursive: true, force: true }) }
 }
 const waitFor = async fn => {
@@ -104,6 +115,42 @@ const waitFor = async fn => {
   while (Date.now() < until) { const found = await fn(); if (found) return found; await pause(100) }
   throw new Error('condition timed out')
 }
+
+test('a transient message-store rename failure recovers polling without replaying delivery', async () => {
+  for (const code of ['EPERM', 'EBUSY', 'EAGAIN']) await fixture(async (board, dir) => {
+    const errors = [], deliveries = []
+    const receiver = await boardClient(board.address).attach({
+      agent: 'fixture', session: 'storage-recovery', turn: 'turn1', surface: 'Synthetic storage recovery', verify: async () => true,
+      onError: error => errors.push(error), deliver: async message => { deliveries.push(message.id); return 'ACK ' + message.id },
+    })
+    try {
+      const message = { ...input, target: receiver.id }
+      writeFileSync(join(dir, 'fail-message-rename'), code)
+      await board.call('/api/messages/send', message)
+      const file = join(dir, 'messages', 'messages.json'), before = readFileSync(file, 'utf8')
+      await waitFor(() => errors.length > 0)
+      assert.equal(errors[0].message, 'MESSAGE_STORE_BUSY')
+      assert.equal(errors[0].isRetryable, true)
+      assert.equal(readFileSync(file, 'utf8'), before)
+      assert.deepEqual(deliveries, [])
+      const failed = (await board.call('/api/board')).body.messaging
+      assert.ok(failed.connections.some(one => one.id === receiver.id))
+      assert.equal(failed.messages[0].status, 'queued')
+      assert.equal(failed.messages[0].reply, '')
+      await waitFor(async () => (await board.call('/api/board')).body.messaging.messages[0]?.status === 'acknowledged')
+      await board.call('/api/messages/send', message)
+      assert.deepEqual(deliveries, [input.id])
+    } finally { await receiver.close() }
+  }, `const original = fs.renameSync
+fs.renameSync = (from, to) => {
+  const flag = path.join(directory, 'fail-message-rename')
+  if (String(to) === path.join(directory, 'messages', 'messages.json') && fs.existsSync(flag) && JSON.parse(fs.readFileSync(from, 'utf8')).messages.some(one => one.status === 'uncertain')) {
+    const code = fs.readFileSync(flag, 'utf8'); fs.unlinkSync(flag)
+    throw Object.assign(new Error('synthetic message rename failure'), { code })
+  }
+  return original(from, to)
+}`)
+})
 
 // A disposable loopback proxy faults only heartbeat responses. The real store still
 // decides whether a message was durably claimed before the response was lost.
