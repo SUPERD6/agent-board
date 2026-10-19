@@ -1,13 +1,14 @@
 import { baseName } from './parse'
 import { STRINGS } from './strings'
+import type { ProgressMirror } from '../types'
 
 // What another agent's hook handed over at the end of a turn or a session, saved by the
-// reporter script as one file in the inbox (`<agent>-<turn|end>-<time>-<pid>.json`). Every
+// reporter script as one file in the inbox (`<agent>-<prompt|turn|end>-<time>-<pid>.json`). Every
 // agent names its fields its own way; this reads the ones they use.
 
 export type AgentTurn = {
   agent: string
-  event: 'turn' | 'end'
+  event: 'prompt' | 'turn' | 'end'
   // The agent's own session id, and the 8-hex id its block goes by.
   session: string
   id: string
@@ -21,16 +22,16 @@ export type AgentTurn = {
 }
 
 // Inbox file names: agent, event, then anything. Lower-case letters, digits and dashes only.
-const NAME = /^([a-z][a-z0-9]*)-(turn|end)-[\w.-]+\.json$/
+const NAME = /^([a-z][a-z0-9]*)-(prompt|turn|end)-[\w.-]+\.json$/
 
 export const isInboxFile = (name: string): boolean => NAME.test(name)
 
-// Oldest first by the time in the name; in the same second a turn comes before its session's
-// end (Codex writes both within one second when `codex exec` finishes).
+// Oldest first by source time; ties put a prompt before the turn and its end.
+// The separate persisted binary turn/end order remains unchanged.
 export const inboxOrder = (a: string, b: string): number => {
   const parts = (name: string): [number, number] => {
-    const found = /^[a-z0-9]+-(turn|end)-(\d+)/.exec(name)
-    return [inboxTime(name) ?? 0, found?.[1] === 'end' ? 1 : 0]
+    const found = /^[a-z0-9]+-(prompt|turn|end)-(\d+)/.exec(name)
+    return [inboxTime(name) ?? 0, found?.[1] === 'end' ? 2 : found?.[1] === 'turn' ? 1 : 0]
   }
   const [timeA, endA] = parts(a)
   const [timeB, endB] = parts(b)
@@ -86,6 +87,7 @@ export const blockId = (agent: string, session: string): string => {
 
 // Hermes Agent's on_session_end comes after every turn; its on_session_finalize is the end.
 const END_EVENTS = /^(?:session[-_]?end|sessionend|session\.deleted|on_session_finalize)$/i
+const PROMPT_EVENTS = /^(?:UserPromptSubmit|user_prompt_submit|beforeSubmitPrompt|BeforeAgent|pre_llm_call)$/i
 
 const OPENCLAW_WORKSPACE = /[\\/]\.openclaw[\\/]workspace(?:-[^\\/]*)?[\\/]*$/
 
@@ -113,8 +115,8 @@ export const readTurn = (fileName: string, body: string): AgentTurn | null => {
   const hookEvent = first(record, ['hook_event_name', 'hookEventName', 'event', 'type'])
   // Grok Build sends one more Stop as a session closes; it ends the session, it is no turn.
   const closing = typeof record.reason === 'string' && /^(?:channel_closed|shutdown)$/.test(record.reason)
-  const event = name[2] === 'end' || END_EVENTS.test(hookEvent) || closing ? 'end' : 'turn'
-  const answer = first(record, ['last_assistant_message', 'lastAssistantMessage', 'last-assistant-message', 'prompt_response', 'assistant_response', 'response', 'text'])
+  const event = name[2] === 'end' || END_EVENTS.test(hookEvent) || closing ? 'end' : name[2] === 'prompt' || PROMPT_EVENTS.test(hookEvent) ? 'prompt' : 'turn'
+  const answer = event === 'prompt' ? '' : first(record, ['last_assistant_message', 'lastAssistantMessage', 'last-assistant-message', 'prompt_response', 'assistant_response', 'response', 'text'])
 
   return {
     agent,
@@ -127,10 +129,10 @@ export const readTurn = (fileName: string, body: string): AgentTurn | null => {
     // cannot start a line or hide the lines after it. blocks.ts cleans a Claude session's
     // folder the same way, so both join one heading.
     project: OPENCLAW_WORKSPACE.test(cwd) ? 'OpenClaw' : baseName(cwd).replace(/<!--|-->/g, ' ').replace(/\s+/g, ' ').trim(),
-    prompt: first(record, ['prompt', 'user_prompt', 'user_message', 'input-messages', 'input_messages', 'last_user_message']),
+    prompt: event === 'prompt' ? '' : first(record, ['prompt', 'user_prompt', 'user_message', 'input-messages', 'input_messages', 'last_user_message']),
     // Gemini CLI says this when the turn had no text.
-    answer: answer === '[no response text]' ? '' : answer,
-    transcript: first(record, ['transcript_path', 'transcriptPath']),
+    answer: event === 'prompt' || answer === '[no response text]' ? '' : answer,
+    transcript: event === 'prompt' ? '' : first(record, ['transcript_path', 'transcriptPath']),
     at: inboxTime(fileName),
   }
 }
@@ -141,7 +143,7 @@ const milliseconds = (time: number): number => time < 1e12 ? time * 1000 : time
 
 // The time in an inbox file's name, in milliseconds, or undefined when it holds none.
 export const inboxTime = (fileName: string): number | undefined => {
-  const found = /^[a-z0-9]+-(?:turn|end)-(\d+)/.exec(fileName)
+  const found = /^[a-z0-9]+-(?:prompt|turn|end)-(\d+)/.exec(fileName)
 
   const at = found === null ? NaN : Number(found[1])
   return Number.isSafeInteger(at) ? milliseconds(at) : undefined
@@ -157,6 +159,47 @@ export const normalizeTurnOrder = (order: unknown): number | undefined =>
 // second a turn before its session's end (Codex writes both within one second).
 export const turnOrder = (turn: Pick<AgentTurn, 'at' | 'event'>): number | undefined =>
   turn.at === undefined ? undefined : milliseconds(turn.at) * 2 + (turn.event === 'end' ? 1 : 0)
+
+// Prompt receipts carry no prose. Equal or unknown clocks cannot prove that a
+// question was answered after it was asked, and a foreign binding is never adopted.
+export const answerAgentPrompt = (mirror: (ProgressMirror & { confirmedAt?: number }) | undefined, prompt: AgentTurn, now: number): ProgressMirror | null => {
+  const order = turnOrder(prompt)
+  if (prompt.event !== 'prompt' || mirror === undefined || order === undefined || !Number.isSafeInteger(order) || order <= 0 || !Number.isSafeInteger(now) || order > now * 2 || mirror.sessionId !== prompt.id || mirror.agent !== prompt.agent || mirror.resume !== prompt.session || !Array.isArray(mirror.tasks) || mirror.tasks.length === 0) return null
+  // Completion overlays are resolved from the raw owner before prompt receipts.
+  // A delayed pre-confirmation prompt must not resume work the person just ended.
+  const confirmedAt = mirror.confirmedAt
+  if (confirmedAt !== undefined && (!Number.isSafeInteger(confirmedAt) || confirmedAt <= 0 || confirmedAt > now)) return null
+  const confirmation = confirmedAt === undefined ? -1 : confirmedAt * 2
+  const known = (value: unknown): number => {
+    const source = normalizeTurnOrder(value)
+    return source !== undefined && Number.isSafeInteger(source) && source > 0 ? source : -1
+  }
+  const barrier = Math.max(known(mirror.turnOrder), known(mirror.promptOrder), confirmation)
+  // A known session without a source clock is still unknown causality. Its
+  // heartbeat/arrival time cannot prove that this prompt answered its question.
+  if (barrier < 0 || order <= barrier) return null
+  return {
+    ...mirror, state: 'working', updated: now, promptOrder: order, autoAsk: null,
+    tasks: mirror.tasks.map(one => one.waiting === 'you' ? { ...one, status: 'completed', waiting: null, why: null } : one),
+  }
+}
+
+// Separate immutable receipts survive an older summarizer replacing its raw mirror.
+// They retain binding and source time only, never the user's new prompt.
+export type AgentPromptReceipt = { id: string; agent: string; session: string; at: number; updated: number }
+
+export const withAgentPrompts = (mirror: ProgressMirror | undefined, values: readonly unknown[], now: number): ProgressMirror | undefined => {
+  const receipts = values.filter((value): value is AgentPromptReceipt => {
+    if (value === null || typeof value !== 'object') return false
+    const one = value as Partial<AgentPromptReceipt>
+    return typeof one.id === 'string' && typeof one.agent === 'string' && typeof one.session === 'string' && typeof one.at === 'number' && Number.isSafeInteger(one.at) && typeof one.updated === 'number' && Number.isSafeInteger(one.updated) && one.updated <= now
+  }).sort((a, b) => a.at - b.at || a.updated - b.updated)
+  let result = mirror
+  for (const one of receipts) {
+    result = answerAgentPrompt(result, { ...one, event: 'prompt', cwd: '', project: '', prompt: '', answer: '', transcript: '' }, one.updated) ?? result
+  }
+  return result
+}
 
 // One line of a session log as a speaker and their words. Grok Build's log is ACP updates,
 // which stream a message in chunks.

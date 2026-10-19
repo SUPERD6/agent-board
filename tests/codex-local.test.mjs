@@ -36,6 +36,27 @@ const fixture = fn => {
   finally { rmSync(home, { recursive: true, force: true }) }
 }
 
+test('independent prompt metadata answers questions while ordinary activity and replay preserve newer questions', () => fixture(f => {
+  assert.equal(f.install('--apply').status, 0)
+  assert.equal(f.event('UserPromptSubmit', 'turn-prompt-1').status, 0)
+  assert.equal(f.report('waiting', ['- [?] Choose database', '- [ ] Continue']).status, 0)
+  assert.equal(f.event('UserPromptSubmit', 'turn-prompt-2', { prompt: 'PRIVATE_NEW_INPUT' }).status, 0)
+  assert.match(readFileSync(f.progress, 'utf8'), /state=working/)
+  assert.match(readFileSync(f.progress, 'utf8'), /- \[x\] Choose database/)
+  assert.equal(f.report('waiting', ['- [?] New question', '- [ ] Continue']).status, 0)
+  assert.equal(f.event('UserPromptSubmit', 'turn-prompt-2').status, 0)
+  assert.match(readFileSync(f.progress, 'utf8'), /- \[\?\] New question/)
+  assert.equal(f.install('--agent', 'grok', '--apply').status, 0)
+  const owner = 'grok-prompt-owner'
+  assert.equal(f.command(['--codex-report', '--agent', 'grok', '--session', owner], { title: 'Grok task', state: 'waiting', steps: ['- [?] Grok decision', '- [ ] Continue'] }).status, 0)
+  assert.equal(f.command(['--agent-status', '--agent', 'grok', '--state', 'working'], { session_id: owner }).status, 0)
+  assert.match(readFileSync(f.progress, 'utf8'), /- \[\?\] Grok decision/)
+  assert.equal(f.command(['--agent-status', '--agent', 'grok', '--state', 'working'], { session_id: owner, hook_event_name: 'UserPromptSubmit', prompt: 'PRIVATE_NEW_INPUT' }).status, 0)
+  assert.match(readFileSync(f.progress, 'utf8'), /- \[x\] Grok decision/)
+  const record = join(f.root, 'sessions', createHash('sha256').update(`grok:${owner}`).digest('hex') + '.json')
+  assert.ok(!readFileSync(record, 'utf8').includes('PRIVATE_NEW_INPUT'))
+}))
+
 test('Codex-only setup previews every persistent change without writing', () => fixture(f => {
   const plan = f.install()
   assert.equal(plan.status, 0, plan.stderr)

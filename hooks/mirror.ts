@@ -398,6 +398,8 @@ export const resumeNote = (mirror: ProgressMirror, s: Strings = ZH_TW): string |
 // Only the mod's own per-session records age out of the store; a setting the person made
 // (closing the pane by hand) stays until they change it.
 export const isStaleStoreKey = (key: string, value: unknown, now: number, maxAge: number): boolean => {
+  // Immutable prompt barriers outlive paused writers. Age alone cannot prove that
+  // an old mirror will never be written again, so agentPrompt: is not age-reaped.
   if (!['mirror:', 'hinted:', 'done:', 'agent:'].some(prefix => key.startsWith(prefix))) return false
   const stamp = typeof value === 'number' ? value : ((value as { updated?: number } | undefined)?.updated ?? 0)
 

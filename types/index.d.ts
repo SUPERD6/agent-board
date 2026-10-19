@@ -116,6 +116,9 @@ export type ProgressMirror = {
   // For another agent's session: where the newest inbox file folded in falls (turnOrder), so
   // a file taken again after a later one changes nothing.
   turnOrder?: number
+  // Newest prompt receipt, on the same binary timestamp scale as turnOrder. Kept
+  // separately so adding prompt events never reinterprets saved turn/end ranks.
+  promptOrder?: number
   // Claude's steps the person has answered since they were asked: task id to the stepKey of
   // the words they answered. A step stops waiting on them while its words match, until Claude
   // asks again (a TaskUpdate that sets waiting to the person, or a turn that ends on a

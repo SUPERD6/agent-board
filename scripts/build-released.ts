@@ -20,7 +20,7 @@ const root = join(import.meta.dir, '..')
 const PREFIX = 'agent-board--v'
 const KINDS = ['board', 'skill', 'gemini', 'opencode', 'reporterSh', 'reporterPs1'] as const
 type Kind = (typeof KINDS)[number]
-type Output = { texts: Record<Kind, string[]>; fixed: Map<string, string> }
+type Output = { texts: Record<Kind, string[]>; fixed: Map<string, string>; adopts: Map<string, (text: string) => boolean> }
 
 // Temp folders to take away even when a check fails part way through a release.
 const temps = new Set<string>()
@@ -84,6 +84,7 @@ const outputsOf = async (dir: string, label: string): Promise<Output> => {
   const { BOARD_SCRIPT } = await load('board-script.ts')
   const texts: Record<Kind, string[]> = { board: [BOARD_SCRIPT], skill: [], gemini: [], opencode: [], reporterSh: [], reporterPs1: [] }
   const fixed = new Map<string, string>()
+  const adopts = new Map<string, (text: string) => boolean>()
   const seen = new Map<string, string>()
   const add = (kind: Kind, key: string, text: string) => {
     const before = seen.get(key)
@@ -107,14 +108,18 @@ const outputsOf = async (dir: string, label: string): Promise<Output> => {
         if (ending('', 'SKILL.md')) add('skill', `skill ${lang} ${hook.agent} ${variant}`, swap(text, ctx))
         else if (ending('commands', 'board.toml')) add('gemini', `gemini ${lang} ${variant}`, swap(text, ctx))
         else if (ending('commands', 'board.md')) add('opencode', `opencode ${lang} ${variant}`, swap(text, ctx))
-        else if (ending('hooks', 'agent-board.json') || ending('plugin', 'agent-board.js') || ending('.openclaw', 'agent-board.mjs')) fixed.set(`${system} ${name} ${file.slice(ctx.home.length)}`, text)
+        else if (ending('hooks', 'agent-board.json') || ending('plugin', 'agent-board.js') || ending('.openclaw', 'agent-board.mjs')) {
+          const key = `${system} ${name} ${file.slice(ctx.home.length)}`
+          fixed.set(key, text)
+          adopts.set(key, previous => hook.edit(previous, false) === text)
+        }
         // A generated file of a kind this script does not know would go unchecked, and an
         // installation from before the record would find it foreign.
         else if (hook.generated === true) fail(`${label}: ${file.slice(ctx.home.length)} is generated but neither in the table nor checked as fixed: add it in scripts/build-released.ts`)
       }
     }
   }
-  return { texts, fixed }
+  return { texts, fixed, adopts }
 }
 
 const atTag = async (version: string): Promise<Output> => {
@@ -154,12 +159,12 @@ for (const one of tagged) releases.set(one, await atTag(one))
 const current = await outputsOf(root, 'this tree')
 if (!releases.has(version)) releases.set(version, current)
 
-// The files this table does not cover must be what this tree writes, in every release, or an
-// installation from before the record would find its own file foreign. A change to one of them
-// means adding it to KINDS (and to `isReleased`'s callers) first.
+// Fixed generated files must stay identical or be exactly adopted by their current
+// ownership recognizer. Exercise that recognizer on every historical synthetic file;
+// an edited personal file still has to be refused by the connection fixtures.
 for (const [one, output] of releases) {
   for (const [key, text] of output.fixed) {
-    if (current.fixed.get(key) !== text) fail(`${key} differs between ${one} and this tree: add that file to the table in scripts/build-released.ts`)
+    if (current.fixed.get(key) !== text && current.adopts.get(key)?.(text) !== true) fail(`${key} differs between ${one} and this tree and is not exactly adopted by its generated-file recognizer`)
   }
 }
 

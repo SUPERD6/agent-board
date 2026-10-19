@@ -37,6 +37,11 @@ export const peekInbox = (
   for (const file of [...files].sort((a, b) => a.at - b.at)) {
     const read = readTurn(file.name, file.body)
     if (read === null) continue
+    if (read.event === 'prompt') {
+      const held = latest.get(read.id)
+      if (held !== undefined && read.at !== undefined && read.at > (held.sourceAt ?? held.at)) latest.delete(read.id)
+      continue
+    }
     const turn = read.prompt === '' && isTranscriptPath(read.transcript) ? { ...read, prompt: transcriptTail(readLog(read.transcript)).prompt } : read
     if (isBoardTurn(turn)) continue
     if (turn.event === 'end') {
