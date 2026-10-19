@@ -9,11 +9,13 @@
 // "down x"` plays keys without a terminal and prints the board after them, for tests and checks.
 import { spawn, spawnSync } from 'node:child_process'
 import { runCodexLocal } from './codex-local'
+import { legacyConnect } from './connect-transaction'
 import { chmodSync, closeSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { createHash, randomUUID } from 'node:crypto'
 import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
-import { mergeBlock, takeArchivable, takeManualDone, takeTask, setManualStep } from '../hooks/blocks'
+import { confirmMatches, confirmTask, mergeBlock, takeArchivable, takeManualDone, takeTask, setManualStep } from '../hooks/blocks'
+import type { ConfirmedTask } from '../hooks/blocks'
 import { startServer } from './board-serve'
 import { idleTimeout } from '../hooks/serve'
 import { boardKey, boardScreen, boardText, CHAT_MAX, chatText, doneToday, emptyBoardState, peekInbox, boardItems, pinned, redact } from '../hooks/board'
@@ -394,6 +396,21 @@ const answeredAge = (file: string): number => {
 const act = (action: BoardAction): string => {
   const now = Date.now()
   if (action.type === 'copy') return copy(action.text) ? s.boardCopied(action.text) : s.boardCopyFailed(action.text)
+  if (action.type === 'done') {
+    let confirmed: ConfirmedTask | null = null
+    const wrote = rewrite(path, text => {
+      if (confirmed !== null && confirmMatches(text, confirmed.ref, s)) return text
+      const next = confirmTask(text, action.ref, now, s)
+      if (next === null) return null
+      const lines = next.entries.map(entry => journalLine(entry, now, s))
+      rewrite(journalPath(path, now), past => appendJournal(past, lines.filter(line => !past.split(/\r?\n/).includes(line)), s))
+      confirmed = next
+      return next.text
+    })
+    const found = confirmed as ConfirmedTask | null
+    if (found === null || wrote === null || !confirmMatches(read(path), found.ref, s)) return s.boardLineChanged
+    return s.confirmedDone(action.title)
+  }
   if (action.type === 'tick') {
     // Found once is found: a retry after another session's write may meet the step already
     // ticked by this press.
@@ -806,6 +823,13 @@ const chat = (): void => {
 }
 
 const run = async (): Promise<void> => {
+  const request = flag('--legacy-connect-request')
+  if (request !== undefined) {
+    const trusted = (globalThis as { AGENT_BOARD_WORKER_SOURCE?: string }).AGENT_BOARD_WORKER_SOURCE
+    const bundle = (trusted ?? readFileSync(process.argv[1]!, 'utf8')).replace(/^globalThis\.AGENT_BOARD = [^\n]*\n/, '')
+    process.stdout.write(`${JSON.stringify(legacyConnect(JSON.parse(request), bundle))}\n`)
+    return
+  }
   if (await runCodexLocal(args, path, s)) return
   if (args.includes('--help') && !args.includes('--chat')) {
     process.stdout.write(`${s.boardUsage}\n`)

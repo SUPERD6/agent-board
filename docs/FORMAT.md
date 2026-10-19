@@ -72,6 +72,10 @@ A step line is: optional indentation, a bullet (`-`, `*` or `+`), whitespace, `[
 | `[!]` | Blocked: stuck. The step's note says why. | blocked |
 | `[-]` | Cancelled. Counts as neither done nor open. | cancelled |
 
+A completed handoff uses the existing cancelled mark, for example `- [-] Finish export — Handed to Export session`. Keep the recipient in the note; the source has no remaining responsibility for that step. A nonempty task with only cancelled steps is closed with zero completed steps, even while an activity hook reports the session waiting. Empty tasks remain open. This is an owner declaration, not proof that the recipient received a message or accepted a tool action. Ordinary proposals and transport receipts must not cancel work.
+
+Completing an uncached agent block also retains its exact parsed cancelled text through later prompt updates, without inferring a recipient. The internal completion snapshot keeps up to 256 cancelled lines of at most 4,096 characters each outside completed-work counts; larger snapshots are refused rather than clipped. A fresh producer mirror can supersede that snapshot. FORMAT v1 is unchanged.
+
 Any other character between the brackets makes the line a non-step.
 
 An agent may put `<!-- question=<64 lowercase hex characters>:<positive decimal revision> -->` on its own line after a step inside its auto block. This optional annotation supplies a producer identity and revision for the preceding step; it is metadata and never visible step text. The Claude writer hashes the stable task id, scopes it to the owning session/project, and increments that task's revision on an explicit ask, including the same words asked again. List reloads, heartbeats, whitespace and unrelated task changes preserve it. Keep the annotation with its step when reordering. Identical duplicate annotations are ambiguous and cannot hide multiple independent questions. Existing steps without annotations remain valid and use conservative observation matching. An annotation inside a fenced example, another comment or outside an auto block has no effect. It conveys no answer, approval or delivery acknowledgement.
@@ -212,6 +216,12 @@ A block in state `working` or `waiting` whose `updated` is more than 12 hours ol
 
 ### Archive
 
+**Confirm done** on the pane or interactive board changes every open mark (`[ ]`, `[~]`, `[?]`, `[>]`, `[!]`) to `[x]`, preserving `[-]` and existing `[x]`. It is available for hand-kept tasks and ended/stopped agent blocks, with the same more-than-12-hour stopped rule above. A block also receives `state=done` and the current `updated` time. Each newly completed step is journaled. Changed selections and live blocks are refused, no message is sent, and the normal archive timing below still applies. The standalone `progress.html` remains read-only.
+
+When a cached owner exists, its rendered title, steps, statuses, context and binding must match the selected block before confirmation. Newer cache clocks and ambiguous content changes are refused even if the cached owner is ended/done or its clock equals the selected block's clock.
+
+The optional pane saves completion in immutable records separate from the owner's mutable mirror. Reads apply completion to the exact source snapshot or a provably older ordered snapshot; changed equal-order and newer work are preserved. If no cached owner exists, the record binds the selected block fingerprint, owner and completed steps to the confirmation time. It rejects an old first inbox delivery; a changed owner with a source time at/after confirmation, or with no provable source time, is preserved. These records have no age-only expiry, so a delayed owner cannot outlive its completion fence. The common local reporter adopts an exact owned board completion into its session JSON at the next lifecycle event, under its existing board lock; a fresh explicit task report can introduce new work. These are synthetic-tested contracts, not native model acceptance. Progress files and SDK storage remain separate writes using the existing read/write/readback protocol; this is not an atomic cross-process transaction, and passive polling does not repair an intervening writer's raw file. Writers that bypass these readers and the common local reporter do not receive completion in a private cache.
+
 Old work moves out of `progress.md` into a monthly file in the same folder, so the file stays about what is open.
 
 | What | When it leaves |
@@ -300,6 +310,7 @@ A session's own questions are listed first, then the others'. Within each group,
 | Key | Value | Effect |
 |---|---|---|
 | `waiting` | `"you"` (also `"user"`, `"me"`, `"human"`, `"person"`, `"使用者"`, `"用户"`, `"我"`, any case) | Step is `[?]`. |
+| `handoffTo` | Nonempty recipient name | A confirmed owner-declared transfer is written as `[-]` with its recipient. A later explicit `status: "pending"` or `"in_progress"` reclaims it; passive TaskList refresh preserves it. No message delivery is implied. |
 | `waiting` | `"run"`, or any other value that is not empty | Step is `[>]`. |
 | `why` | One line | The note after ` — `. If `why` is missing, `reason`, `question` and `note` are tried in that order. Always give `why`. |
 | `ask` | `confirm`, `choose`, `input`, `do`, `review`, `wait` or `reply` (lower case) | The kind, in the owning session's pane. Any other value is ignored and the kind is worked out as below. |
@@ -309,6 +320,8 @@ A session's own questions are listed first, then the others'. Within each group,
 | `blocked` | A reason, or `true` for none | Step is `[!]`, with the reason as its note. Wins over `waiting`. |
 
 A key set to `null` clears it (`false` and `""` also clear `waiting` and `blocked`). Clearing `waiting` also clears `why`, `ask`, `options`, `command` and `link`. Marking the step completed clears all of it. In the session that set it, the person's own message marks every open `waiting: "you"` step answered, and a pane button marks the step it answers when pressed. An answered step keeps what Claude set but is written as Claude's to do, with the note for an answered step in the pane's language (see [Language](#language)), until Claude sets `waiting: "you"` again, the step's subject or note changes, or a turn ends on a question the pane puts on that step. A notification, a scheduled prompt, another session's message or a turn with no typed text is not an answer. In the file a step is written as `[x]` completed, else `[!]` blocked, else `[?]` waiting on you, else `[>]` waiting on a run, else `[~]` in progress, else `[ ]`.
+
+If one update declares both a handoff and `waiting: "you"`, the final handed-off task stays closed and does not renew its question revision. Passive TaskList reloads preserve both the recipient and revision. A later explicit open ask renews only that question.
 
 Only the note travels through the file. `ask`, `options`, `command` and `link` stay in the owning session, so another session's pane works the kind out again from the words of the note. Write the note as a plain sentence that carries the question.
 

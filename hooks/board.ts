@@ -6,6 +6,7 @@ import { localDay, parseJournal, progressReport } from './journal'
 import { sha256 } from './sha256'
 import { relativeTime, replyHint } from './view'
 import type { StepRef, TaskRef, TaskRow, View, ViewStep, WaitingItem } from './view'
+import type { ConfirmRef } from './blocks'
 
 // The board as plain text, for agents other than Claude Code: the standalone script that
 // `/progress connect` writes beside progress.md prints it in a terminal (once, or live with
@@ -373,6 +374,7 @@ export type BoardState = { selected: number; key: string | null; open: string | 
 export type BoardAction =
   | { type: 'tick'; ref: StepRef }
   | { type: 'archive'; ref: TaskRef; title: string }
+  | { type: 'done'; ref: ConfirmRef; title: string }
   | { type: 'copy'; text: string }
   // Kept off Waiting on you until the question changes (`hideKey`); null shows every hidden one
   // again. Only the hidden list beside progress.md is written: nothing goes to the agent.
@@ -437,6 +439,7 @@ export const fingerprint = (item: BoardItem, items: readonly BoardItem[]): strin
       : item.type === 'row'
         ? [session, item.row.target?.resume ?? '', item.row.project, item.row.title, item.row.next?.step ?? '', item.row.question ?? '', item.row.resume ?? '']
         : [item.turn.agent, item.turn.project, item.turn.text]
+  if (item.type === 'row') parts.push(item.row.confirm?.expected ?? '', JSON.stringify(item.row.steps))
   if (item.type !== 'turn' && session === '') parts.push(String(twinsOf(item, items)))
 
   return sha256(parts.join('\u0000')).slice(0, 12)
@@ -475,7 +478,7 @@ export const boardKey = (state: BoardState, key: string, items: readonly BoardIt
   if (isGone) return changed
   // A tick, an archive or a copy of what to say acts on the line as the last draw showed it: the
   // same key can now be another session's block, or the same step reworded.
-  if ((key === 'x' || key === 'a' || key === 'c') && state.seen !== null && state.seen[item.key] !== fingerprint(item, items)) return changed
+  if ((key === 'x' || key === 'a' || key === 'd' || key === 'c') && state.seen !== null && state.seen[item.key] !== fingerprint(item, items)) return changed
   if (key === 'enter' || key === ' ') return { state: { ...state, selected: at, key: item.key, open: state.open === item.key ? null : item.key, note: '' }, action: null }
   if (item.type === 'ask') {
     const { ask } = item
@@ -494,6 +497,7 @@ export const boardKey = (state: BoardState, key: string, items: readonly BoardIt
     const { row } = item
     if (key === 'x' && row.next !== null) return { state, action: { type: 'tick', ref: row.next } }
     if (key === 'a' && row.archive !== null) return { state, action: { type: 'archive', ref: row.archive, title: row.title } }
+    if (key === 'd' && row.confirm != null) return { state, action: { type: 'done', ref: row.confirm, title: row.title } }
     if (key === 'c' && row.resume !== null) return { state, action: { type: 'copy', text: plain(row.resume) } }
   }
 
@@ -518,7 +522,7 @@ const keysFor = (item: BoardItem | undefined, s: Strings): string[] => {
   }
   if (item.type === 'row') {
     const { row } = item
-    return [...(row.next !== null ? [s.boardKeyTick] : []), ...(row.archive !== null ? [s.boardKeyArchive] : []), ...(row.resume !== null ? [s.boardKeyCopyResume] : [])]
+    return [...(row.next !== null ? [s.boardKeyTick] : []), ...(row.confirm != null ? [s.boardKeyDone] : []), ...(row.archive !== null ? [s.boardKeyArchive] : []), ...(row.resume !== null ? [s.boardKeyCopyResume] : [])]
   }
 
   return []

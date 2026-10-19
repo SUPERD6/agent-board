@@ -114,7 +114,7 @@ export const createMessaging = (directory: string) => {
         save(queued.state)
         return queued.message
       }
-      messageFields(body, action === 'receipt' ? ['connection', 'secret', 'id', 'status', 'reply', 'error'] : ['connection', 'secret', 'turn'])
+      messageFields(body, action === 'receipt' ? ['connection', 'secret', 'id', 'status', 'reply', 'error'] : action === 'poll' ? ['connection', 'secret', 'turn', 'receive'] : ['connection', 'secret', 'turn'])
       const one = authenticated(body.connection, body.secret, now)
       if (action === 'receipt') {
         const { connection: _id, secret: _secret, ...receipt } = body
@@ -127,8 +127,9 @@ export const createMessaging = (directory: string) => {
         return { ok: true }
       }
       if (action !== 'poll') throw new Error('UNKNOWN_ACTION')
+      if (body.receive !== undefined && typeof body.receive !== 'boolean') throw new Error('INVALID_RECEIVE')
       connections.set(one.id, { ...one, expires: now + LEASE_MS })
-      const claimed = claimMessages(state, one, now)
+      const claimed = body.receive === false ? { state, messages: [] } : claimMessages(state, one, now)
       // Claim reaches disk before a connector can perform any external delivery.
       save(claimed.state)
       return { messages: claimed.messages, leaseMs: LEASE_MS }

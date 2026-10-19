@@ -3,11 +3,12 @@ import { askOf, askRank } from './ask'
 import { ZH_TW } from './i18n'
 import type { Strings } from './i18n'
 import type { AskKind } from './ask'
-import { shortId, stepWords } from './blocks'
+import { confirmKey, shortId, stepWords, upsertAutoBlock } from './blocks'
+import type { ConfirmRef } from './blocks'
 import { ciWords, prWords } from './github'
 import { doingTask, fallbackTitle, isAnswered, waitsOnYou } from './mirror'
 import type { Tone } from './palette'
-import { countSteps, currentStepIndex, doneKey, isHereProject, isStale, isTaskComplete, RESUME } from './parse'
+import { countSteps, currentStepIndex, doneKey, isHereProject, isStale, isTaskComplete, parseProgress, RESUME } from './parse'
 import { sha256 } from './sha256'
 import { observeQuestions, questionScope, questionSlot } from './questions'
 import type { QuestionLedger, QuestionProofs } from './questions'
@@ -141,6 +142,7 @@ export type TaskRow = {
   // Set when the person may take the row out now: a hand-kept task, or a block whose session
   // ended or stopped. A live session's block is that session's to change.
   archive: TaskRef | null
+  confirm?: ConfirmRef | null
   // Another agent's session the row is; null for Claude's and hand-kept ones.
   target: AgentTarget | null
 }
@@ -241,6 +243,16 @@ export const contextOf = (task: ProgressTask): string => {
     .join(' · ')
 }
 
+// A row cannot certify a different cached task, even when their clocks tie. Compare
+// the owner's rendered meaning; translated lifecycle prose is not task content.
+export const mirrorMatchesTask = (mirror: ProgressMirror, project: string, task: ProgressTask, s: Strings = ZH_TW): boolean => {
+  const rendered = parseProgress(upsertAutoBlock('', mirror, s))[0]
+  const source = rendered?.tasks[0]
+  if (source === undefined || rendered?.name !== project || source.auto?.session !== task.auto?.session || source.auto?.agent !== task.auto?.agent) return false
+  const steps = (one: ProgressTask): string => JSON.stringify(one.steps.filter(step => step.status !== 'cancelled').map(step => [step.text, step.status, step.depth]))
+  return source.title === task.title && steps(source) === steps(task) && contextOf(source) === contextOf(task) && handoffOf(source) === handoffOf(task)
+}
+
 // `isAsked` leaves out a question the person marked answered.
 const stepPhrase = (task: ProgressTask, s: Strings, isAsked: (index: number) => boolean = () => true): { status: string; tone: Tone } => {
   const blocked = task.steps.find(step => step.status === 'blocked')
@@ -288,7 +300,7 @@ const currentOf = (mirror: ProgressMirror, s: Strings): CurrentView | null => {
   const doing = doingTask(mirror)
   const waitingYou = mirror.tasks.find(task => waitsOnYou(mirror, task))
   const blocked = mirror.tasks.find(task => task.status !== 'completed' && task.blocked !== null)
-  const done = mirror.tasks.filter(task => task.status === 'completed').length
+  const done = mirror.tasks.filter(task => task.status === 'completed' && !task.handoffTo).length
   let status = s.waitingReply
   let tone: Tone = 'warn'
   if (mirror.state === 'done') {
@@ -305,14 +317,14 @@ const currentOf = (mirror: ProgressMirror, s: Strings): CurrentView | null => {
   }
   const steps = mirror.tasks.map((task, index) => {
     const hasAnswer = isAnswered(mirror, task)
-    let stepStatus: ProgressStepStatus = task.status === 'completed' ? 'done' : 'todo'
+    let stepStatus: ProgressStepStatus = task.handoffTo ? 'cancelled' : task.status === 'completed' ? 'done' : 'todo'
     if (task.status !== 'completed') {
       if (task.blocked !== null) stepStatus = 'blocked'
       else if (task.waiting === 'you' && !hasAnswer) stepStatus = 'waiting'
       else if (task.waiting === 'run') stepStatus = 'running'
       else if (task.status === 'in_progress') stepStatus = 'doing'
     }
-    const note = stepStatus === 'blocked' ? (task.blocked ?? '') : stepStatus === 'done' ? '' : hasAnswer ? s.answeredNote : (task.why ?? '')
+    const note = task.handoffTo ? s.transferredTo(task.handoffTo) : stepStatus === 'blocked' ? (task.blocked ?? '') : stepStatus === 'done' ? '' : hasAnswer ? s.answeredNote : (task.why ?? '')
     return {
       text: `${task.subject}${suffixOf(stepStatus, s)}`,
       note,
@@ -332,7 +344,7 @@ const currentOf = (mirror: ProgressMirror, s: Strings): CurrentView | null => {
     status,
     tone,
     done,
-    total: mirror.tasks.length,
+    total: mirror.tasks.filter(task => !task.handoffTo).length,
     steps: foldSteps(steps, 6, s),
   }
 }
@@ -750,6 +762,9 @@ export const buildView = (
         // Only an agent whose resume by id is known gets a command.
         resume: auto === 'ended' && task.auto?.resume ? resumeCommand(task.auto.resume, task.auto.dir, task.auto.agent) : null,
         handoff: handoffOf(task),
+        confirm: (isManual && task.line >= 0 || auto === 'ended')
+          ? { project: name, title: task.title, line: task.line, session: task.auto?.session ?? null, expected: confirmKey(name, task, projects.filter(one => (one.name || s.uncategorized) === name).flatMap(one => one.tasks).filter(one => one.title === task.title).length) }
+          : null,
         archive:
           isManual && task.line >= 0
             ? { project: name, title: task.title, line: task.line, session: null }

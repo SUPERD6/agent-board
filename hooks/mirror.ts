@@ -1,12 +1,79 @@
-import type { ProgressMirror, ProgressMirrorTask, ProgressSessionState } from '../types'
+import type { ProgressMirror, ProgressMirrorTask, ProgressSessionState, ProgressTask } from '../types'
 import { ZH_TW } from './i18n'
 import type { Strings } from './i18n'
 import { sha256 } from './sha256'
+import { normalizeTurnOrder } from './inbox'
 
 // Claude's own task list, mirrored from the calls it makes (TaskCreate, TaskUpdate,
 // TodoWrite). The list is the source of truth; the file is a view of it.
 
 type Status = ProgressMirrorTask['status']
+
+export const confirmMirror = (mirror: ProgressMirror, now: number): ProgressMirror => ({
+  ...mirror,
+  state: 'done',
+  updated: now,
+  confirmedAt: now,
+  autoAsk: null,
+  tasks: mirror.tasks.map(task => ({ ...task, status: 'completed', waiting: null, blocked: null, blockedBy: [] })),
+})
+
+export type CompletionOverlay = {
+  owner: string
+  source: string
+  sourceOrder?: number
+  sourceMissing?: true
+  updated: number
+  completed: ProgressMirror
+}
+
+export const completionPrefix = (owner: string): string => `completion:${sha256(owner)}:`
+export const completionOverlay = (owner: string, source: ProgressMirror, now: number): CompletionOverlay => ({
+  owner,
+  source: sha256(JSON.stringify(source)),
+  ...(normalizeTurnOrder(source.turnOrder) === undefined ? {} : { sourceOrder: normalizeTurnOrder(source.turnOrder) }),
+  updated: now,
+  completed: confirmMirror(source, now),
+})
+export const completionKey = (overlay: CompletionOverlay): string => `${completionPrefix(overlay.owner)}${overlay.source}:${overlay.updated}`
+
+const isRetainedCancelled = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.length <= 256 && Array.from(value).every(text => typeof text === 'string' && text.length <= 4096 && !/[\r\n]/.test(text))
+
+export const retainedCancelledOf = (mirror: ProgressMirror): readonly string[] =>
+  isRetainedCancelled(mirror.retainedCancelled) ? mirror.retainedCancelled : []
+
+// An externally written block can predate its first inbox delivery. Keep its exact
+// selected fingerprint and completed steps without creating a mutable owner record.
+export const completionOfBlock = (owner: string, project: string, task: ProgressTask, fingerprint: string, now: number): CompletionOverlay | null => {
+  const auto = task.auto
+  if (auto === null || !/^[a-f0-9]{64}$/.test(fingerprint) || owner !== `agent:${auto.session}` && !(auto.agent === 'claude' && owner === `mirror:${auto.resume ?? auto.session}`)) return null
+  const sessionId = owner.slice(owner.indexOf(':') + 1)
+  const retainedCancelled = task.steps.filter(step => step.status === 'cancelled').map(step => step.text)
+  if (!isRetainedCancelled(retainedCancelled)) return null
+  const tasks: ProgressMirrorTask[] = task.steps.filter(step => step.status !== 'cancelled').map((step, index) => ({
+    id: String(index + 1), subject: step.text, status: 'completed', activeForm: '', waiting: null, why: null, ask: null, options: [], command: null, link: null, blocked: null, blockedBy: [],
+  }))
+  const completed = confirmMirror({ ...emptyMirror(sessionId, project, auto.updated, auto.dir ?? '', auto.agent), title: task.title, isTitleFinal: true, source: owner.startsWith('agent:') ? 'turns' : 'tasks', tasks, ...(retainedCancelled.length === 0 ? {} : { retainedCancelled }), ...(auto.resume === null ? {} : { resume: auto.resume }) }, now)
+  return { owner, source: fingerprint, sourceMissing: true, updated: now, completed }
+}
+
+export const isCompletionOverlay = (value: unknown, owner: string): value is CompletionOverlay => {
+  if (value === null || typeof value !== 'object') return false
+  const one = value as Partial<CompletionOverlay>
+  if (one.completed?.retainedCancelled !== undefined && !isRetainedCancelled(one.completed.retainedCancelled)) return false
+  return one.owner === owner && typeof one.source === 'string' && /^[a-f0-9]{64}$/.test(one.source) && typeof one.updated === 'number' && Number.isFinite(one.updated) && one.updated > 0 && (one.sourceMissing === undefined || one.sourceMissing === true) && (one.sourceOrder === undefined || Number.isSafeInteger(one.sourceOrder) && one.sourceOrder >= 0) && one.completed?.state === 'done' && one.completed.confirmedAt === one.updated && typeof one.completed.sessionId === 'string' && (owner === `agent:${one.completed.sessionId}` || owner === `mirror:${one.completed.sessionId}`) && typeof one.completed.agent === 'string' && Array.isArray(one.completed.tasks) && one.completed.tasks.every(task => task !== null && typeof task === 'object' && task.status === 'completed')
+}
+
+// Completion never writes the owner's mutable record. Exact source snapshots and
+// provably older ordered events can be projected complete; fresh work keeps its record.
+export const applyCompletionOverlay = (source: ProgressMirror, overlay: CompletionOverlay): ProgressMirror => {
+  if (source.sessionId !== overlay.completed.sessionId || source.agent !== overlay.completed.agent) return source
+  const order = normalizeTurnOrder(source.turnOrder)
+  if (overlay.sourceMissing === true) return order !== undefined && order < overlay.updated * 2 ? overlay.completed : source
+  const older = order !== undefined && overlay.sourceOrder !== undefined && order < overlay.sourceOrder && source.updated <= overlay.updated
+  return sha256(JSON.stringify(source)) === overlay.source || older ? overlay.completed : source
+}
 
 export type TaskCreateInput = { subject: string; activeForm?: string | undefined; metadata?: object | undefined }
 
@@ -148,9 +215,12 @@ const withMetadata = (task: ProgressMirrorTask, metadata: object | undefined): P
   if (metadata === undefined) return task
   const meta = metadata as Record<string, unknown>
   const waiting = waitingOf(meta.waiting, task.waiting)
+  const handoffTo = textOr(meta.handoffTo, task.handoffTo ?? null)?.replace(/\s+/g, ' ').slice(0, 120)
+  if (handoffTo) return { ...task, status: 'completed', waiting: null, why: null, ...NO_ASK, blocked: null, handoffTo }
 
   return {
     ...task,
+    handoffTo: undefined,
     waiting,
     why: whyOf(meta, waiting, task.why ?? null),
     ...askFields(meta, waiting, task),
@@ -221,6 +291,8 @@ export const applyTaskUpdate = (mirror: ProgressMirror, input: TaskUpdateInput, 
     if (task.id !== input.taskId) return task
     const next: ProgressMirrorTask = {
       ...task,
+      // An explicit new owner update can reclaim the task. A passive TaskList cannot.
+      handoffTo: input.status === 'pending' || input.status === 'in_progress' || (input.subject !== undefined && input.subject !== task.subject) ? undefined : task.handoffTo,
       subject: input.subject ?? task.subject,
       activeForm: input.activeForm ?? task.activeForm,
       status: status ?? task.status,
@@ -229,11 +301,16 @@ export const applyTaskUpdate = (mirror: ProgressMirror, input: TaskUpdateInput, 
     // Finishing a step clears what it was waiting on.
     const done = next.status === 'completed' ? { ...next, waiting: null, why: null, ...NO_ASK, blocked: null } : next
 
-    const updated = withMetadata(done, next.status === 'completed' ? undefined : input.metadata)
-    return next.status !== 'completed' && asksYou(input.metadata) ? renewQuestion(updated, mirror.questionSequence) : updated
+    const meta = input.metadata as Record<string, unknown> | undefined
+    const completedMeta = meta !== undefined && Object.hasOwn(meta, 'handoffTo') ? { handoffTo: meta.handoffTo } : undefined
+    const updated = withMetadata(done, next.status === 'completed' ? completedMeta : input.metadata)
+    // Handoff metadata can close a task that was pending at the start of this
+    // update. Only the final open question is a new producer ask.
+    return updated.status !== 'completed' && updated.waiting === 'you' && asksYou(input.metadata) ? renewQuestion(updated, mirror.questionSequence) : updated
   })
   // Claude asking the person again brings the step back, even in the words they answered.
-  const isAskedAgain = input.status !== 'completed' && asksYou(input.metadata)
+  const updated = tasks.find(task => task.id === input.taskId)
+  const isAskedAgain = updated !== undefined && updated.status !== 'completed' && updated.waiting === 'you' && asksYou(input.metadata)
 
   return { ...mirror, tasks, ...(isAskedAgain ? { questionSequence: tasks.find(task => task.id === input.taskId)?.questionRevision ?? mirror.questionSequence } : {}), answered: isAskedAgain ? withoutMarks(mirror, [input.taskId]) : mirror.answered, updated: now }
 }
@@ -274,19 +351,22 @@ const readList = (mirror: ProgressMirror, listed: readonly ListedTask[], now: nu
   answered: mirror.source === 'turns' ? {} : Object.fromEntries(Object.entries(mirror.answered ?? {}).filter(([id]) => listed.some(item => item.id === id))),
   tasks: listed.map(item => {
     const known = mirror.tasks.find(task => task.id === item.id)
+    const handoffTo = known?.handoffTo && known.subject === item.subject ? known.handoffTo : undefined
+    const status = handoffTo ? 'completed' : item.status
 
     return {
       id: item.id,
       subject: item.subject,
-      status: item.status,
+      status,
+      ...(handoffTo ? { handoffTo } : {}),
       activeForm: known?.activeForm ?? '',
-      waiting: item.status === 'completed' ? null : (known?.waiting ?? null),
-      why: item.status === 'completed' ? null : (known?.why ?? null),
-      ask: item.status === 'completed' ? null : (known?.ask ?? null),
-      options: item.status === 'completed' ? [] : (known?.options ?? []),
-      command: item.status === 'completed' ? null : (known?.command ?? null),
-      link: item.status === 'completed' ? null : (known?.link ?? null),
-      blocked: item.status === 'completed' ? null : (known?.blocked ?? null),
+      waiting: status === 'completed' ? null : (known?.waiting ?? null),
+      why: status === 'completed' ? null : (known?.why ?? null),
+      ask: status === 'completed' ? null : (known?.ask ?? null),
+      options: status === 'completed' ? [] : (known?.options ?? []),
+      command: status === 'completed' ? null : (known?.command ?? null),
+      link: status === 'completed' ? null : (known?.link ?? null),
+      blocked: status === 'completed' ? null : (known?.blocked ?? null),
       blockedBy: [...item.blockedBy],
       ...(known?.questionRevision === undefined ? {} : { questionRevision: known.questionRevision }),
     }
@@ -301,7 +381,7 @@ export const isAllDone = (mirror: ProgressMirror): boolean =>
 // subject, since TodoWrite numbers its list afresh on every call.
 export const completedSince = (before: ProgressMirror, after: ProgressMirror): ProgressMirrorTask[] =>
   after.tasks.filter(
-    task => task.status === 'completed' && !before.tasks.some(old => old.status === 'completed' && old.subject === task.subject),
+    task => task.status === 'completed' && !task.handoffTo && !before.tasks.some(old => old.status === 'completed' && old.subject === task.subject),
   )
 
 // What deserves a desktop notification between two states of the mirror: a step that now
@@ -312,7 +392,7 @@ export const noticesOf = (before: ProgressMirror, after: ProgressMirror, s: Stri
 
   return [
     ...needs.map(task => s.noticeNeedsYou(task.subject)),
-    ...(isAllDone(after) && !isAllDone(before) ? [s.noticeDone(title, after.tasks.length)] : []),
+    ...(isAllDone(after) && !isAllDone(before) && completedSince(before, after).length > 0 ? [s.noticeDone(title, after.tasks.filter(task => !task.handoffTo).length)] : []),
   ]
 }
 
@@ -398,14 +478,15 @@ export const dataBlock = (lines: readonly string[], s: Strings = ZH_TW): string[
 export const resumeNote = (mirror: ProgressMirror, s: Strings = ZH_TW): string | null => {
   const open = mirror.tasks.filter(task => task.status !== 'completed')
   if (open.length === 0) return null
-  const done = mirror.tasks.length - open.length
+  const total = mirror.tasks.filter(task => !task.handoffTo).length
+  const done = total - open.length
   const doing = doingTask(mirror)
   const next = open.filter(task => task !== doing).slice(0, 4)
   const waiting = open.filter(task => waitsOnYou(mirror, task) || task.blocked !== null)
   const facts = [
     s.resumeGoal(asData(mirror.title || fallbackTitle(mirror)), asData(mirror.project)),
     mirror.context === '' || mirror.context === undefined ? '' : s.resumeContext(asData(mirror.context)),
-    s.resumeDone(done, mirror.tasks.length),
+    s.resumeDone(done, total),
     doing === undefined ? '' : s.resumeDoing(asData(doing.subject)),
     next.length === 0 ? '' : s.resumeNext(next.map(task => asData(task.subject)).join(s.stepSep)),
     waiting.length === 0
@@ -419,8 +500,8 @@ export const resumeNote = (mirror: ProgressMirror, s: Strings = ZH_TW): string |
 // Only the mod's own per-session records age out of the store; a setting the person made
 // (closing the pane by hand) stays until they change it.
 export const isStaleStoreKey = (key: string, value: unknown, now: number, maxAge: number): boolean => {
-  // Immutable prompt barriers outlive paused writers. Age alone cannot prove that
-  // an old mirror will never be written again, so agentPrompt: is not age-reaped.
+  // Prompt and completion fences outlive paused writers. Age alone cannot prove
+  // that an old mirror will never return; new ordered work supersedes them on read.
   if (!['mirror:', 'hinted:', 'done:', 'agent:'].some(prefix => key.startsWith(prefix))) return false
   const stamp = typeof value === 'number' ? value : ((value as { updated?: number } | undefined)?.updated ?? 0)
 

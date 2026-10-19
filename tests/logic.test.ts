@@ -338,6 +338,7 @@ test("the person's own store settings are never aged out", () => {
   expect(isStaleStoreKey('mirror:abc', { updated: NOW - month }, NOW, 30 * 24 * HOUR)).toBe(true)
   expect(isStaleStoreKey('mirror:abc', { updated: NOW - HOUR }, NOW, 30 * 24 * HOUR)).toBe(false)
   expect(isStaleStoreKey('hinted:abc', NOW - month, NOW, 30 * 24 * HOUR)).toBe(true)
+  expect(isStaleStoreKey('completion:abc', { updated: NOW - month }, NOW, 30 * 24 * HOUR)).toBe(false)
 })
 
 test('a task row keeps every open step for the take-over prompt, past the fold', () => {
