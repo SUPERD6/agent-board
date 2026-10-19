@@ -4,7 +4,7 @@ import { ZH_TW } from './i18n'
 import type { Strings } from './i18n'
 import { localDay } from './journal'
 import { fallbackTitle, isAnswered } from './mirror'
-import { AUTO_END, AUTO_START, autoOf, doneKey, isTaskComplete, parseAttrs, parseProgress, projectHead, readable, RESUME } from './parse'
+import { AUTO_END, AUTO_START, autoOf, doneKey, isTaskComplete, parseAttrs, parseProgress, projectHead, readable, RESUME, STALE_MS } from './parse'
 import type { QuickEntry } from './quick'
 import type { StepRef, TaskRef } from './view'
 import { sha256 } from './sha256'
@@ -373,6 +373,9 @@ export const takeTask = (text: string, ref: TaskRef, now: number, s: Strings = Z
   if (ref.session !== null) {
     const span = spans.find(one => one.session === ref.session)
     if (span === undefined || !span.isClosed) return null
+    // Recheck ownership at the write boundary: a stopped row may have resumed since it
+    // was drawn. Unknown clocks cannot prove that a working/waiting session stopped.
+    if ((span.state === 'working' || span.state === 'waiting') && (span.updated <= 0 || now - span.updated <= STALE_MS)) return null
 
     return { text: removeSpans(text, [span]), entries: [[heading, ...lines.slice(span.start + 1, span.end)].join('\n')] }
   }

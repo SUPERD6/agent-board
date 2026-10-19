@@ -552,6 +552,7 @@ export const boardScreen = (view: View, pending: readonly PendingTurn[], state: 
       lines.push(`${mark} ${line(fit(`${s.chip(s.ask[ask.kind])}${ask.text}`, o.width - 4))}`)
       lines.push(`    ${c('project', fit(where + (ask.task ? ` › ${ask.task}` : ''), o.width - 6))}`)
       if (isOpen || isHere) {
+        if (ask.where !== 'manual') lines.push(`    ${c('quiet', fit(s.archiveLive, o.width - 6))}`)
         if (ask.note) lines.push(`    ${fit(ask.note, o.width - 6)}`)
         answersOf(ask, s).forEach((answer, n) => lines.push(`    ${c('accent', ask.kind === 'confirm' ? (n === 0 ? 'y' : 'n') : String(n + 1))} ${fit(answer, o.width - 8)}`))
         if (ask.command !== null) lines.push(`    ${c('accent', fit(`$ ${ask.command}`, o.width - 6))}`)
@@ -568,6 +569,7 @@ export const boardScreen = (view: View, pending: readonly PendingTurn[], state: 
       const count = row.total > 0 ? `${row.done}/${row.total} ` : ''
       lines.push(`${mark} ${line(fit(row.title, o.width - 4))}`)
       lines.push(`    ${c('quiet', fit(`${count}${row.status}${who}${row.when ? ` · ${row.when}` : ''}`, o.width - 6))}${row.due ? `  ${c('alert', `⚑ ${row.due.left}`)}` : ''}`)
+      if ((isOpen || isHere) && (row.auto === 'working' || row.auto === 'waiting')) lines.push(`    ${c('quiet', fit(s.archiveLive, o.width - 6))}`)
       if (isOpen) {
         if (row.question) lines.push(`    ${fit(row.question, o.width - 6)}`)
         if (row.context) lines.push(`    ${c('quiet', fit(row.context, o.width - 6))}`)

@@ -99,6 +99,7 @@ export type ServeAsk = {
   canTick: boolean
   // Another session's question can be marked answered: kept off the board until it changes.
   canHide: boolean
+  archiveNote: string
   send: SendMode
   // The session a reply goes to: the page sends it back with the reply, so a line that now
   // belongs to another session is refused.
@@ -137,6 +138,7 @@ export type ServeRow = {
   steps: ServeStep[]
   next: string | null
   canArchive: boolean
+  archiveNote: string
   resume: string | null
   handoff: string
   // Its session still asks the person something (not marked answered): the card opens by itself.
@@ -223,6 +225,7 @@ export const serveModel = (view: View, pending: readonly PendingTurn[], s: Strin
         session: connection?.session ?? ask.target?.session ?? '',
         fp: fingerprint(item, items),
         where: send === 'send' ? (ask.target?.dir ?? '') : '',
+        archiveNote: isManual ? '' : s.archiveLive,
         info: connection || isManual ? '' : (lanInfo(baseMode, ask.agent) ?? infoOf(send, ask.agent, ask.task, '', s)),
         back: wayBackText(hint),
         sessionId: ask.where === 'other' ? ask.sessionId : null,
@@ -257,6 +260,7 @@ export const serveModel = (view: View, pending: readonly PendingTurn[], s: Strin
         steps: row.steps.map(step => ({ text: step.text, note: step.note, status: step.status, isCurrent: step.isCurrent })),
         next: row.next?.step ?? null,
         canArchive: row.archive !== null,
+        archiveNote: row.auto === 'working' || row.auto === 'waiting' ? s.archiveLive : '',
         // The command to resume a session names its folder, and the account with it: the computer's only.
         resume: isLan ? null : row.resume,
         handoff: row.handoff,
@@ -348,7 +352,9 @@ const actionOf = (items: readonly BoardItem[], request: ServeRequest, s: Strings
   // Marked answered sends nothing: only the hidden list is written.
   if (request.type === 'hide') return item.type === 'ask' && item.ask.hideKey !== '' ? { type: 'hide', key: item.ask.hideKey, text: item.ask.text } : { type: 'refuse', note: '' }
   if (request.type === 'archive') {
-    return item.type === 'row' && item.row.archive !== null ? { type: 'archive', ref: item.row.archive, title: item.row.title } : { type: 'refuse', note: s.archiveGone }
+    if (item.type === 'row' && item.row.archive !== null) return { type: 'archive', ref: item.row.archive, title: item.row.title }
+    const isLive = item.type === 'row' && (item.row.auto === 'working' || item.row.auto === 'waiting') || item.type === 'ask' && item.ask.where !== 'manual'
+    return { type: 'refuse', note: isLive ? s.archiveLive : s.archiveGone }
   }
   if (request.type !== 'send' && request.type !== 'message') return { type: 'refuse', note: '' }
   const text = replyText(request.text)
@@ -749,6 +755,7 @@ const PAGE_SCRIPT = String.raw`
     if (actions.childNodes.length) add(card, actions);
     if (!ask.canTick) add(card, replyBox(ask.key, w('serveReplyPlaceholder'), ask.send, ask.agent, ask.where, ask.isSending, ask.session, ask.text, ask.fp, ask.delivery));
     if (ask.receipt) add(card, receiptLine(ask.receipt));
+    if (ask.archiveNote) add(card, el('div', 'quiet small', ask.archiveNote));
     if (ask.info) add(card, el('div', 'quiet small', ask.info));
     return card;
   }
@@ -765,6 +772,7 @@ const PAGE_SCRIPT = String.raw`
     add(summary, el('span', 'meta t-' + row.tone, (row.total > 0 ? row.done + '/' + row.total + ' ' : '') + row.status + (row.agent ? ' · ' + row.agent : '') + (row.when ? ' · ' + row.when : '')));
     card.appendChild(summary);
     var body = el('div', 'body');
+    if (row.archiveNote) add(body, el('div', 'quiet small', row.archiveNote));
     if (row.context) add(body, el('div', 'quiet', row.context));
     if (row.pr) add(body, el('div', 'quiet', row.pr));
     if (row.steps.length) add(body, stepsList(row.steps));

@@ -315,6 +315,7 @@ export const ZH_CN: Strings = {
   sectionRecent: '最近完成',
   archiveNow: '现在归档',
   archiveThis: '归档',
+  archiveLive: '仍在运行；停止后即可归档。',
   archivedOne: (title: string): string => `已归档「${title}」。`,
   archiveGone: '找不到这件工作，可能已经改过或归档了。',
   journalNoticeTitle: '完成记录没有保存成功',
