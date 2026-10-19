@@ -57,3 +57,24 @@ The fresh exact Claude 2.1.301 plugin suite finished **515 passed, one failed**,
 The fresh complete 11-file Node suite ran with concurrency 1: **259 passed, zero failed, two platform skips**, 261 total in 318.549 seconds (`issue-102-combined-node.log`). All runtime and test SHA-256 inputs match the snapshot captured before the readers. The combined plugin timeout remains unresolved; prior green counts are not reused as combined acceptance. Root trust/final review and exact-head CI remain required.
 
 After root's historical-table reader exited, one ignored fixture registered only the original failing test and measured its original mocked callbacks. All three original assertions and the default 5000 ms limit remained unchanged. It passed in **749.72 ms**: probeStart began at 1 ms and ended at 409 ms; clock.advance began at 410 ms and ended at 740 ms; assertions finished at 740 ms. The first mocked callback arrived at 340 ms and model.complete returned at 686 ms. The detailed timeline is retained in `issue-102-isolated-diagnostic.log`. A preceding diagnostic-copy CRLF parsing error registered zero tests and is retained separately in `issue-102-isolated-preparation-error.log`. No product code changed. This isolated pass does not prove the full-suite timeout's cause or replace combined full-plugin acceptance; no full rerun followed.
+
+## Frozen tagged-adoption integration
+
+Merged common fix `fc1c494c0bf54f263da5d62bb569e0b4995740ba` at runtime `254e8d447fd1474de19d4f3500790f064abd49b2`. Kept both changelog branches, regenerated the 450892-character bundle with pinned Bun, and passed supported standalone strict TS, strict plugin validation, Bun board check and whitespace checks. No full released-table scan was repeated. The ignored diagnostic copy was renamed to `.fixture.tsx` before collection. The complete runtime/test SHA snapshot (`issue-102-adoption-inputs.json`) matched after the reader exited.
+
+The one authorized fresh exact Claude Code 2.1.301 full plugin run finished **506 passed, ten failed**, 516 tests across ten files in 294.39 seconds (`issue-102-adoption-plugin.log`). All ten failures are in `tests/pane.test.tsx`, each reporting only `Error: timed out after 5000 ms`; no assertion mismatch was reported. Reported durations were:
+
+| Case | Reported ms |
+| --- | ---: |
+| progress.html beside progress.md and opening the browser | 5576.14 |
+| progress.html pending inbox question and processed-copy cleanup | 8511.87 |
+| first run does not announce existing work | 6568.94 |
+| unmarked end-of-turn question waits until answered | 6132.34 |
+| own review answer retires waiting until Claude asks again | 10085.36 |
+| only the person's own message settles this session | 5062.99 |
+| failed pane reply leaves the original step waiting | 7473.32 |
+| Codex next turn ends its previous question | 9235.77 |
+| pane first observations with unreadable/unwritable storage | 5683.92 |
+| empty progress read preserves first-seen time | 11438.00 |
+
+The two page/Codex failure reports also retain dropped `ui.status` diagnostics (`no implementation for ui.status`); no causal link is established. The prior invalid+valid inbox timeout case passed in this run at 1204.83 ms, which likewise does not establish a cause. Original assertions and the 5000 ms limit remain unchanged. No product fix, blind retry, Node suite or actual-main merge followed this result; root requested a terminal checkpoint before the next slice. Final combined plugin acceptance, fresh Node validation after actual-main integration, and root trust/CI review remain pending.
