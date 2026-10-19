@@ -203,6 +203,44 @@ test('an inactive source is refused before polling notices it and cannot enqueue
   } finally { await source.close(); await target.close() }
 }))
 
+test('portable agents share one durable synthetic hub without implicit native delivery or expiry', async () => fixture(async (board, dir) => {
+  const names = ['codex', 'openclaw', 'opencode', 'grok', 'deepseek']
+  const client = boardClient(board.address)
+  const live = new Map(names.map(name => [name, true]))
+  const delivered = []
+  const receivers = []
+  try {
+    for (const agent of names) receivers.push(await client.attach({
+      agent, session: 'synthetic-' + agent, surface: 'Synthetic contract only', turn: 'turn1',
+      verify: async () => live.get(agent),
+      deliver: async (message, accepted) => { delivered.push(message); await accepted(); return 'ACK ' + message.id },
+    }))
+    for (let i = 1; i < receivers.length; i++) {
+      const other = receivers[i]
+      for (const [source, target, suffix] of [[receivers[0], other, 'out'], [other, receivers[0], 'back']]) {
+        const message = { ...input, id: `AB-${other.agent}-${suffix}`, target: target.id }
+        await source.send(message)
+        await waitFor(async () => (await board.call('/api/board')).body.messaging.messages.find(one => one.id === message.id)?.status === 'acknowledged')
+        const count = delivered.length
+        await source.send(message)
+        assert.equal(delivered.length, count)
+        await assert.rejects(source.send({ ...message, text: 'Conflict' }), /ID_CONFLICT/)
+      }
+    }
+    assert.equal(delivered.length, 8)
+    assert.ok(delivered.every(one => names.some(name => one.from === name + ':synthetic-' + name)))
+    live.set('deepseek', false)
+    await assert.rejects(receivers[4].send({ ...input, id: 'offline-source', target: receivers[0].id }), /HOST_NOT_CONNECTED/)
+    await assert.rejects(receivers[0].send({ ...input, id: 'offline-target', target: receivers[4].id }), /OFFLINE/)
+  } finally { for (const receiver of receivers) await receiver.close() }
+  const store = JSON.parse(readFileSync(join(dir, 'messages', 'messages.json'), 'utf8'))
+  assert.equal(store.messages.length, 8)
+  // Three-day task archiving must not expire message ids and permit replay.
+  const original = store.messages[0]
+  const retry = { id: original.id, target: original.target, turn: original.turn, text: original.text }
+  assert.equal(queueMessage(store, retry, original.from, undefined, Date.now() + 4 * 86400000).state, store)
+}))
+
 test('an expired connector disappears and cannot take a queued message', { timeout: 40000 }, async () => fixture(async board => {
   const connected = (await board.call('/api/messages/register', { agent: 'claude', session: 'fixture', turn: 'turn1', surface: 'Synthetic adapter' })).body
   await board.call('/api/messages/send', { ...input, target: connected.id })

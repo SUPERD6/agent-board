@@ -111,14 +111,22 @@ The progress support described in the README is separate from connected-session 
 | Antigravity App / IDE | Same global hook path; each host must load and execute it, with no arbitrary session discovery | No existing-editor receiver established |
 | Legacy Gemini CLI | Separate enterprise/API compatibility hooks and `/board` integration | Generic client API only; no Gemini-native connector or bidirectional acceptance |
 | OpenCode | Independent setup, session-context progress tool and plugin events | Generic client API only; no native receiving adapter or real bidirectional acceptance yet |
-| OpenClaw | Existing reporter plugin and board skill, with documented version/restart requirements | Its native session tools are not yet integrated into this hub; no real bidirectional acceptance |
+| OpenClaw | Independent metadata lifecycle plugin and native skill; separate optional Claude reporter | Its native session tools are not yet integrated into this hub; no real bidirectional acceptance |
 | Grok Build | Existing reporter hooks; optional legacy resume requires `--allow-resume` | No live receiving adapter acceptance |
+| DeepSeek Harness | Independent Cordis lifecycle plugin and native skill | Generic client contract checked; no DeepSeek-native receiver or model ACK acceptance |
 | dot / other UIs | Explicit progress relay where documented | No native receiving connector or real ACK established |
 
 One machine's installation does not automatically attach every already-running agent.
 Each host needs its own authorized session binding and supported transport. A native
 session being open does not imply that it registered a receiver; a progress record does
 not imply it is still open. Never scan private transcripts to fill these gaps.
+
+Agents attached to the **same local board and message directory** share one message store,
+id namespace and receipts. Synthetic OpenClaw/OpenCode/Grok/DeepSeek adapters exchange both
+ways with Codex in the contract test, including duplicate/conflict and offline rejection.
+That test supplies simulated owners and ACKs; it does not establish native delivery for
+those products. There is no three-day message expiry. Three-day task archiving is a
+separate feature and must not erase message ids or permit replay.
 
 ## Adapter API for other agents and UIs
 

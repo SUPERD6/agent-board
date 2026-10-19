@@ -2,12 +2,14 @@ import { createHash } from 'node:crypto'
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { codexEvent, codexEvents, codexReport, putCodexBlock } from '../hooks/codex'
 import type { CodexReport } from '../hooks/codex'
 import type { Strings } from '../hooks/i18n'
 import { STRINGS } from '../hooks/strings'
 import { antigravityHooks, cursorEvent, cursorEvents, lifecycleCapability, localAgents, opencodePlugin, statusEvents } from '../hooks/local-agents'
 import type { LocalAgent } from '../hooks/local-agents'
+import { deepseekLocalPlugin, deepseekPatch, openclawLocalPlugin } from '../hooks/portable-agents'
 import { trustCodex } from './codex-host'
 
 type Json = Record<string, unknown>
@@ -24,7 +26,6 @@ const object = (value: unknown): Json => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('INVALID_JSON_OBJECT')
   return value as Json
 }
-const json = (file: string): Json => object(JSON.parse(readLocal(file) ?? '{}'))
 const atomic = (file: string, text: string): void => {
   mkdirSync(dirname(file), { recursive: true })
   const temporary = `${file}.${process.pid}.tmp`
@@ -85,9 +86,15 @@ export const runCodexLocal = async (args: string[], boardPath: string, s: String
   if (!localAgents.includes(agent)) throw new Error('UNSUPPORTED_AGENT')
   const home = resolve(flag('--home') ?? homedir())
   const root = resolve(flag('--data-dir') ?? baked?.codexRoot ?? join(home, '.agent-board'))
+  const before = new Map<string, string | null>()
+  const initial = (file: string): string | null => {
+    if (!before.has(file)) before.set(file, readLocal(file))
+    return before.get(file)!
+  }
+  const jsonInitial = (file: string): Json => object(JSON.parse(initial(file) ?? '{}'))
   const manifestFile = join(root, `install-${agent}.json`)
-  const loaded = json(manifestFile)
-  const otherManifests = localAgents.filter(one => one !== agent).map(one => json(join(root, `install-${one}.json`)))
+  const loaded = jsonInitial(manifestFile)
+  const otherManifests = localAgents.filter(one => one !== agent).map(one => jsonInitial(join(root, `install-${one}.json`)))
   const storedProgress = loaded.progress ?? otherManifests.find(one => typeof one.progress === 'string')?.progress
   const progress = resolve(flag('--progress-file') ?? (process.env.CLAUDE_PROGRESS_FILE || (typeof storedProgress === 'string' ? storedProgress : mode === '--codex-setup' ? join(root, 'progress.md') : boardPath)))
   if (mode === '--codex-setup' && otherManifests.some(one => typeof one.progress === 'string' && resolve(one.progress) !== progress)) throw new Error('SHARED_BOARD_PATH_CONFLICT')
@@ -101,6 +108,9 @@ export const runCodexLocal = async (args: string[], boardPath: string, s: String
   }
   const config = configs[agent] ?? ''
   const script = join(root, 'agent-board.mjs')
+  const opencodeDir = resolve(flag('--opencode-dir') ?? (process.env.OPENCODE_CONFIG_DIR || join(process.env.XDG_CONFIG_HOME || join(home, '.config'), 'opencode')))
+  const openclawDir = resolve(flag('--openclaw-dir') ?? (process.env.OPENCLAW_STATE_DIR || join(home, '.openclaw')))
+  const deepseekDir = resolve(flag('--deepseek-dir') ?? (process.env.DSH_HOME || join(home, '.dsh')))
   const skill = join(home, '.agents', 'skills', 'agent-board', 'SKILL.md')
   const manifest: Manifest = { files: object(loaded.files ?? {}) as Record<string, string>, groups: object(loaded.groups ?? {}) }
   const output = (value: unknown): void => { process.stdout.write(`${JSON.stringify(value, null, 2)}\n`) }
@@ -155,7 +165,8 @@ export const runCodexLocal = async (args: string[], boardPath: string, s: String
   }
 
   const hasHooks = agent === 'codex' || agent === 'cursor' || statusEvents[agent] !== undefined
-  const hookConfig = hasHooks ? json(config) : {}
+  const nativeConfig = agent === 'openclaw' ? join(openclawDir, 'openclaw.json') : agent === 'deepseek' ? join(deepseekDir, 'cordis.patch.yml') : config
+  const hookConfig = hasHooks || agent === 'openclaw' ? jsonInitial(nativeConfig) : {}
   const hooks = object(hookConfig.hooks ?? {})
   const command = `${quote(process.execPath)} ${quote(script)} --codex-event --agent ${agent} --progress-file ${quote(progress)}`
   const isSame = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b)
@@ -199,6 +210,37 @@ export const runCodexLocal = async (args: string[], boardPath: string, s: String
     if (!remove) { nextConfig[name] = desired; groups[name] = desired }
     else if (owned !== undefined) delete nextConfig[name]
   }
+  let nextConfigText: string | null = null
+  if (agent === 'openclaw') {
+    const id = 'agent-board-local'
+    const pluginFile = join(root, 'adapters', 'openclaw', 'agent-board-local.mjs')
+    const plugins = object(hookConfig.plugins ?? {})
+    const load = object(plugins.load ?? {})
+    const entries = object(plugins.entries ?? {})
+    if (load.paths !== undefined && !Array.isArray(load.paths) || plugins.allow !== undefined && !Array.isArray(plugins.allow)) throw new Error('INVALID_PLUGIN_CONFIG')
+    const paths = (load.paths ?? []) as unknown[]
+    const allow = plugins.allow as unknown[] | undefined
+    const existing = entries[id], owned = manifest.groups[id]
+    const desired = { enabled: true, hooks: { allowConversationAccess: false } }
+    if (plugins.enabled === false || existing !== undefined && !isSame(existing, owned ?? desired) || owned !== undefined && (!isSame(existing, owned) || !paths.includes(pluginFile) || allow?.length && !allow.includes(id))) conflicts.push(`${nativeConfig}:${id}`)
+    nextConfig = { ...hookConfig, plugins: {
+      ...plugins,
+      load: { ...load, paths: remove ? paths.filter(path => path !== pluginFile) : [...paths.filter(path => path !== pluginFile), pluginFile] },
+      entries: { ...entries, ...(!remove ? { [id]: desired } : {}) },
+      ...(allow === undefined ? {} : { allow: remove && manifest.groups.allowAdded === true ? allow.filter(one => one !== id) : !remove && allow.length && !allow.includes(id) ? [...allow, id] : allow }),
+    } }
+    if (remove) delete object(object(nextConfig.plugins).entries)[id]
+    else {
+      groups[id] = desired
+      groups.allowAdded = manifest.groups.allowAdded ?? Boolean(allow?.length && !allow.includes(id))
+    }
+  }
+  if (agent === 'deepseek') {
+    const patch = deepseekPatch(initial(nativeConfig) ?? '', manifest.groups.patch, pathToFileURL(join(root, 'adapters', 'deepseek.mjs')).href, remove)
+    if (patch.conflict) conflicts.push(nativeConfig)
+    nextConfigText = patch.text
+    if (patch.group) groups.patch = patch.group
+  }
   const skillText = `---\nname: agent-board\ndescription: ${JSON.stringify(s.localAgentSkillDescription)}\n---\n\n${s.localAgentSkill(`${quote(process.execPath)} ${quote(script)}`)}\n\n${s.localAgentHandoff}\n\n${s.codexTrust}\n\nCodex: ${configs.codex}\n${codexEvents.join(', ')}\n`
   const legacySkills = Object.values(STRINGS).map(words => `---\nname: agent-board\ndescription: ${JSON.stringify(words.boardCommandDescription)}\n---\n\n${words.boardSkillPrompt(`node "${join(home, '.claude', 'agent-board.mjs')}"`)}\n`)
   const original = readFileSync(process.argv[1] ?? '', 'utf8').replace(/^globalThis\.AGENT_BOARD[^\n]*\n/, '')
@@ -206,27 +248,41 @@ export const runCodexLocal = async (args: string[], boardPath: string, s: String
     [script]: `globalThis.AGENT_BOARD = ${JSON.stringify({ path: progress, codexRoot: root, lang: Object.entries(STRINGS).find(([, words]) => words === s)?.[0] ?? 'en' })}\n${original}`,
     [skill]: skillText,
   }
-  if (agent === 'opencode') files[join(home, '.config', 'opencode', 'plugins', 'agent-board-local.js')] = opencodePlugin(process.execPath, script, progress, s.localAgentSkillDescription)
+  if (agent === 'opencode') files[join(opencodeDir, 'plugins', 'agent-board-local.js')] = opencodePlugin(process.execPath, script, progress, s.localAgentSkillDescription)
+  if (agent === 'openclaw') {
+    files[join(root, 'adapters', 'openclaw', 'agent-board-local.mjs')] = openclawLocalPlugin(process.execPath, script, progress)
+    files[join(root, 'adapters', 'openclaw', 'openclaw.plugin.json')] = `${JSON.stringify({ id: 'agent-board-local', configSchema: { type: 'object', additionalProperties: false, properties: {} } }, null, 2)}\n`
+    files[join(openclawDir, 'skills', 'agent-board', 'SKILL.md')] = skillText
+  }
+  if (agent === 'deepseek') {
+    files[join(root, 'adapters', 'deepseek.mjs')] = deepseekLocalPlugin(process.execPath, script, progress)
+    files[join(deepseekDir, 'skills', 'agent-board', 'SKILL.md')] = skillText
+  }
   if (agent === 'hermes') files[join(flag('--hermes-dir') ?? (process.env.HERMES_HOME || join(home, '.hermes')), 'skills', 'agent-board', 'SKILL.md')] = skillText
   if (agent === 'antigravity') files[join(home, '.gemini', 'config', 'skills', 'agent-board', 'SKILL.md')] = skillText
   if (agent === 'gemini') files[join(home, '.gemini', 'commands', 'board.toml')] = `description = ${JSON.stringify(s.boardCommandDescription)}\nprompt = '''${s.boardCommandPrompt}\n\n!{${quote(process.execPath)} ${quote(script)} --serve}\n'''\n`
-  if (agent === 'opencode') files[join(home, '.config', 'opencode', 'commands', 'board.md')] = `---\ndescription: ${JSON.stringify(s.boardCommandDescription)}\n---\n\n${s.boardCommandPrompt}\n\n!\`${quote(process.execPath)} ${quote(script)} --serve\`\n`
+  if (agent === 'opencode') files[join(opencodeDir, 'commands', 'board.md')] = `---\ndescription: ${JSON.stringify(s.boardCommandDescription)}\n---\n\n${s.boardCommandPrompt}\n\n!\`${quote(process.execPath)} ${quote(script)} --serve\`\n`
   for (const [file, desired] of Object.entries(files)) {
-    const existing = readLocal(file)
+    const existing = initial(file)
     const shared = file === script || file === skill
     if (remove && shared && otherManifests.some(one => one.files !== undefined)) continue
     const owned = existing !== null && (hash(existing) === manifest.files[file] || (!remove && (otherManifests.some(one => object(one.files ?? {})[file] === hash(existing)) || file === skill && legacySkills.includes(existing))))
     if (existing !== null && !owned && existing !== desired) conflicts.push(file)
     else if (remove ? owned : existing !== desired) changes.push({ file, action: remove ? 'remove' : existing === null ? 'create' : 'update' })
   }
-  if (hasHooks && (!remove || Object.keys(manifest.groups).length) && !isSame(hookConfig, nextConfig)) changes.push({ file: config, action: 'update' })
-  if (!remove && readLocal(progress) === null) changes.push({ file: progress, action: 'create' })
+  // A host-directory override must not strand an old active plugin outside the
+  // new ownership record. Remove the old scoped install before changing roots.
+  for (const file of Object.keys(manifest.files)) if (!(file in files)) conflicts.push(file)
+  const hasNativeConfig = hasHooks || agent === 'openclaw' || agent === 'deepseek'
+  nextConfigText ??= `${JSON.stringify(nextConfig, null, 2)}\n`
+  if (hasNativeConfig && (!remove || Object.keys(manifest.groups).length) && (agent === 'deepseek' ? initial(nativeConfig) !== nextConfigText : !isSame(hookConfig, nextConfig))) changes.push({ file: nativeConfig, action: 'update' })
+  if (!remove && readLocal(progress) === null) { before.set(progress, null); changes.push({ file: progress, action: 'create' }) }
   const nextManifest = `${JSON.stringify({ files: Object.fromEntries(Object.entries(files).map(([file, text]) => [file, hash(text)])), groups, progress }, null, 2)}\n`
-  if (remove ? readLocal(manifestFile) !== null : readLocal(manifestFile) !== nextManifest) changes.push({ file: manifestFile, action: remove ? 'remove' : readLocal(manifestFile) === null ? 'create' : 'update' })
+  if (remove ? initial(manifestFile) !== null : initial(manifestFile) !== nextManifest) changes.push({ file: manifestFile, action: remove ? 'remove' : initial(manifestFile) === null ? 'create' : 'update' })
   const plan = {
     mode: remove ? 'remove' : 'install', agent, progress, data: root, changes, conflicts,
     notice: agent === 'codex' ? s.codexTrust : s.localHostReview, privacy: s.codexPrivacy,
-    capabilities: { ui: 'web-and-tui', progress: 'explicit-reports', lifecycle: lifecycleCapability(agent), turnBinding: agent === 'codex' || agent === 'cursor' ? 'host-event-id' : 'unavailable-in-status-events', liveReply: false },
+    capabilities: { ui: 'web-and-tui', progress: 'explicit-reports', lifecycle: lifecycleCapability(agent), turnBinding: agent === 'codex' || agent === 'cursor' || agent === 'openclaw' ? 'host-event-id' : 'unavailable-in-status-events', liveReply: false },
   }
   if (mode === '--codex-trust') {
     if (agent !== 'codex' || conflicts.length || changes.length || readLocal(manifestFile) === null) throw new Error('OWNED_CODEX_INSTALL_REQUIRED')
@@ -243,13 +299,14 @@ export const runCodexLocal = async (args: string[], boardPath: string, s: String
   }
   if (!args.includes('--apply')) { output(plan); return true }
   if (conflicts.length) { output(plan); throw new Error('INSTALL_CONFLICT') }
-  const before = new Map([...changes.map(change => change.file), manifestFile].map(file => [file, readLocal(file)]))
   locked(join(root, 'install.lock'), () => {
+    // Compare the bytes used to build the plan, not a fresh snapshot taken after
+    // planning: another installer or host may have changed them in that interval.
     for (const [file, expected] of before) if (readLocal(file) !== expected) throw new Error('INSTALL_CHANGED')
     // Setup is deliberately explicit. It changes neither hook trust nor config.toml.
     for (const change of changes) {
       if (change.file === manifestFile) continue
-      if (change.file === config) atomic(config, `${JSON.stringify(nextConfig, null, 2)}\n`)
+      if (change.file === nativeConfig) atomic(nativeConfig, nextConfigText!)
       else if (change.file === progress) {
         mkdirSync(dirname(progress), { recursive: true })
         writeFileSync(progress, '', { flag: 'wx', mode: 0o600 })

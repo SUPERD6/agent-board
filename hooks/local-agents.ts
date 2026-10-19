@@ -1,13 +1,13 @@
-export type LocalAgent = 'codex' | 'cursor' | 'opencode' | 'gemini' | 'grok' | 'muse' | 'hermes' | 'openclaw' | 'antigravity'
-export const localAgents: LocalAgent[] = ['codex', 'cursor', 'opencode', 'gemini', 'grok', 'muse', 'hermes', 'openclaw', 'antigravity']
+export type LocalAgent = 'codex' | 'cursor' | 'opencode' | 'gemini' | 'grok' | 'muse' | 'hermes' | 'openclaw' | 'antigravity' | 'deepseek'
+export const localAgents: LocalAgent[] = ['codex', 'cursor', 'opencode', 'gemini', 'grok', 'muse', 'hermes', 'openclaw', 'antigravity', 'deepseek']
 export const statusEvents: Partial<Record<LocalAgent, Record<string, string>>> = {
   gemini: { SessionStart: 'waiting', BeforeAgent: 'working', AfterAgent: 'waiting', SessionEnd: 'ended' },
-  grok: { SessionStart: 'waiting', Stop: 'waiting', SessionEnd: 'ended' },
+  grok: { SessionStart: 'waiting', UserPromptSubmit: 'working', Stop: 'waiting', SessionEnd: 'ended' },
   muse: { Stop: 'waiting', SessionEnd: 'ended' },
   antigravity: { SessionStart: 'waiting', PreInvocation: 'working', PostInvocation: 'working', Stop: 'waiting' },
 }
 export const lifecycleCapability = (agent: LocalAgent): string =>
-  agent === 'hermes' || agent === 'openclaw' ? 'adapter-pending' : 'adapter-installed-unverified'
+  agent === 'hermes' ? 'adapter-pending' : 'adapter-installed-unverified'
 
 // Antigravity groups events under a named definition, rather than hooks.<event>.
 // Stop ends an execution loop, not the conversation. No session-end event is invented.
@@ -46,7 +46,7 @@ export const AgentBoardLocal = async ({ client }) => ({
     if (!session || !['session.created', 'session.status', 'session.idle', 'session.deleted'].includes(event.type)) return
     if (event.type === 'session.status' && !['busy', 'retry', 'idle'].includes(p.status?.type)) return
     const info = event.type === 'session.deleted' ? { data: p.info } : await client.session.get({ path: { id: session } })
-    if (info.data?.parentID) return
+    if (!info.data || info.error || info.data.id !== session || info.data.parentID) return
     const state = event.type === 'session.deleted' ? 'ended' : event.type === 'session.status' && p.status?.type !== 'idle' ? 'working' : 'waiting'
     run('--agent-status', { session_id: session, state })
   },

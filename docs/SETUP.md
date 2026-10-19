@@ -50,10 +50,45 @@ Claude setup scripts as a prerequisite for this installer.
 | Cursor | Conversation/generation lifecycle hooks | Native CLI/IDE execution and turn binding |
 | OpenCode | Session event plugin and context-bound progress tool | Plugin reload; status events lack a turn id |
 | Antigravity | Four named native hooks plus shared skill | Native CLI/App/IDE events; no session-end event or turn fence |
-| Grok Build | SessionStart, Stop, SessionEnd | Coarse status; no working-turn event integrated |
+| Grok Build | SessionStart, UserPromptSubmit, Stop, SessionEnd | Prompt/idle/end status; native execution unverified |
 | Muse Code | Stop, SessionEnd | Coarse status and native execution unverified |
 | Hermes Agent | Board and skill | Independent native hook adapter pending |
-| OpenClaw | Board and skill | Independent native plugin pending; no conversation grant added |
+| OpenClaw | Independent metadata plugin and native skill | Native host execution unverified; requires sanitized lifecycle subscription API |
+| DeepSeek Harness | Native Cordis lifecycle plugin and skill | Loader/event contract checked; full CLI/Web/Desktop execution unverified |
+
+## Portable host paths and lifecycle
+
+Select one target or a comma-separated list, such as `--agent opencode,openclaw,grok,deepseek`.
+They share the selected progress file. Each target's preview still lists its own persistent
+changes; no receiving connection or model call is added by setup.
+
+| Target | Native configuration | Override |
+| --- | --- | --- |
+| OpenCode | `~/.config/opencode/plugins/agent-board-local.js` and `commands/board.md` | `--opencode-dir`, then `OPENCODE_CONFIG_DIR`, then `XDG_CONFIG_HOME/opencode` |
+| OpenClaw | `~/.openclaw/openclaw.json`, `skills/agent-board/` and a private local plugin with its manifest | `--openclaw-dir`, then `OPENCLAW_STATE_DIR` |
+| DeepSeek Harness | `~/.dsh/cordis.patch.yml`, `skills/agent-board/` and a private Cordis plugin | `--deepseek-dir`, then `DSH_HOME` |
+| Grok Build | `~/.grok/hooks/agent-board-local.json` | `--grok-dir`, then `GROK_HOME` |
+
+OpenClaw receives `session_start`, `session_end` and sanitized lifecycle start/end/error
+events. Only the native session/run ids and state are reported; stale runs cannot replace
+the current one. It explicitly denies conversation access. Hosts lacking the subscription
+API fail visibly rather than falling back to transcript access. Reload the plugin in each
+host; installation cannot enumerate every previously open session.
+
+DeepSeek uses `agent/created`, `agent/status` (running/idle) and `agent/disposed`, retaining
+its own agent identity. Its owned entry is appended to a plain root YAML patch sequence;
+complex/edited YAML is a conflict requiring review. Existing entries remain untouched.
+Native skill roots are used as well as the shared skill. Restart profiles without
+configuration HMR. No credential, telemetry or provider setting is changed.
+
+OpenCode's metadata lookup must return the exact session before it reports; missing or
+foreign responses are ignored. Changing an installed host directory requires removing
+the old scoped installation first, so an orphan plugin cannot continue reporting.
+
+All these hooks report activity only. Semantic steps need a host-proven own-session
+report; only OpenCode's generated tool supplies that context directly. This setup does
+not make the other hosts' incoming message transports available. See the
+[portable acceptance record](validation/2026-10-19-portable-hosts.md).
 
 ## Antigravity native hooks
 

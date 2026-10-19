@@ -6,7 +6,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const targets = ['codex', 'cursor', 'opencode', 'gemini', 'grok', 'muse', 'hermes', 'openclaw', 'antigravity']
+const targets = ['codex', 'cursor', 'opencode', 'gemini', 'grok', 'muse', 'hermes', 'openclaw', 'antigravity', 'deepseek']
 const args = process.argv.slice(2)
 const at = args.indexOf('--agent')
 const selector = at < 0 ? 'auto' : args[at + 1]
@@ -17,9 +17,18 @@ if (!home || !selector) throw new Error('MISSING_ARGUMENT')
 const signs = {
   codex: ['.codex'], cursor: ['.cursor'], opencode: ['.config/opencode'],
   gemini: ['.gemini/settings.json'], grok: ['.grok/config.toml', '.grok/sessions'], muse: ['.config/muse'],
-  hermes: ['.hermes'], openclaw: ['.openclaw'], antigravity: ['.gemini/antigravity-cli', '.gemini/antigravity', '.gemini/antigravity-ide'],
+  hermes: ['.hermes'], openclaw: ['.openclaw'], antigravity: ['.gemini/antigravity-cli', '.gemini/antigravity', '.gemini/antigravity-ide'], deepseek: ['.dsh'],
 }
-const selected = selector === 'all' ? targets : selector === 'auto' ? targets.filter(agent => signs[agent].some(sign => existsSync(join(home, sign)))) : selector.split(',')
+const flag = name => { const at = args.indexOf(name); return at < 0 ? undefined : args[at + 1] }
+const hostDirs = {
+  codex: flag('--codex-dir') || process.env.CODEX_HOME,
+  grok: flag('--grok-dir') || process.env.GROK_HOME,
+  hermes: flag('--hermes-dir') || process.env.HERMES_HOME,
+  opencode: flag('--opencode-dir') || process.env.OPENCODE_CONFIG_DIR || (process.env.XDG_CONFIG_HOME ? join(process.env.XDG_CONFIG_HOME, 'opencode') : undefined),
+  openclaw: flag('--openclaw-dir') || process.env.OPENCLAW_STATE_DIR,
+  deepseek: flag('--deepseek-dir') || process.env.DSH_HOME,
+}
+const selected = selector === 'all' ? targets : selector === 'auto' ? targets.filter(agent => hostDirs[agent] ? existsSync(hostDirs[agent]) : signs[agent].some(sign => existsSync(join(home, sign)))) : selector.split(',')
 if (!selected.length || selected.some(agent => !targets.includes(agent)) || new Set(selected).size !== selected.length) throw new Error('INVALID_TARGETS')
 const apply = args.includes('--apply')
 const common = args.filter(arg => arg !== '--apply')

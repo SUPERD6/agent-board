@@ -48,7 +48,8 @@ node scripts/setup-agent.mjs --apply
 | Codex | 獨立安裝、六個 hooks 與自身 thread 回報。已驗證獨佔 app-server 的原生 hooks／ACK；CLI TTY、桌面 App 自動 hooks 與收訊仍須各自驗收。 |
 | Antigravity CLI | 獨立安裝、四個原生 hooks 與獨佔 stream 傳訊，已在 Windows 實測。App／IDE 另行驗收。 |
 | Cursor、OpenCode、Grok Build、Muse Code | 可產生獨立 hooks 或 plugin；原生執行與收訊依 host 而異，不能只憑安裝判定通過。 |
-| Hermes Agent、OpenClaw | 看板與 skill；獨立生命週期 adapter 待完成。 |
+| OpenClaw、DeepSeek Harness | 獨立原生狀態 plugin 與 skill；隔離回呼／載入檢查通過。原生應用程式及收訊仍未驗收。 |
+| Hermes Agent | 看板與 skill；獨立生命週期 adapter 待完成。 |
 | Claude Code | 選用原生側欄、Task 鏡像與 plugin 連接流程。 |
 | dot 與其他網頁 agent | 明確進度轉送；尚未驗證原生收訊。 |
 
@@ -76,6 +77,10 @@ Windows 或自訂安裝請使用安裝器印出的確切路徑。`--watch` 是�
 `--serve` 開啟互動網頁，可勾選手動步驟、封存、匯入有效進度區塊、複製回覆、標記已讀及還原；目前沒有通用任務編輯表單。只有確切 session 的 adapter 在線時才顯示**傳送**；離線卡片保留**複製**及可用的**複製續接指令**。[啟用傳訊](docs/MESSAGING.md)。
 
 關閉分頁不會停止服務，再執行同一命令即可重開；**關閉看板**才會停止。預設不會閒置關閉，`--idle-minutes 30` 才啟用。`--lan` 為選用功能，另有存取限制，詳見[安全說明](SECURITY.md)。
+
+![互動看板：待回覆問題、agent 進度與手動清單](docs/images/interactive-board-en.jpg)
+
+*合成資料的介面示例。Send 需要在線 adapter；截圖不是原生送達證據。*
 
 ## 選用 Claude Code 側欄
 
