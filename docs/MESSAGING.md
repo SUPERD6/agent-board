@@ -9,12 +9,18 @@ approve tools, grant hook trust or merge a PR.
 
 Use the existing reply box on the session's card. Its Copy button becomes Send Codex
 (or that receiver's agent name) only when the full native session id and agent match a
-live receiver. The connection's actual host surface is shown below it. There is no
+live receiver. Internal connection ids stay hidden. There is no
 separate target-picker workflow. Queue, transport and actual ACK receipts appear on the
 same card. Mark read, show again, collapse, tick and archive keep their existing actions.
-An offline card retains Copy. When messaging is enabled, an offline Send cannot silently
-fall back to spawning a CLI or resuming a saved session. The existing copy-resume command
+An offline card retains Copy. By default, even without a message store, the web UI and
+action API cannot spawn a CLI or resume a saved session. The existing copy-resume command
 remains available where the board already offered it.
+
+The separate legacy `--serve --allow-resume` option deliberately allows a local reply to
+start an ended Codex or Grok Build session. It is disabled by default, never enabled by
+setup, and never used as fallback when `--messages-dir` is enabled. It is not live delivery.
+Reopening without the option replaces an idle server that had it enabled. LAN sends remain
+refused. Review the native agent's permissions before choosing this legacy mode.
 
 ## Enable locally
 
@@ -106,7 +112,7 @@ The progress support described in the README is separate from connected-session 
 | Gemini CLI | Existing AfterAgent / SessionEnd reporter hooks and `/board` integration | Generic client API only; no Gemini-native connector or bidirectional acceptance yet |
 | OpenCode | Independent setup, session-context progress tool and plugin events | Generic client API only; no native receiving adapter or real bidirectional acceptance yet |
 | OpenClaw | Existing reporter plugin and board skill, with documented version/restart requirements | Its native session tools are not yet integrated into this hub; no real bidirectional acceptance |
-| Grok Build | Existing reporter hooks; legacy reply can resume an ended session | Resuming an ended session is separate from live delivery; no live receiving adapter acceptance |
+| Grok Build | Existing reporter hooks; optional legacy resume requires `--allow-resume` | No live receiving adapter acceptance |
 | dot / other UIs | Explicit progress relay where documented | No native receiving connector or real ACK established |
 
 One machine's installation does not automatically attach every already-running agent.

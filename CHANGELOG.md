@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Send only to live sessions by default.** Both web controls and the action API
+  refuse to launch closed Codex/Grok sessions, including boards without a message
+  store. Copy and Copy resume remain. Legacy resume requires `--allow-resume`, never
+  becomes a message-hub fallback, and is removed when reopening without that flag.
+  Tests: `an ordinary board never resumes a closed session even without messaging
+  enabled`, `default web and API refuse closed Codex and Grok sessions without
+  starting a process`, `reopening a board replaces an explicit resume opt-in when
+  that flag is removed`.
+
 - **Recheck the source before every forwarded message.** An inactive or unverifiable
   owner cannot enqueue during the interval before the next poll. Idle hook-only cards
   no longer use a running-task placeholder. A native Codex ACK waits for its matching
