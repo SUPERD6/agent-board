@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createServer } from 'node:http'
@@ -46,6 +46,85 @@ test('an idle or already claimed poll preserves the exact durable state', () => 
   assert.notEqual(claimed.state, queued)
   assert.equal(claimMessages(claimed.state, target, 1002).state, claimed.state)
 })
+
+test('receive=false renews an authenticated lease without claiming queued work', async () => fixture(async (board, dir) => {
+  const registered = (await board.call('/api/messages/register', { agent: 'fixture', session: 'busy-session', surface: 'Synthetic busy owner', turn: 'turn1' })).body
+  const credentials = { connection: registered.id, secret: registered.secret, turn: 'turn1' }
+  await board.call('/api/messages/send', { ...input, target: registered.id })
+  const before = (await board.call('/api/board')).body.messaging.messages[0]
+  const file = join(dir, 'messages', 'messages.json'), bytes = readFileSync(file), modified = statSync(file, { bigint: true }).mtimeNs
+  writeFileSync(join(dir, 'message-clock-offset'), '10000')
+  const deferred = await board.call('/api/messages/poll', { ...credentials, receive: false })
+  assert.equal(deferred.status, 200)
+  assert.deepEqual(deferred.body.messages, [])
+  assert.ok(deferred.body.leaseMs > 0)
+  assert.deepEqual((await board.call('/api/board')).body.messaging.messages[0], before)
+  assert.deepEqual(readFileSync(file), bytes)
+  assert.equal(statSync(file, { bigint: true }).mtimeNs, modified)
+  // Advance only this disposable server's clock beyond the original lease.
+  // Renewal must preserve the exact binding without consuming the queue.
+  writeFileSync(join(dir, 'message-clock-offset'), '16000')
+  assert.ok(Date.now() + 16000 > registered.expires)
+  const renewed = (await board.call('/api/board')).body.messaging
+  assert.ok(renewed.connections.some(one => one.id === registered.id))
+  assert.equal(renewed.messages[0].status, 'queued')
+  const invalid = await board.call('/api/messages/poll', { ...credentials, receive: 'yes' })
+  assert.equal(invalid.body.error, 'INVALID_RECEIVE')
+  const stale = await board.call('/api/messages/poll', { ...credentials, turn: 'stale', receive: false })
+  assert.equal(stale.body.error, 'STALE_TURN')
+  const forged = await board.call('/api/messages/poll', { ...credentials, receive: false, approve: true })
+  assert.equal(forged.body.error, 'UNKNOWN_FIELD')
+  const claimed = await board.call('/api/messages/poll', { ...credentials, receive: true })
+  assert.equal(claimed.body.messages.length, 1)
+  assert.equal((await board.call('/api/board')).body.messaging.messages[0].status, 'uncertain')
+}, `const originalNow = Date.now
+Date.now = () => originalNow() + (fs.existsSync(path.join(directory, 'message-clock-offset')) ? Number(fs.readFileSync(path.join(directory, 'message-clock-offset'), 'utf8')) : 0)
+`))
+
+for (const agent of ['codex', 'antigravity']) test(`busy native owners remain connected and can send: ${agent}`, async () => fixture(async board => {
+  const session = '11111111-2222-4333-8444-555555555555'
+  let current = agent === 'codex' ? { thread: session, status: 'idle', turn: null } : { session, status: 'idle', turns: 0, step: -1 }
+  let listener, nativeCalls = 0, alive = true
+  const transport = {
+    listen: one => { listener = one; return () => { listener = null } },
+    request: async (method, params) => {
+      if (method === 'thread/loaded/list') return { data: [session] }
+      assert.equal(method, 'turn/start'); nativeCalls++
+      const id = 'codex-inbound'
+      listener({ method: 'item/completed', params: { threadId: session, turnId: 'received-turn', item: { type: 'agentMessage', text: 'ACK ' + id } } })
+      listener({ method: 'turn/completed', params: { threadId: session, turn: { id: 'received-turn', status: 'completed' } } })
+      return { turn: { id: 'received-turn' } }
+    },
+    write: async () => {
+      nativeCalls++
+      const before = current.turns, step = current.step + 1
+      listener({ event: 'step_update', step_update: { conversation_id: session, step_type: 'user_input', state: 'DONE', step_index: step } })
+      current = { ...current, turns: before + 1, step }
+      listener({ event: 'result', result: { conversation_id: session, num_turns: before + 1, status: 'SUCCESS', response: 'ACK antigravity-inbound' } })
+    },
+  }
+  const options = { boardUrl: board.address, transport, state: () => current, verifyOwner: () => alive }
+  const source = agent === 'codex' ? await attachCodexSession({ ...options, thread: session }) : await attachAntigravitySession({ ...options, session })
+  const other = await boardClient(board.address).attach({ agent: 'fixture', session: 'target', surface: 'Synthetic receiver', turn: 'turn1', verify: async () => true, deliver: async message => 'ACK ' + message.id })
+  try {
+    current = agent === 'codex' ? { ...current, status: 'active', turn: 'native-user-turn' } : { ...current, status: 'active', step: 0 }
+    await pause(2300) // An ordinary native turn crosses a real adapter poll.
+    assert.ok((await board.call('/api/board')).body.messaging.connections.some(one => one.id === source.id))
+    await source.send({ ...input, id: agent + '-outbound', target: other.id })
+    await board.call('/api/messages/send', { ...input, id: agent + '-inbound', target: source.id, turn: 'session' })
+    await pause(2300)
+    const busy = (await board.call('/api/board')).body.messaging
+    assert.equal(busy.messages.find(one => one.id === agent + '-inbound').status, 'queued')
+    assert.equal(nativeCalls, 0)
+    assert.ok(busy.connections.some(one => one.id === source.id))
+    current = agent === 'codex' ? { ...current, status: 'idle', turn: null } : { ...current, status: 'idle', turns: 1, step: 1 }
+    await waitFor(async () => (await board.call('/api/board')).body.messaging.messages.find(one => one.id === agent + '-inbound')?.status === 'acknowledged')
+    assert.equal(nativeCalls, 1)
+    alive = false
+    await assert.rejects(source.send({ ...input, id: agent + '-offline', target: other.id }), /HOST_NOT_CONNECTED/)
+    assert.equal(nativeCalls, 1)
+  } finally { await source.close(); await other.close() }
+}))
 
 test('a connection observation requires one exact newer report, never a relay claim or ACK', () => {
   const one = { id: 'link1', agent: 'codex', session: 'native1', surface: 'Synthetic desktop', created: 10000, deadline: 20000, baseline: 9000, observed: null }
@@ -589,18 +668,21 @@ test('ACK text from a failed native Codex turn cannot acknowledge delivery', asy
   } finally { await receiver.close() }
 }))
 
-test('an owned Codex session refuses an unverified owner, a busy session and a forged session scope', async () => fixture(async board => {
+test('an owned Codex session keeps a verified busy owner and refuses unverified or forged bindings', async () => fixture(async board => {
   const thread = '11111111-2222-4333-8444-555555555555'
   let isListening = false
   const transport = { request: async () => ({ data: [thread] }), listen: () => { isListening = true; return () => { isListening = false } } }
   const options = { boardUrl: board.address, transport, thread, state: () => ({ thread, status: 'active', turn: 'busy-turn' }), verifyOwner: () => true }
   await assert.rejects(attachCodexSession({ ...options, verifyOwner: () => false }), /VERIFIED_OWNER_REQUIRED/)
   assert.equal(isListening, false)
-  await assert.rejects(attachCodexSession(options), /HOST_NOT_CONNECTED/)
+  const busy = await attachCodexSession(options)
+  try {
+    assert.equal(isListening, true)
+    const result = await board.call('/api/messages/register', { agent: 'codex', session: thread, surface: 'Mock', scope: 'session', turn: 'fabricated-turn' })
+    assert.equal(result.body.error, 'INVALID_CONNECTION_SCOPE')
+    assert.equal((await board.call('/api/board')).body.messaging.connections.length, 1)
+  } finally { await busy.close() }
   assert.equal(isListening, false)
-  const result = await board.call('/api/messages/register', { agent: 'codex', session: thread, surface: 'Mock', scope: 'session', turn: 'fabricated-turn' })
-  assert.equal(result.body.error, 'INVALID_CONNECTION_SCOPE')
-  assert.equal((await board.call('/api/board')).body.messaging.connections.length, 0)
 }))
 
 test('an existing card sends only to its exact live receiver and preserves mark read and unhide', async () => fixture(async (board, dir) => {
@@ -683,14 +765,17 @@ test('an owned Antigravity stream requires native input and the next matching re
   assert.equal(listener, null)
 }))
 
-test('an Antigravity stream refuses a busy, foreign or unverified native owner', async () => fixture(async board => {
+test('an Antigravity stream keeps a verified busy owner and refuses foreign or unverified owners', async () => fixture(async board => {
   let isListening = false
   const session = '11111111-2222-4333-8444-555555555555'
   const transport = { write: async () => { throw new Error('MUST_NOT_WRITE') }, listen: () => { isListening = true; return () => { isListening = false } } }
   const options = { boardUrl: board.address, transport, session, state: () => ({ session, status: 'idle', turns: 0, step: -1 }), verifyOwner: () => true }
   await assert.rejects(attachAntigravitySession({ ...options, verifyOwner: () => false }), /VERIFIED_OWNER_REQUIRED/)
   assert.equal(isListening, false)
-  await assert.rejects(attachAntigravitySession({ ...options, state: () => ({ session, status: 'active', turns: 0, step: -1 }) }), /HOST_NOT_CONNECTED/)
+  const busy = await attachAntigravitySession({ ...options, state: () => ({ session, status: 'active', turns: 0, step: -1 }) })
+  assert.equal(isListening, true)
+  assert.equal((await board.call('/api/board')).body.messaging.connections.length, 1)
+  await busy.close()
   await assert.rejects(attachAntigravitySession({ ...options, state: () => ({ session: 'another', status: 'idle', turns: 0, step: -1 }) }), /HOST_NOT_CONNECTED/)
   assert.equal(isListening, false)
   assert.equal((await board.call('/api/board')).body.messaging.connections.length, 0)

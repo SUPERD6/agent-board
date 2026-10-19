@@ -10,7 +10,7 @@ export const attachCodexSession = async ({ boardUrl, transport, thread, state, v
     if (isClosed || !await verifyOwner(transport)) return false
     const current = state()
     if (current.thread !== thread) return false
-    if (!pending && (current.status !== 'idle' || current.turn !== null)) return false
+    if (!['idle', 'active'].includes(current.status) || current.status === 'idle' && current.turn !== null || current.status === 'active' && (typeof current.turn !== 'string' || !current.turn)) return false
     if (pending?.turn && current.turn !== null && current.turn !== pending.turn) return false
     let cursor = null
     const seen = new Set()
@@ -48,6 +48,7 @@ export const attachCodexSession = async ({ boardUrl, transport, thread, state, v
   let receiver
   try { receiver = await boardClient(boardUrl).attach({
     agent: 'codex', session: thread, scope: 'session', turn: 'session', surface, verify, onError,
+    canReceive: () => !pending && state().status === 'idle' && state().turn === null,
     deliver: async (message, accepted) => {
       if (!await verify() || state().status !== 'idle' || state().turn !== null) throw new Error('SESSION_BUSY')
       let timer

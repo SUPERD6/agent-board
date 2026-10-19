@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Keep verified Codex and Antigravity sessions connected across ordinary native work. Busy owners can send; inbound messages remain queued until their adapter is ready, without consuming a claim or inventing an ACK. Poll readiness does not weaken ownership, session, turn, deduplication, or permission checks.
+
 - Preserve canceled text from an uncached completed block when a later prompt renews activity. Bounded internal snapshots keep these `[-]` lines outside completed-work counts without inferring a recipient; a fresh producer mirror can supersede the snapshot. Tests: `uncached completion retains canceled pointers through the first old inbox and older prompt` (also equal/newer), `uncached completion retains bounded canceled text outside completed counts and fresh owner truth wins`.
 
 - Resolve completion fences against the raw owner before applying prompt receipts. Delayed or equal-time prompts preserve completion; proven later prompts resume activity without restoring prior questions. Revalidate raw and effective snapshots while folding turns, and reconcile native cache/board records inside the common lock. Tests: `raw-owner completion and older prompts compose without restoring prior questions` (also equal/newer), `a held older model summary cannot stand over a pane confirmation on its raw owner`.

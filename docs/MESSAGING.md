@@ -75,6 +75,13 @@ uncertain message with its original recipient before a human chooses any new act
 Never change its id merely to bypass uncertainty. A stale lock after a crash requires
 checking the recorded owning PID before removing that specific lock.
 
+Busy is separate from disconnected. A verified session can send while doing native work;
+its adapter renews the lease with `receive: false` and leaves incoming messages queued
+until it is ready. The optional `canReceive` callback controls claims, never ownership or
+tool permissions. Existing clients that omit readiness keep their previous polling behavior.
+Upgrade the board and native connector together for this protocol addition. A disconnect
+still closes the binding; a native delivery failure after claiming is never auto-replayed.
+
 ## Connecting a session that was already open
 
 A relay saying "the user approved" is not trusted evidence of human authorization.
