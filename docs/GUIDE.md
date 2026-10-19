@@ -149,6 +149,8 @@ Before 0.10 the optional plugin was `project-progress@claude-progress-pane`. Rem
 
 Give the Agent Board version, affected host/version, CLI/App/IDE surface, OS and a synthetic reproduction. Include Claude's version only for its optional plugin. Never upload raw progress, inbox, archive, journal or session logs, credentials, or board tokens. [Security reports](../SECURITY.md#reporting-a-problem).
 
+Until current Codex hooks are approved in /hooks, the optional connector keeps managed reporting instructions; unknown/lost trust restores them on connect. Status checks trust without editing instructions.
+
 Full source captures also live beside the board in content-addressed progress-questions-source-*.json files. Keep the whole questions file family in backups and moves; none of these evidence files are age-pruned. Readers merge all captures on every read, so a stale mutable index cannot delete the retained original. Cleanup and explicit archive require successful full-copy readback. An end event closes a connection without answering its pending questions, including multiple asks and an end-only question. Corrupt or unreadable capture storage refuses destructive cleanup and new hides.
 Exact producer revisions remain attached after processing and resolution, so retrying an old raw file does not renew an answered question; a new producer revision remains observable.
 Explicit archive keeps its complete unresolved copy in the older shelf. Unexpected source disappearance keeps the normal age policy, with unknown clocks prominent.

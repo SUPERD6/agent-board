@@ -149,6 +149,8 @@ node ~/.agent-board/agent-board.mjs --codex-remove --agent <name> --apply
 
 提供 Agent Board／host 版本、CLI／App／IDE、OS 与合成复现数据；只有可选 plugin 才需要 Claude 版本。不上传原始进度、inbox、归档、日志、session log、凭证或看板 token。[安全报告](../SECURITY.md#reporting-a-problem)。
 
+当前 Codex hooks 尚未在 /hooks 批准时，可选连接器会保留受管理的报告指示；信任未知或失效会在 connect 恢复。status 查询信任，但不修改指示。
+
 完整来源也保存在看板旁、按内容寻址的 progress-questions-source-*.json 文件。备份或移动时请保留整组 questions 文件；证据文件不按年龄删除。每次读取都合并所有副本，过期索引无法删除原始来源。清理与明确归档前必须成功写入并读回完整副本。end 事件只关闭连接，不代表回答问题；同一来源的多个问题与仅出现在 end 的问题都保留。副本损坏或无法读取时，拒绝清理来源与新的隐藏操作。
 处理与解决后仍保留精确来源版本，因此重放旧的原始文件不会把已回答问题当作新问题；新的来源版本仍可被识别。
 明确归档会把完整未答副本保留在较早问题区；来源意外消失时仍沿用正常年龄策略，未知时间的问题维持显示。

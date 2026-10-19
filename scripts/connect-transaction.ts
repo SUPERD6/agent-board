@@ -1,8 +1,10 @@
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { createHash, randomBytes } from 'node:crypto'
-import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path'
 import type { Lang } from '../hooks/i18n'
-import { isNodeSupported, isSetupState, nodeVersionOf, setupSeed, withoutSection } from '../hooks/connect-pure'
+import { agentHooks, isNodeSupported, isSetupState, nodeVersionOf, setupSeed, withoutSection } from '../hooks/connect-pure'
+import { inspectCodexHooks } from './codex-host'
+import type { CodexTrustObservation } from './codex-host'
 import type { SetupState } from '../hooks/connect-pure'
 import { langOf } from '../hooks/strings'
 import { installControlRoot, withInstallLock } from './install-control'
@@ -15,6 +17,7 @@ export type LegacyConnectRequest = {
   lang: Lang
   node: string | null
   openclawVersion?: string
+  codexExecutable?: string
   boardLang?: Lang
   acknowledgement?: { revision: number; keys: string[] }
   dirs?: Partial<Record<'codex' | 'grok' | 'hermes' | 'openclaw' | 'opencode', string>>
@@ -159,12 +162,39 @@ const checkedRequest = (value: unknown): LegacyConnectRequest => {
   const request = value as LegacyConnectRequest
   if (!['auto', 'connect', 'remove', 'status', 'ack', 'language'].includes(request.mode) || typeof request.home !== 'string' || !isAbsolute(request.home) || typeof request.progress !== 'string' || !isAbsolute(request.progress) || langOf(request.lang) !== request.lang || request.node !== null && typeof request.node !== 'string' || request.boardLang !== undefined && langOf(request.boardLang) !== request.boardLang || request.openclawVersion !== undefined && typeof request.openclawVersion !== 'string' || request.dirs !== undefined && (request.dirs === null || typeof request.dirs !== 'object' || Array.isArray(request.dirs) || Object.values(request.dirs).some(path => typeof path !== 'string' || !isAbsolute(path)))) throw new Error('INVALID_CONNECT_REQUEST')
   if (request.mode === 'ack' && (request.acknowledgement === undefined || !Number.isSafeInteger(request.acknowledgement.revision) || !Array.isArray(request.acknowledgement.keys) || request.acknowledgement.keys.some(key => typeof key !== 'string'))) throw new Error('INVALID_CONNECT_REQUEST')
-  return { mode: request.mode, home: resolve(request.home), progress: resolve(request.progress), lang: request.lang, node: request.node, ...(request.openclawVersion === undefined ? {} : { openclawVersion: request.openclawVersion }), ...(request.boardLang === undefined ? {} : { boardLang: request.boardLang }), ...(request.dirs === undefined ? {} : { dirs: request.dirs }), ...(request.seed === undefined ? {} : { seed: request.seed }), ...(request.acknowledgement === undefined ? {} : { acknowledgement: request.acknowledgement }) }
+  if (request.codexExecutable !== undefined && (typeof request.codexExecutable !== 'string' || !isAbsolute(request.codexExecutable))) throw new Error('INVALID_CONNECT_REQUEST')
+  return { mode: request.mode, home: resolve(request.home), progress: resolve(request.progress), lang: request.lang, node: request.node, ...(request.codexExecutable === undefined ? {} : { codexExecutable: request.codexExecutable }), ...(request.openclawVersion === undefined ? {} : { openclawVersion: request.openclawVersion }), ...(request.boardLang === undefined ? {} : { boardLang: request.boardLang }), ...(request.dirs === undefined ? {} : { dirs: request.dirs }), ...(request.seed === undefined ? {} : { seed: request.seed }), ...(request.acknowledgement === undefined ? {} : { acknowledgement: request.acknowledgement }) }
 }
 
-export const legacyConnect = (value: unknown, bundle: string): { state: ConnectState; result: ReturnType<typeof connectLegacy> | null } => {
+const codexBinary = (): string | undefined => {
+  for (const directory of (process.env.PATH ?? '').split(delimiter)) {
+    if (!isAbsolute(directory)) continue
+    try {
+      const file = realpathSync(join(directory, process.platform === 'win32' ? 'codex.exe' : 'codex'))
+      const stat = statSync(file)
+      if (stat.isFile() && (process.platform === 'win32' ? /\.exe$/i.test(file) : (stat.mode & 0o111) !== 0)) return file
+    } catch {}
+  }
+  return undefined
+}
+
+const codexObservation = async (request: LegacyConnectRequest): Promise<CodexTrustObservation | undefined> => {
+  if (!['connect', 'auto', 'status'].includes(request.mode)) return undefined
+  const executable = request.codexExecutable ?? codexBinary()
+  if (executable === undefined) return undefined
+  const home = request.home, folder = dirname(request.progress), codexHome = request.dirs?.codex ?? join(home, '.codex')
+  const hook = agentHooks({ home, sep: process.platform === 'win32' ? '\\' : '/', isWindows: process.platform === 'win32', script: join(folder, process.platform === 'win32' ? 'progress-report.ps1' : 'progress-report.sh'), inbox: join(folder, 'progress-inbox'), codexHome, grokHome: '', hermesHome: '', openclawHome: '' }).find(one => one.agent === 'codex' && one.label !== '')!
+  try {
+    const config = JSON.parse(hook.edit('{}', false) as string) as { hooks: Record<string, { hooks: { command: string }[] }[]> }
+    const expected = Object.entries(config.hooks).map(([event, groups]) => ({ event: event[0]!.toLowerCase() + event.slice(1), command: groups[0]!.hooks[0]!.command }))
+    return await inspectCodexHooks(executable, hook.file, expected, 1000)
+  } catch { return undefined }
+}
+
+export const legacyConnect = async (value: unknown, bundle: string): Promise<{ state: ConnectState; result: ReturnType<typeof connectLegacy> | null }> => {
   const request = checkedRequest(value)
   if (request.node === null || nodeVersionOf(request.node) === null || !isNodeSupported(request.node) || !isNodeSupported(`v${process.versions.node}`)) throw new Error('NODE_REQUIRED')
+  const observation = await codexObservation(request)
   return withInstallLock(request.home, () => {
     const transaction = new ConnectTransaction(request.home, request.seed)
     const state = transaction.state
@@ -176,7 +206,13 @@ export const legacyConnect = (value: unknown, bundle: string): { state: ConnectS
     } else if (!existsSync(transaction.file)) transaction.save()
     const authority = join(installControlRoot(request.home), 'legacy-connect-authority')
     if (!existsSync(authority)) writeFileSync(authority, '1\n', { flag: 'wx', mode: 0o600 })
-    if (request.mode === 'status') return { state, result: null }
+    if (request.mode === 'status') {
+      const source = join(request.dirs?.codex ?? join(request.home, '.codex'), 'hooks.json')
+      const trusted = observation?.trusted === true && observation.source === resolve(source) && observation.sourceHash === hash(transaction.read(source))
+      const setup = state.setup === undefined ? undefined : { ...state.setup, codexTrusted: trusted, problems: state.setup.problems.filter(one => one.key !== 'codex:approval') }
+      if (setup?.agents.some(one => one.agent === 'codex') && !trusted) setup.problems.push({ key: 'codex:approval', message: 'setupCodexApproval', args: [] })
+      return { state: { ...state, ...(setup === undefined ? {} : { setup }) }, result: null }
+    }
     if (request.mode === 'ack') {
       if (state.pending === undefined && request.acknowledgement?.revision === state.revision) {
         const current = new Set(state.setup?.problems.map(problem => problem.key) ?? [])
@@ -191,7 +227,7 @@ export const legacyConnect = (value: unknown, bundle: string): { state: ConnectS
       const { seed: _seed, ...metadata } = one
       state.pending = { request: metadata, bundle: hash(bundle) }
       transaction.save()
-      const result = connectLegacy(transaction, one, bundle, process.platform === 'win32')
+      const result = connectLegacy(transaction, one, bundle, process.platform === 'win32', observation)
       state.revision += 1
       delete state.pending
       transaction.save()

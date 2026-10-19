@@ -175,6 +175,13 @@ let workerStageSequence = 0
 
 // Everything a session's engine answers beneath the plugin, with files kept in memory.
 const engineBeneath = (on: On, world: World): MockClock => {
+  const files = world.files
+  Object.defineProperty(files, 'set', { configurable: true, writable: true, value: (path: string, text: string) => {
+    // Reinstalling this fixture must not wrap an earlier instance override.
+    Map.prototype.set.call(files, path, text)
+    if (path !== FILE) (world.mtimes ??= {})[path] = Math.max(world.mtimes?.[path] ?? world.mtime, world.mtime) + 1
+    return files
+  } })
   world.setupDone = new Promise<void>(done => { world.finishSetup = done })
   // Exercise the hourly archive without thousands of unrelated polls consuming
   // the mock hook's budget. Other tests retain every timer; the archive keeps its
@@ -335,12 +342,14 @@ const engineBeneath = (on: On, world: World): MockClock => {
   })
   on('fs.stat', ($, e) => {
     world.stats?.push(e.path)
-    const text = world.files.get(posix(e.path))
-    const isDir = [...world.files.keys()].some(path => path.startsWith(`${posix(e.path)}/`))
-    if (text === undefined && isDir) return { value: { kind: 'dir' as const, size: 0, mtimeMs: world.mtime, isLink: false } }
+    const path = posix(e.path)
+    const text = world.files.get(path)
+    const isDir = [...world.files.keys()].some(file => file.startsWith(`${path}/`))
+    const mtimeMs = path === FILE ? world.mtime : world.mtimes?.[path] ?? world.mtime
+    if (text === undefined && isDir) return { value: { kind: 'dir' as const, size: 0, mtimeMs, isLink: false } }
     return text === undefined
       ? { deny: 'ENOENT' }
-      : { value: { kind: 'file' as const, size: text.length, mtimeMs: world.mtime, isLink: false } }
+      : { value: { kind: 'file' as const, size: text.length, mtimeMs, isLink: false } }
   })
   on('fs.exists', ($, e) => ({ value: world.dirs?.has(posix(e.path)) || world.files.has(posix(e.path)) || [...world.files.keys()].some(path => path.startsWith(`${posix(e.path)}/`)) }))
   on('fs.list', ($, e) => {
@@ -376,7 +385,7 @@ const engineBeneath = (on: On, world: World): MockClock => {
       await hold.release
     }
     world.files.set(path, e.text)
-    world.mtime += 1
+    if (path === FILE) world.mtime += 1
     if (path.includes('-journal-')) world.afterJournalWrite?.()
     // Another session's write, made from what it read before this one, lands right after.
     const stale = world.afterWrite
@@ -400,6 +409,49 @@ const engineBeneath = (on: On, world: World): MockClock => {
 
   return clock
 }
+
+test('mock file timestamps isolate sidecar writes and preserve explicit progress renewals', async ($, on) => {
+  const world: World = { files: new Map([[FILE, '# Progress\n']]), mtime: 10, hasTasks: true }
+  expect(Map.prototype.get.call(world.files, FILE)).toBe('# Progress\n')
+  const handlers = new Map<string, Function>()
+  const capture = ((...args: Parameters<On>) => {
+    if (['fs.stat', 'fs.write', 'fs.list'].includes(String(args[0]))) handlers.set(String(args[0]), args.at(-1) as Function)
+    return Reflect.apply(on, undefined, args)
+  }) as On
+  engineBeneath(capture, world)
+  // Invoke the exact registered in-memory FS handlers; no session or native FS runs.
+  const call = async (name: string, event: unknown): Promise<{ value: unknown }> => Reflect.apply(handlers.get(name)!, undefined, [$, event, () => undefined])
+  const stamp = async (path: string): Promise<number> => ((await call('fs.stat', { path })).value as { mtimeMs: number }).mtimeMs
+  const dashboard = FILE.replace('.md', '.html')
+  const metadata = FILE.replace('.md', '-questions.json')
+  const before = await stamp(FILE)
+  await call('fs.write', { path: dashboard, text: '<p>Board</p>' })
+  expect(await stamp(FILE)).toBe(before)
+  const dashboardAt = await stamp(dashboard)
+  expect(dashboardAt).toBeGreaterThan(before)
+  await call('fs.write', { path: metadata, text: '{}' })
+  expect(await stamp(FILE)).toBe(before)
+  expect(await stamp(dashboard)).toBe(dashboardAt)
+  expect(await stamp(metadata)).toBeGreaterThan(before)
+  const listed = (await call('fs.list', { path: '/home/me/.claude' })).value as Array<{ name: string; mtimeMs: number }>
+  expect(listed.find(file => file.name === 'progress.html')?.mtimeMs).toBe(dashboardAt)
+  await call('fs.write', { path: FILE, text: '# Updated progress\n' })
+  expect(await stamp(FILE)).toBe(before + 1)
+  expect(await stamp(dashboard)).toBe(dashboardAt)
+  world.mtime += 1
+  expect(await stamp(FILE)).toBe(before + 2)
+  await call('fs.write', { path: dashboard, text: '<p>Updated board</p>' })
+  expect(await stamp(FILE)).toBe(before + 2)
+  expect(await stamp(dashboard)).toBeGreaterThan(dashboardAt)
+  const metadataAt = await stamp(metadata)
+  const progressAt = await stamp(FILE)
+  expect(world.files.set(metadata, '[]')).toBe(world.files)
+  expect(Map.prototype.get.call(world.files, metadata)).toBe('[]')
+  expect(await stamp(metadata)).toBeGreaterThan(metadataAt)
+  expect(await stamp(FILE)).toBe(progressAt)
+  world.mtime += 1
+  expect(await stamp(FILE)).toBe(progressAt + 1)
+})
 
 const start = async ($: Engine, text: string): Promise<void> => {
   await $.session.start({ cwd: '/work/persona_framework', surface: 'terminal', isInteractive: true })
@@ -2380,9 +2432,11 @@ test('historical hide marks survive failed reads while an observed renewed quest
   expect(await ui.find({ type: 'Button', key: `${item}::unhide` })).toBeDefined()
 
   // Another program holds the list: a press does not write over it, and says it did not stick.
+  const beforeUnreadable = world.files.get(ANSWERED)!
+  expect((JSON.parse(beforeUnreadable).answered as string[]).slice(0, 2)).toEqual([other, key])
   world.unreadable = new Set([ANSWERED])
   await ui.press({ key: `${item}::unhide` })
-  expect(world.files.get(ANSWERED)).toBe(listed)
+  expect(world.files.get(ANSWERED)).toBe(beforeUnreadable)
   expect(await ui.find({ type: 'Text', text: '記不下「已回覆」，這一項還留在清單上。' })).toBeDefined()
   // A look that cannot read it keeps the list in hand, and reads it again once it can.
   world.mtime += 1
@@ -3462,7 +3516,7 @@ test('/progress connect hooks the installed agents into the pane once, keeps the
   const codex = JSON.parse(world.files.get('/home/me/.codex/hooks.json') ?? '{}')
   expect(codex.hooks.Stop[0].hooks[0]).toEqual({ type: 'command', command: "sh '/home/me/.claude/progress-report.sh' codex turn || true", timeout: 10 })
   expect(codex.hooks.SessionEnd[0].hooks[0].command).toBe("sh '/home/me/.claude/progress-report.sh' codex end || true")
-  expect(world.files.get('/home/me/.codex/AGENTS.md')).toBe('# Mine\n\nUse tabs.\n')
+  expect(world.files.get('/home/me/.codex/AGENTS.md')).toBe(`# Mine\n\nUse tabs.\n\n${section}`)
   expect(world.files.get('/home/me/.gemini/settings.json')).toBe('{ // my comment\n "theme": "dark" }')
 
   // Again: nothing doubles.
@@ -4163,7 +4217,9 @@ test('a session hooks in the agents installed here without /progress connect, an
   const codex = JSON.parse(world.files.get('/home/me/.codex/hooks.json') ?? '{}')
   expect(codex.hooks.Stop[0].hooks[0].command).toBe("sh '/home/me/.claude/progress-report.sh' codex turn || true")
   expect(world.files.get('/home/me/.claude/progress-report.sh')).toContain("dir='/home/me/.claude/progress-inbox'")
-  expect(seen.notified).toEqual(['已自動接上：Codex。重開它們之後，每個回合都會出現在這裡。'])
+  expect(seen.notified).toHaveLength(1)
+  expect(seen.notified[0]).toContain('已自動接上：Codex。重開它們之後，每個回合都會出現在這裡。')
+  expect(seen.notified[0]).toContain('尚未確認目前 Codex hook 的核准狀態。請檢查 /hooks；已有的受管理回報指示會保留。')
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: PROPS })
   expect(await ui.find({ type: 'Text', text: /Codex 第一次要在它的 \/hooks 裡核准這個 hook 才會跑。/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /\/progress connect remove/ })).toBeDefined()
@@ -4506,7 +4562,8 @@ test('a file that cannot be read is named as unreadable, not as unwritable', { o
   for (const s of Object.values(STRINGS)) {
     await $.command.run({ ...TIDY, args: `lang ${s.lang}` })
     for (const file of [board, reporter, command, config, old]) {
-      world.files = new Map([['/home/me/.gemini/settings.json', '{}'], ['/home/me/.grok/config.toml', ''], [file, 'unreadable bytes']])
+      world.files.clear()
+      for (const [path, text] of [['/home/me/.gemini/settings.json', '{}'], ['/home/me/.grok/config.toml', ''], [file, 'unreadable bytes']]) world.files.set(path!, text!)
       world.unreadable = new Set([file])
       const connected = await $.command.run({ ...TIDY, args: 'connect' })
       const expected = file === config ? s.connectReadFailed('Cursor', file) : file === old ? s.connectReadFailed('Grok Build', file) : s.connectBoardReadFailed(file)
@@ -4521,7 +4578,8 @@ test('a file that cannot be read is named as unreadable, not as unwritable', { o
       expect(status.text.split(expected)).toHaveLength(2)
     }
     world.unreadable = new Set()
-    world.files = new Map([[config, 'invalid json']])
+    world.files.clear()
+    world.files.set(config, 'invalid json')
     const connected = await $.command.run({ ...TIDY, args: 'connect' })
     expect(connected.text.split(s.connectSkipped('Cursor', config))).toHaveLength(2)
     expect(connected.text).toContain(s.setupHookUnreadable)
@@ -4808,7 +4866,7 @@ test('taking the hooks out also takes out a Grok hook an earlier version left in
   await $.command.run({ ...TIDY, args: 'connect remove' })
 })
 
-test('an agent already hooked in is left as it is, and nothing is said', async ($, on) => {
+test('an agent already hooked in is left as it is, and unconfirmed Codex approval is named once', async ($, on) => {
   const hooked = String(agentHooks(CONNECT).find(hook => hook.agent === 'codex')!.edit('', false))
   const world: World = { files: new Map([['/home/me/.codex/hooks.json', hooked]]), mtime: 1, hasTasks: true, ran: [] }
   engineBeneath(on, world)
@@ -4816,7 +4874,7 @@ test('an agent already hooked in is left as it is, and nothing is said', async (
   await $.session.start({ cwd: '/work/persona_framework', surface: 'terminal', isInteractive: true })
   await settledSetup($, world)
   expect(world.files.get('/home/me/.codex/hooks.json')).toBe(hooked)
-  expect(seen.notified).toEqual([])
+  expect(seen.notified).toEqual(['尚未確認目前 Codex hook 的核准狀態。請檢查 /hooks；已有的受管理回報指示會保留。\n之後要再看：/progress connect status'])
 })
 
 test('an agent hooked in by an earlier version gets the new hook without a word', async ($, on) => {
@@ -4841,7 +4899,9 @@ test('a changed hook of ours in Codex is still announced, since Codex asks to ap
   await $.session.start({ cwd: '/work/persona_framework', surface: 'terminal', isInteractive: true })
   await settledSetup($, world)
   expect(JSON.parse(world.files.get(ours) ?? '{}').hooks.Stop[0].hooks[0].timeout).toBe(10)
-  expect(seen.notified).toEqual(['已自動接上：Codex。重開它們之後，每個回合都會出現在這裡。'])
+  expect(seen.notified).toHaveLength(1)
+  expect(seen.notified[0]).toContain('已自動接上：Codex。重開它們之後，每個回合都會出現在這裡。')
+  expect(seen.notified[0]).toContain('尚未確認目前 Codex hook 的核准狀態。請檢查 /hooks；已有的受管理回報指示會保留。')
 })
 
 test('a first connection to a config holding only an empty hook list is still announced', async ($, on) => {
@@ -4852,7 +4912,9 @@ test('a first connection to a config holding only an empty hook list is still an
   await $.session.start({ cwd: '/work/persona_framework', surface: 'terminal', isInteractive: true })
   await settledSetup($, world)
   expect(JSON.parse(world.files.get('/home/me/.codex/hooks.json') ?? '{}').hooks.Stop).toHaveLength(1)
-  expect(seen.notified).toEqual(['已自動接上：Codex。重開它們之後，每個回合都會出現在這裡。'])
+  expect(seen.notified).toHaveLength(1)
+  expect(seen.notified[0]).toContain('已自動接上：Codex。重開它們之後，每個回合都會出現在這裡。')
+  expect(seen.notified[0]).toContain('尚未確認目前 Codex hook 的核准狀態。請檢查 /hooks；已有的受管理回報指示會保留。')
 })
 
 test('once the hooks are taken out, a session does not put them back', async ($, on) => {
