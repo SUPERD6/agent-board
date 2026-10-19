@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Wait for the test agent to start before counting it.** The existing newer-serve
+  in-flight-reply test could see zero launches on a busy Windows host immediately after
+  HTTP acceptance. It now waits for the launch while retaining the one-launch assertion.
+  Test: "a newer --serve does not start a second page while the page it would replace is
+  sending a reply, shows that page with a note, and replaces it once the reply is in".
+
 - **Codex-only local setup and progress, without Claude Code** (#33, #35):
   `node scripts/setup-codex.mjs` previews the standalone board, skill, progress file,
   ownership record and lifecycle hooks; `--apply` installs them. Explicit reports bind to
