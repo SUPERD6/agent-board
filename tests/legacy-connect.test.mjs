@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { once } from 'node:events'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -55,7 +56,7 @@ fs.renameSync = (from, to) => {
     fs.writeFileSync(options.config, JSON.stringify({ private: 'NEVER_STAGE_SECRET', external: 'new foreign work' }))
   }
   const result = rename(from, to)
-  const pause = options.phase === 'intent' ? to === options.control && value?.pending && !value.pending.step : options.phase === 'applied' && to === options.config
+  const pause = options.phase === 'disable' ? to === options.control && value?.disabled && value?.pending?.step : options.phase === 'intent' ? to === options.control && value?.pending && !value.pending.step : options.phase === 'generated' ? to === options.board : options.phase === 'applied' && to === options.config
   if (!held && pause) {
     held = true
     fs.writeFileSync(options.reached, '')
@@ -225,6 +226,70 @@ test('a killed remove keeps its disable intent and a delayed auto finishes recov
     assert.deepEqual(JSON.parse(readFileSync(f.config)), f.foreign)
   } finally {
     if (held.process.exitCode === null && held.process.signalCode === null) { held.process.kill(); await held.exited }
+  }
+}))
+
+for (const phase of ['disable', 'intent']) test(`remove intent survives interruption ${phase === 'disable' ? 'before' : 'after'} recovering an older partial connect and retains its ownership`, () => fixture(async f => {
+  const board = join(f.home, 'data-a', 'agent-board.mjs')
+  const applied = preload(f, 'generated', { board })
+  const original = child(f, f.request('connect'), applied)
+  let removing
+  try {
+    await waitFor(applied.reached)
+    original.process.kill('SIGKILL')
+    await original.exited
+    utimesSync(f.lock, new Date(0), new Date(0))
+    const owned = JSON.parse(readFileSync(f.control)).owned
+    assert.ok(Object.keys(owned).length > 0)
+    const recovery = preload(f, phase)
+    removing = child(f, f.request('remove', { progress: join(f.home, 'data-b', 'progress.md') }), recovery)
+    await waitFor(recovery.reached)
+    const interrupted = JSON.parse(readFileSync(f.control))
+    assert.equal(interrupted.disabled, true)
+    for (const [file, digest] of Object.entries(owned)) assert.equal(interrupted.owned[file], digest)
+    if (phase === 'intent') assert.equal(interrupted.owned[board], createHash('sha256').update(readFileSync(board)).digest('hex'))
+    removing.process.kill('SIGKILL')
+    await removing.exited
+    utimesSync(f.lock, new Date(0), new Date(0))
+    const delayed = f.run(f.request('auto', { seed: { disabled: false } }))
+    assert.equal(delayed.state.disabled, true)
+    assert.equal(delayed.state.pending, undefined)
+    assert.equal(delayed.result, null)
+    assert.deepEqual(JSON.parse(readFileSync(f.config)), f.foreign)
+    assert.equal(existsSync(join(f.home, 'data-a', 'agent-board.mjs')), false)
+    const enabled = f.run(f.request('connect'))
+    assert.equal(enabled.state.disabled, false)
+    assert.ok(readFileSync(f.config, 'utf8').includes('progress-report.'))
+  } finally {
+    for (const held of [original, removing]) if (held && held.process.exitCode === null && held.process.signalCode === null) { held.process.kill('SIGKILL'); await held.exited }
+  }
+}))
+
+for (const fault of ['drift', 'bundle']) test(`a remove before pending recovery retains disable intent on ${fault} without replaying connect`, () => fixture(async f => {
+  const applied = preload(f, 'applied')
+  const held = child(f, f.request('connect'), applied)
+  try {
+    await waitFor(applied.reached)
+    held.process.kill('SIGKILL')
+    await held.exited
+    utimesSync(f.lock, new Date(0), new Date(0))
+    const state = JSON.parse(readFileSync(f.control))
+    if (fault === 'drift') writeFileSync(f.config, JSON.stringify({ ...f.foreign, external: 'new foreign work' }))
+    else { state.pending.bundle = '0'.repeat(64); writeFileSync(f.control, JSON.stringify(state)) }
+    const before = readFileSync(f.config, 'utf8')
+    const removed = f.command(f.request('remove'))
+    assert.notEqual(removed.status, 0)
+    assert.ok((removed.stderr + removed.stdout).includes(fault === 'drift' ? 'RECOVERY_CONFLICT' : 'RECOVERY_BUNDLE_CHANGED'))
+    const stopped = JSON.parse(readFileSync(f.control))
+    assert.equal(stopped.disabled, true)
+    assert.deepEqual(stopped.owned, state.owned)
+    assert.ok(stopped.pending)
+    assert.equal(readFileSync(f.config, 'utf8'), before)
+    assert.notEqual(f.command(f.request('auto')).status, 0)
+    assert.equal(JSON.parse(readFileSync(f.control)).disabled, true)
+    assert.equal(readFileSync(f.config, 'utf8'), before)
+  } finally {
+    if (held.process.exitCode === null && held.process.signalCode === null) { held.process.kill('SIGKILL'); await held.exited }
   }
 }))
 

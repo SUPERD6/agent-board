@@ -161,3 +161,28 @@ The pending integrated pinned-Bun `build-released.ts --check` subsequently exite
 zero (`issue-93-integrated-released.log`). No runtime or fixture changed for this
 check. The [review map](2026-10-19-legacy-worker-review.md) records source locations,
 scope limits and the pending-connect/remove ordering candidate reported to root.
+
+The pending-connect/remove candidate was reproduced and fixed in the next bounded
+pass. `issue-93-remove-recovery-red.log` records the failing assertion: after a
+killed partial connect, remove paused during old journal recovery with
+`disabled=false` (expected true), in 1.193 seconds. The cause was ordering:
+`run(old connect)` happened before the new remove reached its durable disable save.
+
+Remove now persists `disabled=true` under the canonical lock before any
+`recoverStep`. When a disabled state has an unfinished operation, recovery first
+accounts for its exact before/after fingerprint and generated ownership, then
+continues as remove in the original scope. It never replays the superseded
+connect. The incoming scope is cleaned afterward if different; same-scope remove
+returns the recovered cleanup outcome. A later explicit connect still re-enables
+after valid recovery. Changed-bundle and foreign-drift journals remain retained
+with disable intent true. No schema field, SDK API, lease or CAS was added.
+
+`issue-93-remove-recovery-focused.log`: 23/23 transaction/bootstrap tests passed,
+26.477 seconds. New fixtures interrupt remove both before and after ownership
+recovery of an applied generated board, use a different data root, check old-scope
+cleanup and retained hashes, fence delayed auto, and then explicitly reconnect.
+Separate drift/bundle cases preserve foreign bytes and the true disable flag.
+Supported strict standalone TS, strict plugin validation, pinned Bun bundle check
+and whitespace check passed. The regenerated bundle is 418,897 characters.
+Full plugin and full Node acceptance on this new runtime remain pending; prior
+full-suite counts above are historical evidence, not substituted for a new run.

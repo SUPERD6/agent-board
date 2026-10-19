@@ -48,6 +48,17 @@ the new disable intent may not yet be durable. Existing killed-remove coverage
 starts without a pending connect, so it does not prove this ordering safe. A focused
 reproduction/root decision remains required; this manifest does not call it fixed.
 
+Subsequent root-authorized focused pass reproduced this candidate, then corrected
+the ordering: remove saves its disable flag before recovery, and disabled recovery
+accounts for applied ownership before cleaning the original scope as remove. A
+same-scope request returns that cleanup result; a different incoming scope is
+handled afterward. Explicit connect may re-enable only after valid recovery.
+Drift/bundle mismatch retains the journal and true disable flag. The 23-test
+transaction/bootstrap file batch passed, including interruptions before/after
+generated ownership recovery; see the updated chronological validation record.
+The candidate paragraph above is retained as review history. Full acceptance on
+this subsequent runtime change remains pending.
+
 Codex hook trust/readiness (#102) remains separate: managed instruction cleanup
 still follows configured hook output in `connectLegacy`. Setup status does not
 prove native hook approval or execution. Root retains integration, CI, release and

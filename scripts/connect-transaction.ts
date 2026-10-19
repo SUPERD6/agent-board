@@ -168,7 +168,12 @@ export const legacyConnect = (value: unknown, bundle: string): { state: ConnectS
   return withInstallLock(request.home, () => {
     const transaction = new ConnectTransaction(request.home, request.seed)
     const state = transaction.state
-    if (!existsSync(transaction.file)) transaction.save()
+    // A new remove supersedes an unfinished connect before recovery can write
+    // anything. This durable bit also fences a later auto after this process dies.
+    if (request.mode === 'remove') {
+      state.disabled = true
+      transaction.save()
+    } else if (!existsSync(transaction.file)) transaction.save()
     const authority = join(installControlRoot(request.home), 'legacy-connect-authority')
     if (!existsSync(authority)) writeFileSync(authority, '1\n', { flag: 'wx', mode: 0o600 })
     if (request.mode === 'status') return { state, result: null }
@@ -194,8 +199,14 @@ export const legacyConnect = (value: unknown, bundle: string): { state: ConnectS
     }
     if (state.pending !== undefined) {
       if (state.pending.bundle !== hash(bundle)) throw new Error('RECOVERY_BUNDLE_CHANGED')
+      const previous = state.pending.request
       transaction.recoverStep()
-      run(state.pending.request)
+      // Read back any applied step into ownership, then clean the original scope
+      // instead of replaying a connect that the person has since disabled.
+      const recovery: LegacyConnectRequest = state.disabled ? { ...previous, mode: 'remove', lang: request.lang } : previous
+      const result = run(recovery)
+      const scope = (one: LegacyConnectRequest): string => JSON.stringify([one.home, one.progress, ...(['codex', 'grok', 'hermes', 'openclaw', 'opencode'] as const).map(agent => one.dirs?.[agent] ?? null)])
+      if (request.mode === 'remove' && recovery.mode === 'remove' && scope(request) === scope(recovery)) return { state, result }
     }
     if (request.mode === 'language') {
       if (request.boardLang === undefined) throw new Error('INVALID_CONNECT_REQUEST')
