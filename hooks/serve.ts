@@ -172,7 +172,7 @@ export type ServeModel = {
 // `task` and `session` name the Claude Code session to answer in, the way the pane does.
 const infoOf = (mode: SendMode, agent: string, task: string, session: string, s: Strings): string => {
   if (mode === 'open') return s.serveSendOpen(agent)
-  if (mode === 'claude') return s.replyElsewhere(task, session, '')
+  if (mode === 'claude') return s.replyElsewhere(task, '', '')
   if (mode === 'none') return s.serveSendNone(agent)
 
   return ''
@@ -223,7 +223,7 @@ export const serveModel = (view: View, pending: readonly PendingTurn[], s: Strin
         session: connection?.session ?? ask.target?.session ?? '',
         fp: fingerprint(item, items),
         where: send === 'send' ? (ask.target?.dir ?? '') : '',
-        info: connection ? s.messagesConnectedVia(connection.surface, connection.session) : isManual ? '' : (lanInfo(mode, ask.agent) ?? infoOf(send, ask.agent, ask.task, ask.session, s)),
+        info: connection || isManual ? '' : (lanInfo(mode, ask.agent) ?? infoOf(send, ask.agent, ask.task, '', s)),
         back: wayBackText(hint),
         sessionId: ask.where === 'other' ? ask.sessionId : null,
         reopen: hint.reopen,
@@ -267,7 +267,7 @@ export const serveModel = (view: View, pending: readonly PendingTurn[], s: Strin
         fp: fingerprint(item, items),
         where: send === 'send' ? (row.target?.dir ?? '') : '',
         // A row says why only when a reply could otherwise be expected here.
-        info: connection ? s.messagesConnectedVia(connection.surface, connection.session) : lanInfo(mode, row.agent) ?? (send === 'open' ? infoOf(send, row.agent, row.title, '', s) : ''),
+        info: connection ? '' : lanInfo(mode, row.agent) ?? (send === 'open' ? infoOf(send, row.agent, row.title, '', s) : ''),
         isSending: isSending(row.target) || connection !== undefined && (messaging?.messages.some(one => one.target === connection.id && ['queued', 'uncertain', 'accepted'].includes(one.status)) ?? false),
         hasCopyBox: lanInfo(mode, row.agent) !== null || messaging !== undefined && row.auto !== null && connection === undefined,
       })
@@ -672,7 +672,7 @@ const PAGE_SCRIPT = String.raw`
     if (!receipt) return null;
     var labels = { queued: 'messagesQueued', uncertain: 'messagesUncertain', accepted: 'messagesAccepted', acknowledged: 'messagesAcknowledged', rejected: 'messagesRejected' };
     if (receipt.status === 'acknowledged' || receipt.status === 'rejected') Object.keys(messageAttempts).forEach(function (slot) { if (messageAttempts[slot].id === receipt.id) delete messageAttempts[slot]; });
-    return el('p', 'quiet small', receipt.id + ' · ' + w(receipt.status === 'uncertain' && /TIMEOUT/.test(receipt.error) ? 'messagesTimeout' : labels[receipt.status]) + (receipt.reply ? ' · ' + receipt.reply : ''));
+    return el('p', 'quiet small', w(receipt.status === 'uncertain' && /TIMEOUT/.test(receipt.error) ? 'messagesTimeout' : labels[receipt.status]) + (receipt.reply ? ' · ' + receipt.reply : ''));
   }
   function replyBox(key, placeholder, mode, agent, where, isSending, session, asked, fp, delivery) {
     var box = el('div', 'reply');
@@ -749,8 +749,6 @@ const PAGE_SCRIPT = String.raw`
     if (!ask.canTick) add(card, replyBox(ask.key, w('serveReplyPlaceholder'), ask.send, ask.agent, ask.where, ask.isSending, ask.session, ask.text, ask.fp, ask.delivery));
     if (ask.receipt) add(card, receiptLine(ask.receipt));
     if (ask.info) add(card, el('div', 'quiet small', ask.info));
-    if (ask.back) add(card, el('div', 'quiet small', ask.back));
-    if (ask.reopen) add(card, el('code', '', '$ ' + ask.reopen));
     return card;
   }
   function rowCard(row) {
@@ -775,7 +773,6 @@ const PAGE_SCRIPT = String.raw`
     if (row.canArchive) actions.appendChild(button(w('serveArchive'), function () { act(row.key, 'archive', '', '', '', '', row.fp); }));
     if (row.resume) actions.appendChild(button(w('serveCopyResume'), function () { copy(row.resume); }));
     if (actions.childNodes.length) add(body, actions);
-    if (row.resume) add(body, el('code', '', row.resume));
     if (row.send === 'send' || row.send === 'connected') add(body, replyBox(row.key, w('serveMessagePlaceholder', agentName(row.agent)), row.send, row.agent, row.where, row.isSending, row.session, asked, row.fp, row.delivery));
     else if (row.hasCopyBox) add(body, replyBox(row.key, w('serveReplyPlaceholder'), 'copy', row.agent, '', false, row.session, asked));
     if (row.receipt) add(body, receiptLine(row.receipt));
@@ -864,13 +861,13 @@ const PAGE_SCRIPT = String.raw`
       if (text !== last) {
         last = text; render(data.model);
         if (presence) { presence.remove(); presence = null; }
-        var sessions = data.messaging && data.messaging.sessions || [];
+        var sessions = (data.messaging && data.messaging.sessions || []).filter(function (one) { return !one.progress || one.status === 'waiting' || one.status === 'timed_out'; });
         if (sessions.length) {
           presence = el('section', 'card');
-          add(presence, el('h2', '', w('sessionsTitle')), el('p', 'quiet small', w('sessionsHint')));
+          add(presence, el('h2', '', w('sessionsTitle')));
           sessions.forEach(function (one) {
             var state = one.status === 'reported' ? w('sessionsReported') : one.status === 'timed_out' ? w('sessionsTimedOut') : one.status === 'waiting' ? w('sessionsWaiting') : '';
-            add(presence, add(el('div'), el('div', 'where', [one.agent, one.surface, one.session.slice(0, 8)].join(' · ')), el('div', one.status === 'timed_out' ? 's-blocked small' : 'small', state), el('div', 'quiet small', [w(one.progress ? 'sessionsProgress' : 'sessionsNoProgress'), w(one.receiving ? 'sessionsReceiving' : 'sessionsNotReceiving')].join(' · '))));
+            add(presence, add(el('div'), el('div', 'where', agentName(one.agent)), el('div', one.status === 'timed_out' ? 's-blocked small' : 'small', [state, w(one.receiving ? 'sessionsReceiving' : 'sessionsNotReceiving'), one.progress ? '' : w('sessionsNoProgress')].filter(Boolean).join(' · '))));
           });
           board.insertAdjacentElement('afterend', presence);
         }

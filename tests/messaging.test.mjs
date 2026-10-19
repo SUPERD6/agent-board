@@ -346,7 +346,7 @@ test('ACK text from a failed native Codex turn cannot acknowledge delivery', asy
     await receiver.send({ ...input, target: receiver.id, turn: 'session' })
     const result = await waitFor(async () => { const one = (await board.call('/api/board')).body.messaging.messages[0]; return one?.status === 'uncertain' && one })
     assert.equal(result.error, 'TURN_NOT_COMPLETED')
-    assert.equal(result.reply, undefined)
+    assert.equal(result.reply, '')
   } finally { await receiver.close() }
 }))
 
@@ -375,6 +375,7 @@ test('an existing card sends only to its exact live receiver and preserves mark 
   const ask = (await board.call('/api/board')).body.model.asks.find(one => one.agent === 'codex')
   assert.equal(ask.send, 'connected'); assert.equal(ask.canHide, offline.canHide)
   assert.equal(ask.session, thread); assert.equal(ask.delivery.id, connected.id)
+  assert.equal(ask.info, '') // Internal binding metadata is not user-facing copy.
   const request = { key: ask.key, type: 'message', id: 'AB-TEST-001', text: input.text, session: ask.session, asked: ask.text, fp: ask.fp, connection: ask.delivery.id, turn: ask.delivery.turn }
   for (const wrong of [{ connection: 'wrong-session' }, { turn: 'stale-turn' }, { session: 'another-session' }, { fp: 'changed-line' }]) assert.equal((await board.call('/api/act', { ...request, ...wrong })).status, 409)
   assert.equal((await board.call('/api/act', request)).status, 200)
@@ -386,7 +387,7 @@ test('an existing card sends only to its exact live receiver and preserves mark 
   await board.call('/api/messages/poll', { ...credentials, turn: 'turn1' })
   await board.call('/api/messages/receipt', { ...credentials, id: request.id, status: 'acknowledged', reply: 'ACK AB-TEST-001' })
   assert.equal((await board.call('/api/board')).body.model.asks[0].receipt.reply, 'ACK AB-TEST-001')
-  assert.equal((await board.call('/api/act', request)).body.note, 'Session replied with ACK')
+  assert.equal((await board.call('/api/act', request)).body.note, 'Replied')
   await board.call('/api/messages/disconnect', { ...credentials, turn: 'turn1' })
   const disconnected = (await board.call('/api/board')).body.model.asks[0]
   assert.ok(!['send', 'connected'].includes(disconnected.send)); assert.equal(disconnected.delivery, undefined)
