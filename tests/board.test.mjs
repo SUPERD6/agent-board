@@ -913,8 +913,8 @@ syncBuiltinESMExports()
   }
 })
 
-test('a reply goes into a closed Grok session once, in its own folder, and the page waits for its answer before it closes', { timeout: 30_000 }, async () => {
-  const board = await page()
+test('with explicit legacy opt-in a reply goes into a closed Grok session once, in its own folder, and the page waits for its answer before it closes', { timeout: 30_000 }, async () => {
+  const board = await page('', {}, ['--allow-resume'])
   try {
     const { call, rowOf, rows } = board
     const { key, fp } = await rowOf('Pick the cache')
@@ -1139,7 +1139,7 @@ const pageDom = async (html, first) => {
 }
 
 test('a reply typed for one session is dropped when the box is redrawn for another session under the same title, and a new reply goes to the session shown', { timeout: 30_000 }, async () => {
-  const board = await page()
+  const board = await page('', {}, ['--allow-resume'])
   try {
     const { call, path, rowOf, token } = board
     const html = (await call('GET', `/?t=${token}`, { headers: { 'x-board-token': '' } })).body
@@ -1222,8 +1222,8 @@ const serveIn = () => {
   const script = join(dir, 'agent-board.mjs')
   writeFileSync(script, `globalThis.AGENT_BOARD = ${JSON.stringify({ path, lang: 'en' })}\n${BOARD_SCRIPT}`)
   const env = { ...process.env, CLAUDE_PROGRESS_FILE: '', NO_COLOR: '1', XDG_RUNTIME_DIR: run }
-  const serve = () =>
-    new Promise((done, fail) => execFile(process.execPath, [script, '--serve', '--no-open'], { env, encoding: 'utf8', timeout: 20_000 }, (error, out) => (error ? fail(error) : done(out))))
+  const serve = (extra = []) =>
+    new Promise((done, fail) => execFile(process.execPath, [script, '--serve', '--no-open', ...extra], { env, encoding: 'utf8', timeout: 20_000 }, (error, out) => (error ? fail(error) : done(out))))
   const urlOf = out => out.match(/answer\): (http:\/\/127\.0\.0\.1:\d+\/\?t=[\w-]+)/)?.[1] ?? null
   const served = servedAt(run, path)
   // Closes every page it was given and waits for each to take its address file away.
@@ -1374,7 +1374,7 @@ const end = Date.now() + 8000
 const timer = setInterval(() => { if (existsSync(${JSON.stringify(gate)}) || Date.now() > end) { clearInterval(timer); process.stdout.write('Redis it is.\\n'); process.exit(0) } }, 25)
 `)
   const agents = { AGENT_BOARD_GROK: stand, AGENT_BOARD_CODEX: stand }
-  const board = await page('', agents)
+  const board = await page('', agents, ['--allow-resume'])
   const script = join(board.dir, 'agent-board.mjs')
   const env = { ...process.env, CLAUDE_PROGRESS_FILE: '', NO_COLOR: '1', XDG_RUNTIME_DIR: join(board.dir, 'run'), ...agents }
   return {
@@ -1385,7 +1385,7 @@ const timer = setInterval(() => { if (existsSync(${JSON.stringify(gate)}) || Dat
       const { atime, mtimeMs } = statSync(script)
       utimesSync(script, atime, new Date(mtimeMs + 5000))
     },
-    serve: () => new Promise((done, fail) => execFile(process.execPath, [script, '--serve', '--no-open'], { env, encoding: 'utf8', timeout: 30_000 }, (error, out) => (error ? fail(error) : done(out)))),
+    serve: () => new Promise((done, fail) => execFile(process.execPath, [script, '--serve', '--no-open', '--allow-resume'], { env, encoding: 'utf8', timeout: 30_000 }, (error, out) => (error ? fail(error) : done(out)))),
     // Lets the reply go, waits until the page has none in flight, and closes it if it is still there.
     stop: async () => {
       writeFileSync(gate, 'go')
@@ -1643,4 +1643,37 @@ test("the board script's --chat run reads the seen record and writes nothing", (
   assert.ok(fresh.stdout.includes('Publish, OK?'), fresh.stdout)
   assert.deepEqual(fresh.wrote, [])
   assert.deepEqual(fresh.modified, [])
+})
+
+test('default web and API refuse closed Codex and Grok sessions without starting a process', { timeout: 30_000 }, async () => {
+  const board = await page()
+  try {
+    for (const agent of ['grok', 'codex']) {
+      if (agent === 'codex') writeFileSync(board.path, readFileSync(board.path, 'utf8').replace('agent=grok', 'agent=codex'))
+      const row = await board.rowOf('Pick the cache')
+      assert.equal(row.send, 'open')
+      assert.equal(row.hasCopyBox, true)
+      assert.ok(row.resume?.includes(agent))
+      const body = { key: row.key, type: 'send', text: 'Synthetic offline message', session: row.session, asked: row.question, fp: row.fp }
+      assert.equal((await board.call('POST', '/api/act', { body })).status, 409)
+      assert.equal((await board.call('POST', '/api/act', { body: { ...body, type: 'message', connection: 'forged', turn: 'session' } })).status, 409)
+      assert.equal(existsSync(join(board.dir, 'grok-ran.json')), false)
+    }
+  } finally { await board.close() }
+})
+
+test('reopening a board replaces an explicit resume opt-in when that flag is removed', { timeout: 60_000 }, async () => {
+  const board = serveIn()
+  const urls = []
+  try {
+    for (const allow of [false, true, false]) {
+      const url = board.urlOf(await board.serve(allow ? ['--allow-resume'] : []))
+      assert.ok(url)
+      if (urls.length) assert.notEqual(url, urls.at(-1))
+      urls.push(url)
+      const address = new URL(url)
+      const ping = await fetchAt('127.0.0.1', Number(address.port), 'GET', '/api/ping', { 'x-board-token': address.searchParams.get('t') })
+      assert.equal(ping.json().allowResume, allow)
+    }
+  } finally { await board.end(urls) }
 })

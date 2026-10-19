@@ -181,7 +181,7 @@ const infoOf = (mode: SendMode, agent: string, task: string, session: string, s:
 // The keys are the terminal board's (`boardItems`), so a press names the line it was on.
 // `isLan`: the page as a phone sees it on the local network, where a reply that would run an
 // agent on the computer is offered as a copy instead.
-export const serveModel = (view: View, pending: readonly PendingTurn[], s: Strings = ZH_TW, sending: ReadonlySet<string> = new Set(), isLan = false, messaging?: Messaging): ServeModel => {
+export const serveModel = (view: View, pending: readonly PendingTurn[], s: Strings = ZH_TW, sending: ReadonlySet<string> = new Set(), isLan = false, messaging?: Messaging, allowResume = false): ServeModel => {
   const isSending = (target: AgentTarget | null): boolean => target !== null && sending.has(sendKey(target))
   const onLan = (mode: SendMode): SendMode => (isLan && mode === 'send' ? 'open' : mode)
   const lanInfo = (mode: SendMode, agent: string): string | null => (isLan && mode === 'send' ? s.serveLanSend(agent) : null)
@@ -197,7 +197,7 @@ export const serveModel = (view: View, pending: readonly PendingTurn[], s: Strin
       const isManual = ask.where === 'manual'
       const connection = isManual || isLan ? undefined : liveTarget(ask.agent, ask.nativeSession, messaging?.connections ?? [])
       const baseMode = isManual ? 'none' : sendMode(ask.agent, ask.target)
-      const mode = connection ? 'connected' : messaging && baseMode === 'send' ? 'open' : baseMode
+      const mode = connection ? 'connected' : (messaging || !allowResume) && baseMode === 'send' ? 'open' : baseMode
       const send = onLan(mode)
       // A phone on the local network gets the id, but neither the command nor its folder.
       const hint = replyHint(ask, s, !isLan)
@@ -223,7 +223,7 @@ export const serveModel = (view: View, pending: readonly PendingTurn[], s: Strin
         session: connection?.session ?? ask.target?.session ?? '',
         fp: fingerprint(item, items),
         where: send === 'send' ? (ask.target?.dir ?? '') : '',
-        info: connection || isManual ? '' : (lanInfo(mode, ask.agent) ?? infoOf(send, ask.agent, ask.task, '', s)),
+        info: connection || isManual ? '' : (lanInfo(baseMode, ask.agent) ?? infoOf(send, ask.agent, ask.task, '', s)),
         back: wayBackText(hint),
         sessionId: ask.where === 'other' ? ask.sessionId : null,
         reopen: hint.reopen,
@@ -235,7 +235,7 @@ export const serveModel = (view: View, pending: readonly PendingTurn[], s: Strin
       const { row } = item
       const connection = isLan ? undefined : liveTarget(row.agent, row.nativeSession, messaging?.connections ?? [])
       const baseMode = row.target === null ? (row.auto === null ? 'none' : 'claude') : sendMode(row.agent, row.target)
-      const mode = connection ? 'connected' : messaging && baseMode === 'send' ? 'open' : baseMode
+      const mode = connection ? 'connected' : (messaging || !allowResume) && baseMode === 'send' ? 'open' : baseMode
       const send = onLan(mode)
       const rows = idleKeys.has(row.key) ? idle : (groups.get(row.project) ?? [])
       if (!idleKeys.has(row.key)) groups.set(row.project, rows)
@@ -267,9 +267,9 @@ export const serveModel = (view: View, pending: readonly PendingTurn[], s: Strin
         fp: fingerprint(item, items),
         where: send === 'send' ? (row.target?.dir ?? '') : '',
         // A row says why only when a reply could otherwise be expected here.
-        info: connection ? '' : lanInfo(mode, row.agent) ?? (send === 'open' ? infoOf(send, row.agent, row.title, '', s) : ''),
+        info: connection ? '' : lanInfo(baseMode, row.agent) ?? (send === 'open' ? infoOf(send, row.agent, row.title, '', s) : ''),
         isSending: isSending(row.target) || connection !== undefined && (messaging?.messages.some(one => one.target === connection.id && ['queued', 'uncertain', 'accepted'].includes(one.status)) ?? false),
-        hasCopyBox: lanInfo(mode, row.agent) !== null || messaging !== undefined && row.auto !== null && connection === undefined,
+        hasCopyBox: lanInfo(baseMode, row.agent) !== null || (messaging !== undefined || !allowResume) && row.auto !== null && connection === undefined,
       })
       continue
     }
@@ -324,8 +324,8 @@ export const replyText = (raw: string): string =>
 // gone or changed since the page drew it is refused, never taken for the one now in its place.
 // From the local network (`isLan`) a reply to an agent is refused: it would run a program on
 // the computer, and the network's page is plain HTTP that others on the network could read.
-export const serveAction = (items: readonly BoardItem[], request: ServeRequest, s: Strings = ZH_TW, isLan = false, connections: readonly Connection[] = [], isMessaging = false): ServeAction => {
-  const action = actionOf(items, request, s, isLan, connections, isMessaging)
+export const serveAction = (items: readonly BoardItem[], request: ServeRequest, s: Strings = ZH_TW, isLan = false, connections: readonly Connection[] = [], isMessaging = false, allowResume = false): ServeAction => {
+  const action = actionOf(items, request, s, isLan, connections, isMessaging, allowResume)
   if (action.type !== 'tick' && action.type !== 'archive' && action.type !== 'send' && action.type !== 'message') return action
   // The key is a project and a title, which another session's block can take over, and a step
   // can be reworded under it: the press goes through only on the block and words the page drew.
@@ -334,7 +334,7 @@ export const serveAction = (items: readonly BoardItem[], request: ServeRequest, 
   return item !== undefined && request.fp === fingerprint(item, items) ? action : { type: 'refuse', note: s.boardLineChanged }
 }
 
-const actionOf = (items: readonly BoardItem[], request: ServeRequest, s: Strings, isLan: boolean, connections: readonly Connection[], isMessaging: boolean): ServeAction => {
+const actionOf = (items: readonly BoardItem[], request: ServeRequest, s: Strings, isLan: boolean, connections: readonly Connection[], isMessaging: boolean, allowResume: boolean): ServeAction => {
   // A hidden question is off the board: it is named by the key it was hidden under.
   if (request.type === 'unhide') return request.key.startsWith('hidden:') ? { type: 'unhide', key: request.key.slice('hidden:'.length) } : { type: 'refuse', note: '' }
   const item = items.find(one => one.key === request.key)
@@ -365,9 +365,11 @@ const actionOf = (items: readonly BoardItem[], request: ServeRequest, s: Strings
     if (isLan || !connected || connected.id !== request.connection || connected.turn !== request.turn || connected.session !== request.session || (request.asked ?? '') !== question || !text) return { type: 'refuse', note: s.messagesFailed }
     return { type: 'message', connection: { id: connected.id, turn: connected.turn, agent: connected.agent }, text, title }
   }
-  if (isMessaging) return { type: 'refuse', note: s.messagesFailed }
   if (mode !== 'send' || target === null) return { type: 'refuse', note: infoOf(mode, agent, title, item.type === 'ask' ? item.ask.session : '', s) }
   if (isLan) return { type: 'refuse', note: s.serveLanSend(agent) }
+  // A closed progress record is not a live receiver. Resuming a saved session is a
+  // separate, explicitly enabled action, never a fallback for a disconnected adapter.
+  if (isMessaging || !allowResume) return { type: 'refuse', note: s.messagesFailed }
   // Keys are a project and a title, which another session's block can take over between the
   // page's redraw and the press.
   if (request.session !== target.session) return { type: 'refuse', note: s.boardLineChanged }

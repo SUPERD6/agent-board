@@ -22,6 +22,7 @@ import { createMessaging } from './board-messaging'
 import type { ProgressBinding } from '../hooks/messaging'
 
 export type ServeOptions = {
+  allowResume?: boolean
   messagesDirectory?: string
   reports?: () => ProgressBinding[]
   s: Strings
@@ -347,7 +348,7 @@ export const startServer = (o: ServeOptions): void => {
         // A file the board cannot read is named on the page, which would otherwise say it is offline.
         try {
           const state = isLan ? undefined : messaging?.snapshot(Date.now(), o.reports?.())
-          return json(res, 200, { model: serveModel(o.view(), o.pending(), o.s, sending, isLan, state), replies: [...replies.values()], messaging: isLan ? undefined : state ?? { enabled: false, connections: [], messages: [] }, now: Date.now() })
+          return json(res, 200, { model: serveModel(o.view(), o.pending(), o.s, sending, isLan, state, o.allowResume), replies: [...replies.values()], messaging: isLan ? undefined : state ?? { enabled: false, connections: [], messages: [] }, now: Date.now() })
         } catch (error) {
           const note = o.failure(error, isLan)
           if (note === null) throw error
@@ -373,7 +374,7 @@ export const startServer = (o: ServeOptions): void => {
     try {
       if (url.pathname === '/api/act') {
         const state = isLan ? undefined : messaging?.snapshot(Date.now())
-        const action = serveAction(boardItems(o.view(), o.pending()), { key: text(body.key), type: text(body.type), text: text(body.text), session: text(body.session), asked: text(body.asked), fp: text(body.fp), connection: text(body.connection), turn: text(body.turn) }, o.s, isLan, state?.connections, messaging !== null)
+        const action = serveAction(boardItems(o.view(), o.pending()), { key: text(body.key), type: text(body.type), text: text(body.text), session: text(body.session), asked: text(body.asked), fp: text(body.fp), connection: text(body.connection), turn: text(body.turn) }, o.s, isLan, state?.connections, messaging !== null, o.allowResume)
         if (action.type === 'refuse') return json(res, 409, { note: action.note })
         if (action.type === 'message') {
           if (!messaging || isLan) return json(res, 403, {})

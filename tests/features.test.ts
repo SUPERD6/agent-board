@@ -1955,14 +1955,18 @@ const SERVE_NOW = Date.parse('2026-10-17T08:45:00Z')
 const serveView = () => buildView(parseProgress(SERVE_FILE), [], null, SERVE_NOW, 0, {}, STRINGS.en)
 const GROK = { agent: 'grok', session: 'b2c3d4e5', resume: '01a14a94-0dee-7543-8208-991a4266a1da', dir: '/w/api-gateway', isClosed: true }
 
+// Legacy resume tests explicitly enable a saved-session action. Ordinary boards do not.
+const resumeModel = (...args: Parameters<typeof serveModel>): ReturnType<typeof serveModel> => serveModel(args[0], args[1], args[2], args[3], args[4], args[5], true)
+const resumeAction = (...args: Parameters<typeof serveAction>): ReturnType<typeof serveAction> => serveAction(args[0], args[1], args[2], args[3], args[4], args[5], true)
+
 // The fingerprint a page drawn from these lines holds for the one under `key`.
 const fpIn = (items: ReturnType<typeof boardItems>, key: string): string => {
   const item = items.find(one => one.key === key)
   return item === undefined ? '' : fingerprint(item, items)
 }
 
-test('the page offers a send only into a Grok or Codex session that has closed; an open one, Claude and a hand-kept task each get their own way', () => {
-  const model = serveModel(serveView(), [], STRINGS.en)
+test('with explicit legacy opt-in the page offers a send only into a Grok or Codex session that has closed; an open one, Claude and a hand-kept task each get their own way', () => {
+  const model = resumeModel(serveView(), [], STRINGS.en)
   const row = (title: string) => model.groups.flatMap(group => group.rows).find(one => one.title === title)
   expect(row('Pick the cache')).toMatchObject({ send: 'send', where: '/w/api-gateway', info: '', isSending: false })
   const codex = model.asks.find(ask => ask.agent === 'codex')
@@ -1972,7 +1976,7 @@ test('the page offers a send only into a Grok or Codex session that has closed; 
   expect(model.asks.find(ask => ask.project === 'docs-site')).toMatchObject({ send: 'none', answers: [], canTick: true, info: '' })
   expect(row('Dark mode for the settings page')?.send).toBe('claude')
   // A reply on its way shows on its line until the agent answers.
-  const busy = serveModel(serveView(), [], STRINGS.en, new Set([sendKey(GROK)]))
+  const busy = resumeModel(serveView(), [], STRINGS.en, new Set([sendKey(GROK)]))
   expect(busy.groups.flatMap(group => group.rows).find(one => one.title === 'Pick the cache')?.isSending).toBe(true)
   // Agents with no way in take a copied answer; a session with no folder or id has no way in.
   expect(sendMode('gemini', { ...GROK, agent: 'gemini' })).toBe('none')
@@ -2020,28 +2024,28 @@ test('a press on the page is worked out from the file as it is now: a line that 
   const keyOf = (find: (item: (typeof items)[number]) => boolean) => items.find(find)?.key ?? ''
   const grok = keyOf(item => item.type === 'row' && item.row.title === 'Pick the cache')
   const asked = 'Redis or Memcached?'
-  const sent = serveAction(items, { key: grok, type: 'send', text: '  Redis\u0007, it is already in the stack \r\n', session: 'b2c3d4e5', asked, fp: fpIn(items, grok) }, STRINGS.en)
+  const sent = resumeAction(items, { key: grok, type: 'send', text: '  Redis\u0007, it is already in the stack \r\n', session: 'b2c3d4e5', asked, fp: fpIn(items, grok) }, STRINGS.en)
   // The task goes with it, so the page can say which of two sessions answered.
   expect(sent).toEqual({ type: 'send', target: GROK, text: STRINGS.en.answerText('Redis or Memcached?', 'Redis, it is already in the stack'), title: 'Pick the cache' })
-  expect(serveAction(items, { key: grok, type: 'send', text: ' \u0000 ', session: 'b2c3d4e5', asked }, STRINGS.en)).toEqual({ type: 'refuse', note: '' })
+  expect(resumeAction(items, { key: grok, type: 'send', text: ' \u0000 ', session: 'b2c3d4e5', asked }, STRINGS.en)).toEqual({ type: 'refuse', note: '' })
   // The line now belongs to another session than the one the page drew: refused, not sent there.
-  expect(serveAction(items, { key: grok, type: 'send', text: 'Redis', session: 'c0ffee12', asked }, STRINGS.en)).toEqual({ type: 'refuse', note: STRINGS.en.boardLineChanged })
+  expect(resumeAction(items, { key: grok, type: 'send', text: 'Redis', session: 'c0ffee12', asked }, STRINGS.en)).toEqual({ type: 'refuse', note: STRINGS.en.boardLineChanged })
   // The task asks something else now, or nothing: a reply written under the old question is
   // refused, never taken as the answer to the new one.
-  expect(serveAction(items, { key: grok, type: 'send', text: 'Redis', session: 'b2c3d4e5', asked: 'Which port?' }, STRINGS.en)).toEqual({ type: 'refuse', note: STRINGS.en.boardLineChanged })
-  expect(serveAction(items, { key: grok, type: 'send', text: 'Redis', session: 'b2c3d4e5' }, STRINGS.en)).toEqual({ type: 'refuse', note: STRINGS.en.boardLineChanged })
-  expect(serveAction(items, { key: 'row:gone', type: 'tick', text: '', session: '' }, STRINGS.en)).toEqual({ type: 'refuse', note: STRINGS.en.boardLineChanged })
+  expect(resumeAction(items, { key: grok, type: 'send', text: 'Redis', session: 'b2c3d4e5', asked: 'Which port?' }, STRINGS.en)).toEqual({ type: 'refuse', note: STRINGS.en.boardLineChanged })
+  expect(resumeAction(items, { key: grok, type: 'send', text: 'Redis', session: 'b2c3d4e5' }, STRINGS.en)).toEqual({ type: 'refuse', note: STRINGS.en.boardLineChanged })
+  expect(resumeAction(items, { key: 'row:gone', type: 'tick', text: '', session: '' }, STRINGS.en)).toEqual({ type: 'refuse', note: STRINGS.en.boardLineChanged })
   // An open Codex session is answered in its own window.
   const codex = keyOf(item => item.type === 'ask' && item.ask.agent === 'codex')
-  expect(serveAction(items, { key: codex, type: 'send', text: '300', session: 'a1b2c3d4' }, STRINGS.en)).toEqual({ type: 'refuse', note: STRINGS.en.serveSendOpen('codex') })
+  expect(resumeAction(items, { key: codex, type: 'send', text: '300', session: 'a1b2c3d4' }, STRINGS.en)).toEqual({ type: 'refuse', note: STRINGS.en.serveSendOpen('codex') })
   const manual = keyOf(item => item.type === 'ask' && item.ask.project === 'docs-site')
-  expect(serveAction(items, { key: manual, type: 'tick', text: '', session: '', fp: fpIn(items, manual) }, STRINGS.en).type).toBe('tick')
-  expect(serveAction(items, { key: manual, type: 'send', text: 'yes', session: '' }, STRINGS.en)).toEqual({ type: 'refuse', note: '' })
+  expect(resumeAction(items, { key: manual, type: 'tick', text: '', session: '', fp: fpIn(items, manual) }, STRINGS.en).type).toBe('tick')
+  expect(resumeAction(items, { key: manual, type: 'send', text: 'yes', session: '' }, STRINGS.en)).toEqual({ type: 'refuse', note: '' })
   // An ended block can go to the archive; a working one cannot yet.
-  expect(serveAction(items, { key: grok, type: 'archive', text: '', session: '', fp: fpIn(items, grok) }, STRINGS.en)).toMatchObject({ type: 'archive', title: 'Pick the cache' })
+  expect(resumeAction(items, { key: grok, type: 'archive', text: '', session: '', fp: fpIn(items, grok) }, STRINGS.en)).toMatchObject({ type: 'archive', title: 'Pick the cache' })
   const working = keyOf(item => item.type === 'row' && item.row.title === 'Dark mode for the settings page')
-  expect(serveAction(items, { key: working, type: 'archive', text: '', session: '' }, STRINGS.en)).toEqual({ type: 'refuse', note: STRINGS.en.archiveGone })
-  expect(serveAction(items, { key: grok, type: 'delete', text: '', session: '' }, STRINGS.en)).toEqual({ type: 'refuse', note: '' })
+  expect(resumeAction(items, { key: working, type: 'archive', text: '', session: '' }, STRINGS.en)).toEqual({ type: 'refuse', note: STRINGS.en.archiveGone })
+  expect(resumeAction(items, { key: grok, type: 'delete', text: '', session: '' }, STRINGS.en)).toEqual({ type: 'refuse', note: '' })
   expect(replyText('x'.repeat(5000)).length).toBe(4000)
 })
 
@@ -2075,24 +2079,24 @@ test('a press on the page goes through only on the block and step words the page
     const isManual = item.row.auto === null
     const press = { key: item.key, type: isManual ? 'tick' : 'archive', text: item.row.next?.step ?? '', session: '', fp: fingerprint(item, drawn) }
     const wanted = isManual ? { type: 'tick' } : { type: 'archive' }
-    expect(serveAction(drawn, press, STRINGS.en)).toMatchObject(wanted)
+    expect(resumeAction(drawn, press, STRINGS.en)).toMatchObject(wanted)
     // No fingerprint, as from a page drawn before there were any, goes nowhere.
-    expect(serveAction(drawn, { key: press.key, type: press.type, text: press.text, session: '' }, STRINGS.en)).toEqual(changed)
+    expect(resumeAction(drawn, { key: press.key, type: press.type, text: press.text, session: '' }, STRINGS.en)).toEqual(changed)
     // The step reworded under the same key, in a block or in the hand-kept task.
-    expect(serveAction(reworded, press, STRINGS.en)).toEqual(changed)
+    expect(resumeAction(reworded, press, STRINGS.en)).toEqual(changed)
     const twin = taken.find(one => one.key === item.key)
     expect(twin?.key).toBe(item.key)
     if (isManual || twin === undefined) continue
     // Another session's block under the same project and title, with the same words.
-    expect(serveAction(taken, press, STRINGS.en)).toEqual(changed)
-    expect(serveAction(taken, { ...press, fp: fingerprint(twin, taken) }, STRINGS.en)).toMatchObject(wanted)
+    expect(resumeAction(taken, press, STRINGS.en)).toEqual(changed)
+    expect(resumeAction(taken, { ...press, fp: fingerprint(twin, taken) }, STRINGS.en)).toMatchObject(wanted)
     // A reply into a closed Grok or Codex session goes to the block it was written for only.
     if (item.row.target === null || twin.type !== 'row' || twin.row.target === null) continue
     const reply = { key: item.key, type: 'send', text: 'Go', session: twin.row.target.session, asked: item.row.question ?? '', fp: fingerprint(item, drawn) }
-    if (serveAction(drawn, { ...reply, session: item.row.target.session }, STRINGS.en).type !== 'send') continue
+    if (resumeAction(drawn, { ...reply, session: item.row.target.session }, STRINGS.en).type !== 'send') continue
     senders.push(item.row.agent)
-    expect(serveAction(taken, reply, STRINGS.en)).toEqual(changed)
-    expect(serveAction(taken, { ...reply, fp: fingerprint(twin, taken) }, STRINGS.en).type).toBe('send')
+    expect(resumeAction(taken, reply, STRINGS.en)).toEqual(changed)
+    expect(resumeAction(taken, { ...reply, fp: fingerprint(twin, taken) }, STRINGS.en).type).toBe('send')
   }
   expect(senders.sort()).toEqual(['codex', 'grok'])
 })
@@ -2193,11 +2197,11 @@ test('on the local network the page answers only its own address, with its own t
 })
 
 test('from the local network a reply to an agent is offered as a copy, and refused if sent, since it would run a program on the computer', () => {
-  const model = serveModel(serveView(), [], STRINGS.en, new Set(), true)
+  const model = resumeModel(serveView(), [], STRINGS.en, new Set(), true)
   const rows = model.groups.flatMap(group => group.rows)
   // The row keeps a box to write the answer in and copy it, as the note says.
   expect(rows.find(one => one.title === 'Pick the cache')).toMatchObject({ send: 'open', where: '', info: STRINGS.en.serveLanSend('grok'), hasCopyBox: true })
-  expect(serveModel(serveView(), [], STRINGS.en).groups.flatMap(group => group.rows).find(one => one.title === 'Pick the cache')).toMatchObject({ send: 'send', hasCopyBox: false })
+  expect(resumeModel(serveView(), [], STRINGS.en).groups.flatMap(group => group.rows).find(one => one.title === 'Pick the cache')).toMatchObject({ send: 'send', hasCopyBox: false })
   // Nor is a command to resume a session shown there: it names the session's folder.
   const ended = buildView(
     parseProgress(`## FLOODABM
@@ -2213,7 +2217,7 @@ test('from the local network a reply to an agent is offered as a copy, and refus
     {},
     STRINGS.en,
   )
-  const resumeOf = (isLan: boolean): string | null | undefined => serveModel(ended, [], STRINGS.en, new Set(), isLan).groups.flatMap(group => group.rows)[0]?.resume
+  const resumeOf = (isLan: boolean): string | null | undefined => resumeModel(ended, [], STRINGS.en, new Set(), isLan).groups.flatMap(group => group.rows)[0]?.resume
   expect(resumeOf(false)).toContain('claude --resume dddddddd-1111')
   expect(resumeOf(true)).toBe(null)
   // What was not a send stays as it was.
@@ -2222,9 +2226,9 @@ test('from the local network a reply to an agent is offered as a copy, and refus
   const items = boardItems(serveView(), [])
   const key = items.find(item => item.type === 'row' && item.row.title === 'Pick the cache')?.key ?? ''
   const press = { key, type: 'send', text: 'Redis', session: GROK.session, asked: 'Redis or Memcached?', fp: fpIn(items, key) }
-  expect(serveAction(items, press, STRINGS.en).type).toBe('send')
-  expect(serveAction(items, press, STRINGS.en, true)).toEqual({ type: 'refuse', note: STRINGS.en.serveLanSend('grok') })
-  expect(serveAction(items, { ...press, type: 'archive' }, STRINGS.en, true)).toMatchObject({ type: 'archive', title: 'Pick the cache' })
+  expect(resumeAction(items, press, STRINGS.en).type).toBe('send')
+  expect(resumeAction(items, press, STRINGS.en, true)).toEqual({ type: 'refuse', note: STRINGS.en.serveLanSend('grok') })
+  expect(resumeAction(items, { ...press, type: 'archive' }, STRINGS.en, true)).toMatchObject({ type: 'archive', title: 'Pick the cache' })
 })
 
 test("on the local network every agent's task shows as on the computer, except that a reply that would run grok or codex is a copy and no resume command is sent", () => {
@@ -2242,7 +2246,7 @@ test("on the local network every agent's task shows as on the computer, except t
     )
     .join('\n')
   const view = buildView(parseProgress(file), [], null, SERVE_NOW, 0, {}, STRINGS.en)
-  const rowsOf = (isLan: boolean) => serveModel(view, [], STRINGS.en, new Set(), isLan).groups.flatMap(group => group.rows)
+  const rowsOf = (isLan: boolean) => resumeModel(view, [], STRINGS.en, new Set(), isLan).groups.flatMap(group => group.rows)
   const computer = rowsOf(false)
   const lan = rowsOf(true)
   // Claude's own rows carry no agent name.
@@ -2264,7 +2268,7 @@ test("on the local network every agent's task shows as on the computer, except t
   const rows = items.flatMap(item => (item.type === 'row' ? [item] : []))
   expect(rows.length).toBe(agents.length)
   for (const item of rows) {
-    expect(serveAction(items, { key: item.key, type: 'send', text: 'Go', session: item.row.target?.session ?? '' }, STRINGS.en, true).type).toBe('refuse')
+    expect(resumeAction(items, { key: item.key, type: 'send', text: 'Go', session: item.row.target?.session ?? '' }, STRINGS.en, true).type).toBe('refuse')
   }
 })
 
@@ -2976,21 +2980,21 @@ test('a reply on the line of a task whose question was marked answered goes as i
   const view = buildView(parseProgress(SERVE_FILE), [], null, SERVE_NOW, 0, {}, STRINGS.en, [key])
   const items = boardItems(view, [])
   const grok = items.find(item => item.type === 'row' && item.row.title === 'Pick the cache')?.key ?? ''
-  expect(serveAction(items, { key: grok, type: 'send', text: 'Use Redis', session: 'b2c3d4e5', fp: fpIn(items, grok) }, STRINGS.en)).toEqual({ type: 'send', target: GROK, text: 'Use Redis', title: 'Pick the cache' })
+  expect(resumeAction(items, { key: grok, type: 'send', text: 'Use Redis', session: 'b2c3d4e5', fp: fpIn(items, grok) }, STRINGS.en)).toEqual({ type: 'send', target: GROK, text: 'Use Redis', title: 'Pick the cache' })
   const row = (model: ReturnType<typeof serveModel>) => model.groups.flatMap(group => group.rows).find(one => one.title === 'Pick the cache')
-  expect(row(serveModel(view, [], STRINGS.en))?.isAsking).toBe(false)
+  expect(row(resumeModel(view, [], STRINGS.en))?.isAsking).toBe(false)
   // The page names no question for it, and a reply written while the page still showed the
   // question is refused: it would answer one that is off the board.
-  expect(row(serveModel(view, [], STRINGS.en))?.question).toBe('')
+  expect(row(resumeModel(view, [], STRINGS.en))?.question).toBe('')
   const stale = { key: grok, type: 'send', text: 'Use Redis', session: 'b2c3d4e5', asked: 'Redis or Memcached?' }
-  expect(serveAction(items, stale, STRINGS.en)).toEqual({ type: 'refuse', note: STRINGS.en.boardLineChanged })
+  expect(resumeAction(items, stale, STRINGS.en)).toEqual({ type: 'refuse', note: STRINGS.en.boardLineChanged })
   expect(servePage(STRINGS.en, 'n')).toContain('var asked = row.question;')
   // Still asked, it opens by itself and a reply goes as its answer.
-  expect([row(serveModel(serveView(), [], STRINGS.en))?.isAsking, row(serveModel(serveView(), [], STRINGS.en))?.question]).toEqual([true, 'Redis or Memcached?'])
+  expect([row(resumeModel(serveView(), [], STRINGS.en))?.isAsking, row(resumeModel(serveView(), [], STRINGS.en))?.question]).toEqual([true, 'Redis or Memcached?'])
   const asking = boardItems(serveView(), [])
-  expect(serveAction(asking, { ...stale, fp: fpIn(asking, grok) }, STRINGS.en)).toMatchObject({ type: 'send', text: expect.stringContaining('Use Redis') })
+  expect(resumeAction(asking, { ...stale, fp: fpIn(asking, grok) }, STRINGS.en)).toMatchObject({ type: 'send', text: expect.stringContaining('Use Redis') })
   // The step itself still shows in the task's steps.
-  expect(row(serveModel(view, [], STRINGS.en))?.steps.map(step => step.text)).toContain('Redis or Memcached?')
+  expect(row(resumeModel(view, [], STRINGS.en))?.steps.map(step => step.text)).toContain('Redis or Memcached?')
 })
 
 test('a project folder or quick-add project named with a comment opening hides no block after its heading, and keeps one heading', () => {
@@ -3104,4 +3108,16 @@ test('the idle shelf keeps terminal and page row actions without putting its que
   expect(serveAction(boardItems(view, []), { key: row?.key ?? '', type: 'tick', text: row?.next ?? '', session: '', fp: row?.fp }, STRINGS.en).type).toBe('tick')
   expect(serveAction(boardItems(view, []), { key: row?.key ?? '', type: 'archive', text: '', session: '', fp: row?.fp }, STRINGS.en).type).toBe('archive')
   expect(servePage(STRINGS.en, 'nonce')).toContain("opened['idle:'] === true")
+})
+
+test('an ordinary board never resumes a closed session even without messaging enabled', () => {
+  const model = serveModel(serveView(), [], STRINGS.en)
+  const row = model.groups.flatMap(group => group.rows).find(one => one.title === 'Pick the cache')
+  expect(row).toMatchObject({ send: 'open', hasCopyBox: true })
+  const items = boardItems(serveView(), [])
+  expect(serveAction(items, { key: row?.key ?? '', type: 'send', text: 'Redis', session: GROK.session, asked: 'Redis or Memcached?', fp: row?.fp }, STRINGS.en)).toEqual({ type: 'refuse', note: STRINGS.en.messagesFailed })
+  // An explicit legacy opt-in still cannot become fallback for an enabled message hub.
+  const hub = { connections: [], messages: [] }
+  expect(resumeModel(serveView(), [], STRINGS.en, new Set(), false, hub).groups.flatMap(group => group.rows).find(one => one.title === 'Pick the cache')?.send).toBe('open')
+  expect(resumeAction(items, { key: row?.key ?? '', type: 'send', text: 'Redis', session: GROK.session, asked: 'Redis or Memcached?', fp: row?.fp }, STRINGS.en, false, [], true).type).toBe('refuse')
 })

@@ -522,11 +522,12 @@ const ping = async (running: Running, waitMs = 1500): Promise<Record<string, unk
 
 const serveChild = (): void => {
   startServer({
+    allowResume: args.includes('--allow-resume'),
     messagesDirectory: flag('--messages-dir'),
     reports: () => parseProgress(read(path)).flatMap(project => project.tasks.flatMap(task => task.auto === null ? [] : [{ agent: task.auto.agent, session: task.auto.resume ?? task.auto.session, updated: task.auto.updated }])),
     s,
     port: Number(flag('--port') ?? 0) || 0,
-    ping: { path, built, idleMs: idleMs(), messagesDirectory: flag('--messages-dir') ? resolve(flag('--messages-dir')!) : null },
+    ping: { path, built, idleMs: idleMs(), allowResume: args.includes('--allow-resume'), messagesDirectory: flag('--messages-dir') ? resolve(flag('--messages-dir')!) : null },
     view,
     pending,
     act,
@@ -599,7 +600,7 @@ const runningPage = async (): Promise<{ page: Running; isKept: boolean } | null>
   // as gone and a second one starts.
   const first = await ping(running)
   const answer = first !== null && first !== 'silent' ? first : isRunning(running.pid) ? await ping(running, 5000) : first
-  if (answer !== null && answer !== 'silent' && typeof answer.path === 'string' && board(answer.path) === board(path) && answer.built === built && answer.idleMs === idleMs() && (flag('--messages-dir') === undefined || answer.messagesDirectory === resolve(flag('--messages-dir')!))) return { page: running, isKept: false }
+  if (answer !== null && answer !== 'silent' && typeof answer.path === 'string' && board(answer.path) === board(path) && answer.built === built && answer.idleMs === idleMs() && answer.allowResume === args.includes('--allow-resume') && (flag('--messages-dir') === undefined || answer.messagesDirectory === resolve(flag('--messages-dir')!))) return { page: running, isKept: false }
   return (await stays(running, serveFile())) ? { page: running, isKept: true } : null
 }
 
@@ -648,6 +649,7 @@ const serveBoard = async (): Promise<void> => {
     const value = flag(name)
     return value === undefined ? [] : [name, value]
   })
+  if (args.includes('--allow-resume')) rest.push('--allow-resume')
   // In the board's own folder, not the agent's, so the server holds no project folder open.
   const child = spawn(process.execPath, [script, '--serve-child', ...rest], { cwd: dirname(path), detached: true, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true })
   // The child prints its address once it listens; it exits at once when it cannot.

@@ -424,7 +424,7 @@ export const ZH_CN: Strings = {
   serveSent: (agent: string, reply: string): string => (reply === '' ? `已发给 ${agent}。` : `已发给 ${agent}，它回：${reply}`),
   serveSendFailed: (agent: string, why: string): string => `没发到 ${agent}：${why}`,
   serveSendBusy: (agent: string): string => `正在发另一句给这个 ${agent} 对话，等它回完再发。`,
-  serveSendOpen: (agent: string): string => `这个 ${agent} session 未接上可用的接收连接；请到它的窗口回复，或先复制。`,
+  serveSendOpen: (agent: string): string => `目前无法从这里发送。请打开 ${agent} 回复，或先复制消息。`,
   serveSendNone: (agent: string): string => `${agent} 收不到这里发的话：复制后贴到它的对话。`,
   serveLanSend: (agent: string): string => `回复 ${agent} 会在电脑上运行程序，所以要从电脑上的看板发送；这里可以先复制答案。`,
   serveSendTimeout: '等了 10 分钟还没回，先停了。',
