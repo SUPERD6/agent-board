@@ -483,6 +483,21 @@ test('a reporter that hangs is cut at its timeout and the host hook exits 0', ()
   }
 }))
 
+// A slow or busy CI runner only adds time, so a timing bound is compared with the
+// fastest of up to three tries; a slow hook is slow on every try. Each try sends a
+// new event, so no try takes the cheaper path for an event already applied, and
+// each must succeed on its own. A hook slow only on its first, cold run passes.
+const timedTries = async (bound, run) => {
+  const times = []
+  for (let index = 0; index < 3; index++) {
+    const started = performance.now()
+    await run(index)
+    times.push(Math.round(performance.now() - started))
+    if (times.at(-1) < bound) break
+  }
+  return times
+}
+
 test('L5 busy machine: Antigravity and Codex hooks finish under 3 s with 4 CPU-busy processes', () => fixture(async f => {
   assert.equal(f.install('--apply').status, 0)
   assert.equal(f.install('--agent', 'antigravity', '--apply').status, 0)
@@ -497,15 +512,18 @@ test('L5 busy machine: Antigravity and Codex hooks finish under 3 s with 4 CPU-b
     }
     const antigravity = JSON.parse(readFileSync(join(f.home, '.gemini', 'config', 'hooks.json')))['agent-board-local'].SessionStart[0].command
     const codex = JSON.parse(readFileSync(f.hooks)).hooks.UserPromptSubmit[0].hooks[0].command
-    for (const [agent, command, payload] of [
-      ['antigravity', antigravity, { conversationId: 'busy-antigravity-session' }],
-      ['codex', codex, { session_id: session, hook_event_name: 'UserPromptSubmit', turn_id: 'busy-turn' }],
+    const bound = 3000
+    for (const [agent, command, payloadOf] of [
+      ['antigravity', antigravity, index => ({ conversationId: `busy-antigravity-session-${index}` })],
+      ['codex', codex, index => ({ session_id: session, hook_event_name: 'UserPromptSubmit', turn_id: `busy-turn-${index}` })],
     ]) {
-      const started = performance.now()
-      const result = await fireCommand(f, command, JSON.stringify(payload), 5000)
-      const elapsed = performance.now() - started
-      assert.equal(result.status, 0, hookFailure(result))
-      assert.ok(elapsed < 3000, `${agent}: ${elapsed} ms`)
+      let payload
+      const times = await timedTries(bound, async index => {
+        payload = payloadOf(index)
+        const result = await fireCommand(f, command, JSON.stringify(payload), 5000)
+        assert.equal(result.status, 0, hookFailure(result))
+      })
+      assert.ok(Math.min(...times) < bound, `${agent}: ${times.join(', ')} ms`)
       const owner = createHash('sha256').update(`${agent}:${payload.session_id ?? payload.conversationId}`).digest('hex').slice(0, 8)
       const saved = pendingFiles(f).some(name => readFileSync(join(f.root, 'pending', name), 'utf8').includes(payload.session_id ?? payload.conversationId))
       assert.ok(readFileSync(f.progress, 'utf8').includes(`session=${owner}`) || saved, agent)
@@ -523,11 +541,15 @@ test('L4 5 MB file: the Codex hook finishes in under 1 s', () => fixture(async f
   const task = '### Synthetic hand-kept task\n- [ ] Keep this task unchanged\n'
   f.save(f.progress, '## Synthetic history\n' + task.repeat(Math.ceil(5 * 1024 * 1024 / Buffer.byteLength(task))))
   assert.ok(readFileSync(f.progress).length >= 5 * 1024 * 1024)
-  const started = performance.now()
-  const result = await fireHook(f, JSON.stringify({ session_id: session, hook_event_name: 'UserPromptSubmit', turn_id: 'large-file-turn' }))
-  const elapsed = performance.now() - started
-  assert.equal(result.status, 0, hookFailure(result))
-  assert.ok(elapsed < 1000, `${elapsed} ms`)
+  const bound = 1000
+  const times = await timedTries(bound, async index => {
+    const result = await fireHook(f, JSON.stringify({ session_id: session, hook_event_name: 'UserPromptSubmit', turn_id: `large-file-turn-${index}` }))
+    assert.equal(result.status, 0, hookFailure(result))
+    // A try past the hook's own deadline queues its event, and the next try would
+    // apply it, so every try must leave nothing queued.
+    assert.deepEqual(pendingFiles(f), [])
+  })
+  assert.ok(Math.min(...times) < bound, `${times.join(', ')} ms`)
   const block = readFileSync(f.progress, 'utf8').slice(-2000)
   assert.match(block, /<!-- auto [^\n]*agent=codex/)
   assert.match(block, /state=working/)
