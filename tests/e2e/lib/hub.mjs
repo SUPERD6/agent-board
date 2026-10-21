@@ -271,7 +271,7 @@ export const withHub = async (specs, fn) => {
       cleanPage: async (sent) => {
         const text = (await hub.page()).text()
         noMachineIds(text, world)
-        if (sent?.from === 'board') assert.ok(!text.includes(sent.id), 'The page shows the raw message id ' + sent.id)
+        if (sent) assert.ok(!text.includes(sent.id), 'The page shows the raw message id ' + sent.id)
       },
       fallback: async (actor, text) => {
         const draft = await hub.draft(actor, text)

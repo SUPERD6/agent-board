@@ -10,7 +10,7 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { localProgressPath, runCodexLocal } from './codex-local'
 import { legacyConnect } from './connect-transaction'
-import { chmodSync, closeSync, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, closeSync, existsSync, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { createHash, randomUUID } from 'node:crypto'
 import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
@@ -25,7 +25,7 @@ import { dashboardHtml } from '../hooks/dashboard'
 import { appendJournal, archivePath, countDay, hasArchiveEntry, journalLine, journalPath } from '../hooks/journal'
 import { parseProgress, progressTail } from '../hooks/parse'
 import { qrModules, qrText } from '../hooks/qr'
-import { langOf, STRINGS } from '../hooks/strings'
+import { langOf, plainReason, STRINGS } from '../hooks/strings'
 import { answeredJson, answeredPath, buildView, manualDoneSeen, parseAnswered, parseSeen, seenJson, seenPath, taskFingerprint, withAnswered, withSeen } from '../hooks/view'
 import { acknowledgementKeys, archiveQuestionsKept, captureHashOf, captureJson, capturePath, emptyQuestions, parseCapture, withCaptures, isQuestionProof, isQuestionSnapshot, isTornLedger, migratedAnswered, observeQuestions, parseQuestions, questionProofJson, questionProofOf, questionProofPath, questionsJson, questionsPath, resolvedQuestionsToRetire } from '../hooks/questions'
 import type { QuestionCapture, QuestionProofs, QuestionRecord } from '../hooks/questions'
@@ -62,6 +62,12 @@ class BoardFileError extends Error {
 
 const fileError = (file: string, error: unknown): BoardFileError =>
   new BoardFileError(file, String((error as { code?: string } | null)?.code ?? 'UNKNOWN'))
+
+const plainFile = (file: string): string => {
+  const full = resolve(file)
+  return full === resolve(path) ? s.fileProgress
+    : full === resolve(questionsPath(path)) ? s.fileQuestions : s.fileNamed(basename(file))
+}
 
 const read = (file: string): string => {
   try {
@@ -151,12 +157,31 @@ const placeQuestionFile = (from: string, to: string): boolean => {
   return ran.status === 0 && !existsSync(source)
 }
 
+// A hard link fails when the target exists, so it never replaces another writer's ledger, and it
+// starts no program: on a fresh Windows profile PowerShell alone could take longer than the move's
+// 10 s limit. Only for a file this process owns; a volume without hard links uses the move program.
+const placeOwnedQuestionFile = (source: string, target: string): boolean => {
+  try {
+    linkSync(source, target)
+  } catch (error) {
+    if ((error as { code?: string } | null)?.code === 'EEXIST') return false
+    return placeQuestionFile(source, target)
+  }
+  unlinkSync(source)
+  return true
+}
+
 const quarantineQuestions = (file: string): boolean => {
   const aside = `${file}.torn-${Date.now()}-${process.pid}`
+  // The shared ledger keeps the move program: another writer can rename a newer ledger onto it
+  // between a link and an unlink, and the unlink would then delete that newer ledger.
   if (!placeQuestionFile(file, aside)) return false
   if (isTornLedger(read(aside))) return true
-  // A good write raced the initial read. Restore it only if no newer ledger took its place.
-  placeQuestionFile(aside, file)
+  // A good write raced the initial read. Restore it only if no newer ledger took its place. A
+  // throw here means the ledger is back and the aside, a second name for it, could not be removed.
+  try {
+    placeOwnedQuestionFile(aside, file)
+  } catch {}
   return false
 }
 
@@ -369,7 +394,7 @@ const rewrite = (file: string, change: (text: string) => string | null): string 
       writeFileSync(temp, after)
       if (mode !== undefined) chmodSync(temp, mode)
       if (wasMissing) {
-        if (!placeQuestionFile(temp, file)) {
+        if (!placeOwnedQuestionFile(temp, file)) {
           if (!existsSync(file)) {
             // A failed move must not delete the only complete copy.
             isOwned = false
@@ -383,7 +408,7 @@ const rewrite = (file: string, change: (text: string) => string | null): string 
           renameSync(temp, file)
         } catch (error) {
           if (!isLedger || existsSync(file)) throw error
-          if (!placeQuestionFile(temp, file)) {
+          if (!placeOwnedQuestionFile(temp, file)) {
             if (!existsSync(file)) isOwned = false
             throw error
           }
@@ -489,7 +514,7 @@ const answeredAge = (file: string): number => {
 // What a key's action does to the files, and the line the board shows after it.
 const act = (action: BoardAction): string => {
   const now = Date.now()
-  if (action.type === 'copy') return copy(action.text) ? s.boardCopied(action.text) : s.boardCopyFailed(action.text)
+  if (action.type === 'copy') return copy(action.text) ? s.copied : s.boardCopyFailed(action.text)
   if (action.type === 'done') {
     let confirmed: ConfirmedTask | null = null
     const wrote = rewrite(path, text => {
@@ -616,9 +641,7 @@ const keysIn = (chunk: string): string[] => (chunk.replace(/\r\n/g, '\r').match(
 const failureNote = (error: unknown): string => {
   if (!(error instanceof BoardFileError)) throw error
   process.exitCode = 1
-  const note = s.boardStorageFailed(error.file, error.code)
-  // The board's one-line status is clipped to terminal width; keep the full path and
-  // recovery advice on stderr too, including for an agent using --keys.
+  const note = s.boardStorageFailed(plainFile(error.file), plainReason(s, error.code))
   process.stderr.write(`${note}\n`)
   return note
 }
@@ -774,8 +797,8 @@ const serveChild = (): void => {
       paste,
       // The page names a file it could not read or write the way the terminal board does, for a
       // press and for the board it shows. The page is answered, so the exit code and stderr are
-      // left alone. A phone is told the file name only: the folder names the person's account.
-      failure: (error, isLan) => (error instanceof BoardFileError ? s.boardStorageFailed(isLan ? basename(error.file) : error.file, error.code) : null),
+      // left alone. File labels and reasons stay the same on local and network pages.
+      failure: error => (error instanceof BoardFileError ? s.boardStorageFailed(plainFile(error.file), plainReason(s, error.code)) : null),
       idleMs: idleMs(),
       onReady: (url, port) => {
         // Without its address file no later `--serve` finds this page, and each would start one
@@ -963,7 +986,7 @@ const chat = (): void => {
     const code = (error as { code?: unknown } | null)?.code
     const reason = typeof code === 'string' ? code : error instanceof Error ? error.message.split('\n')[0]?.slice(0, 160) || error.name : 'UNKNOWN'
     // Nothing here writes, so the board's own advice (files "may already have changed") is not told.
-    const told = error instanceof BoardFileError ? s.chatReadFailed(error.file, error.code) : s.chatFailed(reason)
+    const told = error instanceof BoardFileError ? s.chatReadFailed(plainFile(error.file), plainReason(s, error.code)) : s.chatFailed(reason)
     process.stdout.write(`${redact(told, homeOrNone(), isWin)}\n`)
   }
 }

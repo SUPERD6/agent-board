@@ -660,11 +660,156 @@ cp.spawnSync = (tool, argv, options) => {
   }
 })
 
+test('a first ledger write places the file with a hard link and starts no move program', () => {
+  const ran = chatRun(['--keys', ''], {
+    inspect: questionFiles,
+    preload: questionFault(`const link = fs.linkSync
+const move = cp.spawnSync
+const probe = { links: 0, moves: [] }
+fs.linkSync = (from, to) => {
+  if (to === ledger && String(from).endsWith('.board-tmp')) probe.links += 1
+  return link(from, to)
+}
+cp.spawnSync = (tool, argv, options) => {
+  if (argv.some(arg => String(arg).includes('.board-tmp'))) probe.moves.push({ tool, argv })
+  return move(tool, argv, options)
+}
+process.on('exit', () => fs.writeFileSync(ledger + '.probe', JSON.stringify(probe)))`),
+  })
+  assert.equal(ran.status, 0, ran.stderr)
+  assert.ok(JSON.parse(ran.files['progress-questions.json']).records.length > 0)
+  const probe = JSON.parse(ran.files['progress-questions.json.probe'])
+  assert.ok(probe.links > 0)
+  assert.deepEqual(probe.moves, [])
+  assert.ok(!Object.keys(ran.files).some(name => name.endsWith('.board-tmp')))
+})
+
+test('a hard-link ledger move leaves both files untouched when another writer placed the ledger first', () => {
+  const other = '{"version":99,"writer":"concurrent hard link"}\n'
+  const ran = chatRun(['--keys', 'down h'], {
+    inspect: questionFiles,
+    preload: questionFault(`const link = fs.linkSync
+let hasRaced = false
+fs.linkSync = (from, to) => {
+  if (hasRaced || to !== ledger || !String(from).endsWith('.board-tmp')) return link(from, to)
+  hasRaced = true
+  const before = fs.readFileSync(from, 'utf8')
+  fs.writeFileSync(ledger, ${JSON.stringify(other)})
+  try {
+    return link(from, to)
+  } catch (error) {
+    fs.writeFileSync(ledger + '.probe', JSON.stringify({ code: error.code, before, after: fs.readFileSync(from, 'utf8'), target: fs.readFileSync(to, 'utf8') }))
+    throw error
+  }
+}`),
+  })
+  assert.equal(ran.status, 0, ran.stderr)
+  const probe = JSON.parse(ran.files['progress-questions.json.probe'])
+  assert.equal(probe.code, 'EEXIST')
+  assert.ok(JSON.parse(probe.before).records.length > 0)
+  assert.equal(probe.after, probe.before)
+  assert.equal(probe.target, other)
+  assert.equal(ran.files['progress-questions.json'], other)
+  assert.ok(!Object.keys(ran.files).some(name => name.endsWith('.board-tmp')))
+  assert.equal(ran.answered, null)
+})
+
+test('a ledger move falls back to the move program when the volume has no hard links', () => {
+  const ran = chatRun(['--keys', ''], {
+    inspect: questionFiles,
+    preload: questionFault(`const link = fs.linkSync
+const move = cp.spawnSync
+const moves = []
+fs.linkSync = (from, to) => {
+  if (to === ledger && String(from).endsWith('.board-tmp')) throw Object.assign(new Error('no hard links'), { code: 'EPERM' })
+  return link(from, to)
+}
+cp.spawnSync = (tool, argv, options) => {
+  if (argv.some(arg => String(arg).includes('.board-tmp'))) moves.push({ tool, argv })
+  return move(tool, argv, options)
+}
+process.on('exit', () => fs.writeFileSync(ledger + '.probe', JSON.stringify(moves)))`),
+  })
+  assert.equal(ran.status, 0, ran.stderr)
+  assert.ok(JSON.parse(ran.files['progress-questions.json']).records.length > 0)
+  const moves = JSON.parse(ran.files['progress-questions.json.probe'])
+  assert.ok(moves.length > 0)
+  for (const { tool, argv } of moves) {
+    assert.ok(process.platform === 'win32' ? /powershell\.exe$/i.test(tool) : tool === 'mv')
+    assert.ok(argv.some(arg => String(arg).includes('.board-tmp')))
+    assert.ok(process.platform === 'win32' ? argv.some(arg => String(arg).startsWith('Move-Item -LiteralPath ')) : argv.includes('-n'))
+  }
+  assert.ok(!Object.keys(ran.files).some(name => name.endsWith('.board-tmp')))
+})
+
+test('a ledger move removes its temp after a success, an existing ledger, the fallback and a temp that could not be removed at once', () => {
+  const other = '{"version":99,"writer":"concurrent cleanup"}\n'
+  const renames = {}
+  for (const mode of ['success', 'existing', 'fallback', 'busy']) {
+    const ran = chatRun(['--keys', 'down h'], {
+      inspect: questionFiles,
+      preload: questionFault(`const link = fs.linkSync
+const unlink = fs.unlinkSync
+const rename = fs.renameSync
+const move = cp.spawnSync
+const mode = ${JSON.stringify(mode)}
+const probe = { links: 0, moves: 0, unlinks: 0, renames: 0, hasBlocked: false }
+let temp
+fs.renameSync = (from, to) => {
+  if (to === ledger) probe.renames += 1
+  return rename(from, to)
+}
+fs.linkSync = (from, to) => {
+  if (to !== ledger || !String(from).endsWith('.board-tmp')) return link(from, to)
+  probe.links += 1
+  temp = from
+  if (mode === 'existing') fs.writeFileSync(ledger, ${JSON.stringify(other)})
+  if (mode === 'fallback') throw Object.assign(new Error('no hard links'), { code: 'EPERM' })
+  return link(from, to)
+}
+fs.unlinkSync = file => {
+  if (file === temp) {
+    probe.unlinks += 1
+    if (mode === 'busy' && !probe.hasBlocked) {
+      probe.hasBlocked = true
+      throw Object.assign(new Error('temp held open'), { code: 'EBUSY' })
+    }
+  }
+  return unlink(file)
+}
+cp.spawnSync = (tool, argv, options) => {
+  if (argv.some(arg => String(arg).includes('.board-tmp'))) probe.moves += 1
+  return move(tool, argv, options)
+}
+process.on('exit', () => fs.writeFileSync(ledger + '.probe', JSON.stringify(probe)))`),
+    })
+    assert.equal(ran.status, 0, mode + ': ' + ran.stderr)
+    if (mode === 'existing') {
+      assert.equal(ran.files['progress-questions.json'], other)
+      assert.equal(ran.answered, null)
+    } else assert.ok(JSON.parse(ran.files['progress-questions.json']).records.length > 0, mode)
+    const probe = JSON.parse(ran.files['progress-questions.json.probe'])
+    assert.ok(probe.links > 0, mode)
+    assert.equal(probe.moves > 0, mode === 'fallback', mode)
+    assert.equal(probe.hasBlocked, mode === 'busy', mode)
+    if (mode === 'busy') assert.ok(probe.unlinks >= 2)
+    assert.ok(!Object.keys(ran.files).some(name => name.endsWith('.board-tmp')), mode)
+    renames[mode] = probe.renames
+  }
+  // The retry after a temp that could not be removed finds its own ledger and writes it no second time.
+  assert.equal(renames.busy, renames.success)
+})
+
 test('a missing ledger install never replaces a concurrent writer or leaves its own skipped temp', () => {
   const other = '{"version":99,"writer":"concurrent"}\n'
   const ran = chatRun(['--keys', 'down h'], {
     inspect: questionFiles,
-    preload: questionFault(`const native = cp.spawnSync
+    preload: questionFault(`const link = fs.linkSync
+fs.linkSync = (from, to) => {
+  if (String(from).endsWith('.board-tmp')) throw Object.assign(new Error('no hard links'), { code: 'EPERM' })
+  return link(from, to)
+}
+const native = cp.spawnSync
 let raced = false
 cp.spawnSync = (tool, argv, options) => {
   if (!raced && argv.some(arg => String(arg).includes('.board-tmp'))) {
@@ -683,20 +828,30 @@ cp.spawnSync = (tool, argv, options) => {
 test('a failed ledger replace restores the complete temp or keeps it when every move fails', () => {
   const seed = chatRun(['--keys', ''], { inspect: questionFiles })
   assert.equal(seed.status, 0, seed.stderr)
-  for (const isMoveBlocked of [false, true]) {
+  for (const [hasLinks, isMoveBlocked] of [[true, false], [false, false], [false, true]]) {
     const ran = chatRun(['--keys', 'down h'], {
       file: () => FILE.replace('Per-key limit', 'Per-account limit'), beside: seed.files, inspect: questionFiles,
-      preload: questionFault(`const native = fs.renameSync
+      preload: questionFault(`const link = fs.linkSync
+fs.linkSync = (from, to) => {
+  if (!${hasLinks} && String(from).endsWith('.board-tmp')) throw Object.assign(new Error('no hard links'), { code: 'EPERM' })
+  return link(from, to)
+}
+const native = fs.renameSync
 fs.renameSync = (from, to) => {
   if (to !== ledger) return native(from, to)
   fs.unlinkSync(ledger)
   throw Object.assign(new Error('synthetic replace failure'), { code: 'EACCES' })
 }
-if (${isMoveBlocked}) {
-  const move = cp.spawnSync
-  cp.spawnSync = (tool, argv, options) => argv.some(arg => String(arg).includes('.board-tmp')) ? { status: 1 } : move(tool, argv, options)
-}`),
+const move = cp.spawnSync
+let moves = 0
+cp.spawnSync = (tool, argv, options) => {
+  if (!argv.some(arg => String(arg).includes('.board-tmp'))) return move(tool, argv, options)
+  moves += 1
+  return ${isMoveBlocked} ? { status: 1 } : move(tool, argv, options)
+}
+process.on('exit', () => fs.writeFileSync(ledger + '.probe', String(moves)))`),
     })
+    assert.equal(Number(ran.files['progress-questions.json.probe']) > 0, !hasLinks)
     if (isMoveBlocked) {
       assert.equal(ran.status, 1)
       assert.equal(ran.files['progress-questions.json'], undefined)
@@ -762,9 +917,9 @@ test('--chat hides the home folder, with a space in its name, and the credential
   // The file it cannot read is told in the same plain text, with its path hidden as well.
   const unreadable = chatRun(['--chat'], { isFolder: true })
   assert.equal(unreadable.status, 1)
-  assert.ok(unreadable.stdout.includes('~') && unreadable.stdout.includes('progress.md') && unreadable.stdout.includes('EISDIR'), unreadable.stdout)
+  assert.ok(unreadable.stdout.includes('your progress file') && unreadable.stdout.includes('EISDIR') && !unreadable.stdout.includes('progress.md'), unreadable.stdout)
   // It only reads: it does not say, as the board does after a write, that files may already have changed.
-  assert.ok(unreadable.stdout.includes('Nothing was changed') && !/may already have changed/.test(unreadable.stdout), unreadable.stdout)
+  assert.ok(unreadable.stdout.includes('nothing was changed') && !/may already have changed/.test(unreadable.stdout), unreadable.stdout)
   assert.ok(!unreadable.stdout.includes(unreadable.home) && !unreadable.stdout.includes('Jane Doe') && !unreadable.stderr.includes('Jane Doe'), unreadable.stdout + unreadable.stderr)
 })
 
@@ -967,7 +1122,7 @@ syncBuiltinESMExports()`)
       const out = play(fault)
       const said = out.stdout + out.stderr
       assert.equal(out.status, 1, said)
-      assert.ok(said.includes(list) && said.includes(code), said)
+      assert.ok(said.includes('progress-answered.json') && said.includes(code === 'EACCES' ? 'it is read-only or locked' : code) && !said.includes(list), said)
       assert.ok(!said.includes('Hidden:'), said)
       // The board is drawn after the press, with the question still on it.
       assert.ok(out.stdout.includes('Per-key limit'), said)
@@ -1845,7 +2000,7 @@ syncBuiltinESMExports()
   try {
     const seen = await board.call('GET', '/api/board')
     assert.equal(seen.status, 409, seen.body)
-    assert.match(seen.json().note, /^Could not safely read or update .*-journal-.*\(EACCES\)/)
+    assert.match(seen.json().note, /^Couldn't safely read or update .*-journal-.*\(it is read-only or locked\)/)
     // The page says that note, and "offline" only when the board sent none.
     const home = await board.call('GET', `/?t=${board.token}`, { headers: { 'x-board-token': '' } })
     const dom = await pageDom(home.body, null, { getBoard: async () => ({ ok: false, json: async () => seen.json() }) })
@@ -1859,7 +2014,7 @@ syncBuiltinESMExports()
       const lan = new URL(opened.json().url)
       const far = await fetchAt(lan.hostname, Number(lan.port), 'GET', '/api/board', { 'x-board-token': lan.searchParams.get('t') })
       assert.equal(far.status, 409, far.body)
-      assert.match(far.json().note, /^Could not safely read or update progress-journal-\d{4}-\d{2}\.md \(EACCES\)/)
+      assert.match(far.json().note, /^Couldn't safely read or update progress-journal-\d{4}-\d{2}\.md \(it is read-only or locked\)/)
       assert.ok(!far.json().note.includes(board.dir), far.json().note)
     }
   } finally {
@@ -1884,7 +2039,7 @@ syncBuiltinESMExports()
     const before = readFileSync(path, 'utf8')
     const ticked = await call('POST', '/api/act', { body: { key: await keyOf('Fabrikam fellowship'), type: 'tick', text: 'Ask two referees', fp: (await rowOf('Fabrikam fellowship')).fp } })
     assert.equal(ticked.status, 409, ticked.body)
-    assert.match(ticked.json().note, /^Could not safely read or update .*-journal-.*\(EIO\)/)
+    assert.match(ticked.json().note, /^Couldn't safely read or update .*-journal-.*\(EIO\)/)
     assert.equal(readFileSync(path, 'utf8'), before)
     // The page runs on, with the step still there to tick again.
     assert.equal((await call('GET', '/api/board')).status, 200)
@@ -1916,7 +2071,7 @@ syncBuiltinESMExports()
     const ask = (await call('GET', '/api/board')).json().model.asks.find(one => one.agent === 'codex')
     const hid = await call('POST', '/api/act', { body: { key: ask.key, type: 'hide' } })
     assert.equal(hid.status, 409, hid.body)
-    assert.match(hid.json().note, /^Could not safely read or update .*progress-answered\.json \(EIO\)/)
+    assert.match(hid.json().note, /^Couldn't safely read or update .*progress-answered\.json \(EIO\)/)
     assert.ok(!existsSync(join(dir, 'progress-answered.json')))
     assert.ok(!readdirSync(dir).some(name => name.endsWith('.board-tmp')))
     // The question is still asked on the page.
@@ -2499,6 +2654,34 @@ test('the page keeps actionable progress delays without connection inventory or 
       sessions.splice(0)
       await dom.redraw(model)
       assert.equal(dom.node('main').textContent, '')
+      const id = 'AB-11111111-2222-4333-8444-555555555555'
+      for (const [reply, expected] of [
+        ['ACK ' + id, ''],
+        ['ACK ' + id + '  \n  ', ''],
+        ['ACK ' + id + '  Review ready.  ', 'Review ready.'],
+        ['ACK ' + id + '\n  Review ready.\nKeep both lines.  ', 'Review ready.\nKeep both lines.'],
+        ['ACK ' + id + '\r\nreal reply', 'real reply'],
+        ['ACKNOWLEDGED x', 'ACKNOWLEDGED x'],
+        ['ACK ' + id + 'x', 'ACK ' + id + 'x'],
+        ['Review ready.', 'Review ready.'],
+      ]) {
+        const receipt = { id, status: 'acknowledged', reply, error: '' }
+        await dom.redraw({
+          ...model,
+          asks: [{ key: 'question', project: 'Synthetic', agent: 'codex', text: 'Review the route?', answers: [], canTick: true, receipt }],
+          stopped: [{ key: 'task', title: 'Review the route', status: '', steps: [], receipt }],
+        })
+        const lines = []
+        const collect = node => {
+          if (node.tag === 'p' && node.textContent.startsWith(s.messagesAcknowledged)) lines.push(node.textContent)
+          node.childNodes.forEach(collect)
+        }
+        collect(dom.node('board'))
+        assert.deepEqual(lines, Array(2).fill(s.messagesAcknowledged + (expected ? ' · ' + expected : '')))
+        if (!expected.includes(id)) assert.ok(!dom.node('board').textContent.includes(id), dom.node('board').textContent)
+        if (reply.startsWith('ACK ' + id) && !expected.startsWith('ACK ')) assert.ok(!dom.node('board').textContent.includes('ACK'), dom.node('board').textContent)
+        assert.equal(receipt.reply, reply)
+      }
     } finally { await board.close() }
   }
 })
