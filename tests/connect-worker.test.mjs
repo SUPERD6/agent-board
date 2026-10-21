@@ -73,6 +73,7 @@ test('the full generated worker bundle runs through verified staging without rec
   // A 750,000-character cap still catches that. Each board-cli pull request adds about 5 KB,
   // so a tighter cap fails on ordinary growth.
   assert.ok(code.length < 750000)
+  assert.ok(!code.includes('BOARD_SCRIPT'), 'the worker bundle embeds no earlier board bundle')
   const { digest, value } = stage(code)
   try {
     writeFileSync(value.file, code)
