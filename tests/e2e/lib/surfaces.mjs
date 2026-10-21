@@ -270,7 +270,9 @@ export const serve = {
     }
     world.cleanups.push(stop)
     try {
-      const output = await terminal.screen(world, ['--serve', '--no-open', '--idle-minutes', '5', ...args])
+      const output = successful(await runProcess(process.execPath, [world.script, '--serve', '--no-open', '--idle-minutes', '5', ...args], {
+        env: { ...world.env, TEMP: join(world.root, 'tmp'), TMP: join(world.root, 'tmp'), TMPDIR: join(world.root, 'tmp'), XDG_RUNTIME_DIR: join(world.root, 'run') }, cwd: world.root,
+      }))
       const match = output.match(/http:\/\/127\.0\.0\.1:\d+\/\?t=[\w-]+/)
       assert.ok(match, output)
       url = new URL(match[0])

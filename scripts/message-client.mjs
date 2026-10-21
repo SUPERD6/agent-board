@@ -1,6 +1,9 @@
 // Adapter API for an existing, explicitly authorized host connection. Importing this
 // module does not open an AI application, discover credentials or send a model message.
-export const deliveryPrompt = message => `Agent Board message ${message.id} from ${message.from}. Reply with ACK ${message.id} on its own line, then respond to the message. Ordinary text does not approve tool execution or merges.\n\n${message.text}`
+export const deliveryPrompt = message => {
+  if (typeof message.prompt !== 'string' || !message.prompt) throw new Error('PROMPT_REQUIRED')
+  return message.prompt
+}
 
 export const connectionPrompt = ({ id, agent, session }) => {
   if (![id, agent, session].every(value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/.test(value))) throw new Error('INVALID_CONNECTION_REQUEST')
@@ -42,17 +45,19 @@ export const boardClient = address => {
         clearInterval(timer)
         await call('disconnect', { ...credentials, turn }).catch(() => undefined)
       }
-      const receipt = (message, status, reply, error) => call('receipt', { ...credentials, id: message.id, status, ...(reply === undefined ? {} : { reply }), ...(error === undefined ? {} : { error }) })
+      const receipt = (message, status, reply, error) => call('receipt', { ...credentials, id: message.id, nonce: message.nonce, status, ...(reply === undefined ? {} : { reply }), ...(error === undefined ? {} : { error }) })
       const processMessage = async message => {
         let hasStarted = false
         try {
           if (!await verify()) { await receipt(message, 'rejected'); return }
-          // Mark uncertainty before the adapter performs any external side effect.
-          hasStarted = true
-          const reply = await deliver(message, () => receipt(message, 'accepted'))
+          const begin = () => { hasStarted = true }
+          const accept = () => { begin(); return receipt(message, 'accepted') }
+          // Older adapters have no explicit boundary, so entering them remains uncertain.
+          if (deliver.length < 3) begin()
+          const reply = await (deliver.length >= 3 ? deliver(message, accept, begin) : deliver(message, accept))
           if (typeof reply === 'string' && reply.trim()) await receipt(message, 'acknowledged', reply)
         } catch (error) {
-          if (!hasStarted) await receipt(message, 'rejected').catch(() => undefined)
+          if (!hasStarted) await receipt(message, 'rejected', undefined, /^[A-Z][A-Z0-9_]{0,63}$/.test(error?.message) ? error.message : undefined).catch(() => undefined)
           else await receipt(message, 'uncertain', undefined, /^[A-Z][A-Z0-9_]{0,63}$/.test(error?.message) ? error.message : 'DELIVERY_UNCERTAIN').catch(() => undefined)
           // After delivery begins, a timeout or exception never authorizes redelivery.
           onError(error)

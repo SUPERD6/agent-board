@@ -343,7 +343,9 @@ const run = (lang, args = [], beside = {}, source = FILE, code = BOARD_SCRIPT) =
     writeFileSync(join(dir, 'progress-inbox', 'gemini-turn-1-1.json'), JSON.stringify({ session_id: 'g1', cwd: join(dir, 'docs-site'), prompt_response: 'Fixed 12 broken links.' }))
     const script = join(dir, 'agent-board.mjs')
     writeFileSync(script, `globalThis.AGENT_BOARD = ${JSON.stringify({ path, lang })}\n${code}`)
-    const env = { ...process.env, CLAUDE_PROGRESS_FILE: '', NO_COLOR: '1' }
+    const runtime = join(dir, 'run')
+    mkdirSync(runtime, { mode: 0o700 })
+    const env = { ...process.env, CLAUDE_PROGRESS_FILE: '', NO_COLOR: '1', HOME: dir, USERPROFILE: dir, TEMP: dir, TMP: dir, TMPDIR: dir, XDG_RUNTIME_DIR: runtime }
     return execFileSync(process.execPath, [script, ...args], { env, encoding: 'utf8' })
   } finally {
     rmSync(dir, { recursive: true, force: true })
@@ -1217,7 +1219,7 @@ setTimeout(() => process.stdout.write('Redis it is; wiring it up now.\\n'), 1000
   const script = join(dir, 'agent-board.mjs')
   writeFileSync(script, `globalThis.AGENT_BOARD = ${JSON.stringify({ path, lang: 'en' })}\n${now === undefined ? '' : `Date.now = () => ${now}\n`}${BOARD_SCRIPT}`)
   const child = spawn(process.execPath, [script, '--serve-child', ...serveArgs], {
-    env: { ...process.env, CLAUDE_PROGRESS_FILE: '', NO_COLOR: '1', AGENT_BOARD_GROK: stand, AGENT_BOARD_CODEX: stand, XDG_RUNTIME_DIR: run, ...env },
+    env: { ...process.env, CLAUDE_PROGRESS_FILE: '', HOME: dir, USERPROFILE: dir, TEMP: dir, TMP: dir, APPDATA: dir, LOCALAPPDATA: dir, NO_COLOR: '1', AGENT_BOARD_GROK: stand, AGENT_BOARD_CODEX: stand, XDG_RUNTIME_DIR: run, ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   const exited = new Promise(done => child.once('exit', code => done(code)))
@@ -2576,7 +2578,7 @@ test('--serve starts the page in the background once, and the next --serve bring
   writeFileSync(script, `globalThis.AGENT_BOARD = ${JSON.stringify({ path, lang: 'en' })}\n${BOARD_SCRIPT}`)
   const run = join(dir, 'run')
   mkdirSync(run, { mode: 0o700 })
-  const serve = () => execFileSync(process.execPath, [script, '--serve', '--no-open'], { env: { ...process.env, CLAUDE_PROGRESS_FILE: '', NO_COLOR: '1', XDG_RUNTIME_DIR: run }, encoding: 'utf8', timeout: 20_000 })
+  const serve = () => execFileSync(process.execPath, [script, '--serve', '--no-open'], { env: { ...process.env, CLAUDE_PROGRESS_FILE: '', NO_COLOR: '1', HOME: dir, USERPROFILE: dir, TEMP: dir, TMP: dir, TMPDIR: dir, XDG_RUNTIME_DIR: run }, encoding: 'utf8', timeout: 20_000 })
   const served = servedAt(run, path)
   let url = null
   try {
@@ -2611,7 +2613,7 @@ const serveIn = () => {
   writeFileSync(path, FILE)
   const script = join(dir, 'agent-board.mjs')
   writeFileSync(script, `globalThis.AGENT_BOARD = ${JSON.stringify({ path, lang: 'en' })}\n${BOARD_SCRIPT}`)
-  const env = { ...process.env, CLAUDE_PROGRESS_FILE: '', NO_COLOR: '1', XDG_RUNTIME_DIR: run }
+  const env = { ...process.env, CLAUDE_PROGRESS_FILE: '', NO_COLOR: '1', HOME: dir, USERPROFILE: dir, TEMP: dir, TMP: dir, TMPDIR: dir, XDG_RUNTIME_DIR: run }
   const serve = (extra = []) =>
     new Promise((done, fail) => execFile(process.execPath, [script, '--serve', '--no-open', ...extra], { env, encoding: 'utf8', timeout: 20_000 }, (error, out) => (error ? fail(error) : done(out))))
   const urlOf = out => out.match(/answer\): (http:\/\/127\.0\.0\.1:\d+\/\?t=[\w-]+)/)?.[1] ?? null
@@ -2701,9 +2703,11 @@ test('two --serve run at the same moment open one page between them, and a serve
     urls.push(...outs.map(board.urlOf))
     assert.ok(urls[0], outs[0])
     assert.equal(urls[1], urls[0], outs[1])
-    // It finds the address file taken: it prints no address, leaves the file as it was and stops.
-    const late = execFileSync(process.execPath, [board.script, '--serve-child'], { env: board.env, encoding: 'utf8', timeout: 10_000 })
-    assert.equal(late, '')
+    // The default hub refuses a second live owner before it can touch the address file.
+    const late = spawnSync(process.execPath, [board.script, '--serve-child'], { env: board.env, encoding: 'utf8', timeout: 10_000 })
+    assert.equal(late.status, 1)
+    assert.equal(late.stdout, '')
+    assert.match(late.stderr, /MESSAGE_STORE_IN_USE/)
     assert.equal(JSON.parse(readFileSync(board.served, 'utf8')).url, urls[0])
   } finally {
     await board.end(urls)
@@ -2811,7 +2815,7 @@ const timer = setInterval(() => {
   const agents = { AGENT_BOARD_GROK: stand, AGENT_BOARD_CODEX: stand }
   const board = await page('', agents, ['--allow-resume'])
   const script = join(board.dir, 'agent-board.mjs')
-  const env = { ...process.env, CLAUDE_PROGRESS_FILE: '', NO_COLOR: '1', XDG_RUNTIME_DIR: join(board.dir, 'run'), ...agents }
+  const env = { ...process.env, CLAUDE_PROGRESS_FILE: '', NO_COLOR: '1', HOME: board.dir, USERPROFILE: board.dir, TEMP: board.dir, TMP: board.dir, TMPDIR: board.dir, XDG_RUNTIME_DIR: join(board.dir, 'run'), ...agents }
   return {
     board,
     ran: () => (existsSync(calls) ? readFileSync(calls, 'utf8').split('\n').filter(Boolean) : []),
@@ -3305,6 +3309,23 @@ test('default web and API refuse closed Codex and Grok sessions without starting
       assert.equal((await board.call('POST', '/api/act', { body: { ...body, type: 'message', connection: 'forged', turn: 'session' } })).status, 409)
       assert.equal(existsSync(join(board.dir, 'grok-ran.json')), false)
     }
+  } finally { await board.close() }
+})
+
+test('a closed session keeps resume-Send under --allow-resume when the hub is on by default', async () => {
+  const board = await page('', {}, ['--allow-resume'])
+  try {
+    assert.ok((await board.call('GET', '/api/board')).json().messaging.enabled)
+    const row = await board.rowOf('Pick the cache')
+    assert.equal(row.send, 'send')
+    assert.equal(row.hasCopyBox, false)
+    const sent = await board.call('POST', '/api/act', { body: { key: row.key, type: 'send', text: 'Redis', session: row.session, asked: row.question, fp: row.fp } })
+    assert.equal(sent.status, 202, sent.body)
+    for (let tries = 0; tries < 50; tries++) {
+      if ((await board.call('GET', '/api/board')).json().replies.length) break
+      await new Promise(done => setTimeout(done, 100))
+    }
+    assert.ok(existsSync(join(board.dir, 'grok-ran.json')))
   } finally { await board.close() }
 })
 

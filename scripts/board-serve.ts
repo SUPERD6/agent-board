@@ -23,7 +23,8 @@ import type { ProgressBinding } from '../hooks/messaging'
 
 export type ServeOptions = {
   allowResume?: boolean
-  messagesDirectory?: string
+  messagesDirectory: string
+  isDefaultMessagesDirectory?: boolean
   reports?: () => ProgressBinding[]
   s: Strings
   port: number
@@ -224,7 +225,11 @@ const run = (plan: SendPlan, s: Strings, label: string): Promise<Result> =>
   })
 
 export const startServer = (o: ServeOptions): void => {
-  const messaging = o.messagesDirectory ? createMessaging(o.messagesDirectory) : null
+  const messaging = (() => {
+    try { return createMessaging(o.messagesDirectory, o.isDefaultMessagesDirectory) }
+    // The code (EACCES, EPERM) goes along, so the person gets advice that fits the cause.
+    catch (error) { throw Object.assign(new Error(error instanceof Error ? error.message : '', { cause: 'MESSAGE_STORE_FAILED' }), { code: error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined }) }
+  })()
   const token = randomBytes(24).toString('base64url')
   const sending = new Set<string>()
   // The last answer of each session the page sent to, until the next send to that session. One
@@ -248,7 +253,7 @@ export const startServer = (o: ServeOptions): void => {
   const stop = (): void => {
     if (isStopping) return
     isStopping = true
-    messaging?.close()
+    messaging.close()
     closeLan()
     server.close()
     server.closeAllConnections()
@@ -335,8 +340,10 @@ export const startServer = (o: ServeOptions): void => {
       side === null ? token : side.token,
     )
     if (problem !== null) return json(res, problem, {})
-    lastSeen = Date.now()
-    if (side !== null) side.lastSeen = lastSeen
+    if (!url.pathname.startsWith('/api/messages/')) {
+      lastSeen = Date.now()
+      if (side !== null) side.lastSeen = lastSeen
+    }
     if (isPage) {
       const nonce = randomBytes(16).toString('base64')
       res.writeHead(200, { ...HEADERS, 'content-type': 'text/html; charset=utf-8', 'content-security-policy': pagePolicy(nonce), 'x-frame-options': 'DENY' })
@@ -347,8 +354,8 @@ export const startServer = (o: ServeOptions): void => {
       if (url.pathname === '/api/board') {
         // A file the board cannot read is named on the page, which would otherwise say it is offline.
         try {
-          const state = isLan ? undefined : messaging?.snapshot(Date.now(), o.reports?.())
-          return json(res, 200, { model: serveModel(o.view(), o.pending(), o.s, sending, isLan, state, o.allowResume), replies: [...replies.values()], messaging: isLan ? undefined : state ?? { enabled: false, connections: [], messages: [] }, now: Date.now() })
+          const state = isLan ? undefined : messaging.snapshot(Date.now(), o.reports?.())
+          return json(res, 200, { model: serveModel(o.view(), o.pending(), o.s, sending, isLan, state, o.allowResume), replies: [...replies.values()], messaging: state, now: Date.now() })
         } catch (error) {
           const note = o.failure(error, isLan)
           if (note === null) throw error
@@ -362,10 +369,10 @@ export const startServer = (o: ServeOptions): void => {
     const body = await readBody(req)
     if (body === null) return json(res, 400, {})
     if (url.pathname.startsWith('/api/messages/')) {
-      if (isLan || !messaging) return json(res, 403, {})
+      if (isLan) return json(res, 403, {})
       const action = url.pathname.slice('/api/messages/'.length)
-      // A browser can send a message, but cannot impersonate a receiving host adapter.
-      if (action !== 'send' && req.headers.origin !== undefined) return json(res, 403, {})
+      // A browser can send or dismiss a message, but cannot impersonate a receiving host adapter.
+      if (!['send', 'dismiss'].includes(action) && req.headers.origin !== undefined) return json(res, 403, {})
       try { return json(res, 200, messaging.act(action, body, Date.now(), action === 'expect' ? o.reports?.() : undefined)) }
       catch (error) {
         // A temporary file lock is storage unavailability, not a stale binding.
@@ -379,17 +386,20 @@ export const startServer = (o: ServeOptions): void => {
     // error stays a bare server error.
     try {
       if (url.pathname === '/api/act') {
-        const state = isLan ? undefined : messaging?.snapshot(Date.now())
-        const action = serveAction(boardItems(o.view(), o.pending()), { key: text(body.key), type: text(body.type), text: text(body.text), session: text(body.session), asked: text(body.asked), fp: text(body.fp), connection: text(body.connection), turn: text(body.turn) }, o.s, isLan, state?.connections, messaging !== null, o.allowResume)
+        const state = isLan ? undefined : messaging.snapshot(Date.now())
+        const action = serveAction(boardItems(o.view(), o.pending()), { key: text(body.key), type: text(body.type), text: text(body.text), session: text(body.session), asked: text(body.asked), fp: text(body.fp), connection: text(body.connection), turn: text(body.turn) }, o.s, isLan, state?.connections, true, o.allowResume)
         if (action.type === 'refuse') return json(res, 409, { note: action.note })
         if (action.type === 'message') {
-          if (!messaging || isLan) return json(res, 403, {})
+          if (isLan) return json(res, 403, {})
           try {
             const receipt = messaging.act('send', { id: body.id, target: action.connection.id, turn: action.connection.turn, text: action.text }, Date.now())
             const notes = { queued: o.s.messagesQueued, uncertain: o.s.messagesUncertain, accepted: o.s.messagesAccepted, acknowledged: o.s.messagesAcknowledged, rejected: o.s.messagesRejected }
             const note = 'status' in receipt ? notes[receipt.status] : o.s.messagesFailed
             return json(res, 200, { note, receipt })
-          } catch (error) { return json(res, 409, { note: error instanceof Error && error.message === 'ID_CONFLICT' ? o.s.messagesConflict : o.s.messagesFailed }) }
+          } catch (error) {
+            const notes: Record<string, string> = { ID_CONFLICT: o.s.messagesConflict, TARGET_BUSY: o.s.messagesBusy, PAIR_BUSY: o.s.messagesBusy, TEXT_REFUSED: o.s.messagesTextRefused, CONTESTED: o.s.messagesContested }
+            return json(res, 409, { note: error instanceof Error ? notes[error.message] ?? o.s.messagesFailed : o.s.messagesFailed })
+          }
         }
         if (action.type === 'send') {
           const sent = send(action.target, action.text, action.title)
@@ -435,7 +445,7 @@ export const startServer = (o: ServeOptions): void => {
       if (!res.headersSent) json(res, 500, {})
     })
   })
-  server.on('error', () => { messaging?.close(); o.onStop() })
+  server.on('error', () => { messaging.close(); o.onStop() })
   // The page asks every 3 seconds while it is open; the server goes once nobody has asked for
   // `idleMs` and no reply is on its way.
   const idle = setInterval(() => {
