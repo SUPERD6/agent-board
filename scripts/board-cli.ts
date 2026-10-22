@@ -1049,10 +1049,17 @@ const serveBoard = async (): Promise<void> => {
   child.unref()
   if (url === null) {
     // Another `--serve` started at the same moment may have written its address first: this
-    // page stopped then, and that one is the page to show.
-    const other = await runningPage()
-    if (other !== null) return show(other.page.url, other.isKept, other.idleMs)
+    // page stopped then, and that one is the page to show. When it took the message folder
+    // first, this page stopped before that one had written its address, so it is given the
+    // few seconds a page takes to start.
     const storeCode = /^MESSAGE_STORE_FAILED ([A-Z][A-Z0-9_]{0,63})\r?$/m.exec(stderr)?.[1]
+    const until = Date.now() + (storeCode === 'MESSAGE_STORE_IN_USE' ? 10_000 : 0)
+    for (;;) {
+      const other = await runningPage()
+      if (other !== null) return show(other.page.url, other.isKept, other.idleMs)
+      if (Date.now() >= until) break
+      await new Promise(done => setTimeout(done, 200))
+    }
     process.stdout.write(`\n${storeCode ? s.serveStoreFailed(storeCode, messagesDirectory()) : s.serveFailed(s.serveNotStarted)}\n`)
     return
   }

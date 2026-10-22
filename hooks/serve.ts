@@ -10,7 +10,7 @@ import { RESUME } from './parse'
 import { replyHint, wayBackText } from './view'
 import type { AgentTarget, StepRef, TaskRef, View } from './view'
 import type { Connection, Message } from './messaging'
-import { isOpen } from './messaging'
+import { address, isOpen } from './messaging'
 
 // The board's page: what `agent-board.mjs --serve` shows in a browser for agents other than
 // Claude Code, and what a press on it does. It does what the pane does: tick a hand-kept step,
@@ -24,14 +24,14 @@ import { isOpen } from './messaging'
 export type SendMode = 'send' | 'connected' | 'open' | 'claude' | 'none'
 type Delivery = { id: string; turn: string; agent: string }
 type Receipt = Pick<Message, 'id' | 'status' | 'reply' | 'error'>
-type Messaging = { connections: readonly Connection[]; messages: readonly Omit<Message, 'nonce'>[] }
+type Messaging = { connections: readonly Connection[]; messages: readonly Omit<Message, 'nonce' | 'hash'>[] }
 
 const liveTarget = (agent: string, session: string | undefined, connections: readonly Connection[]): Connection | undefined => {
-  const matches = connections.filter(one => one.agent === (agent || 'claude') && one.session === session)
+  const matches = session === undefined ? [] : connections.filter(one => address(one.agent, one.session) === address(agent || 'claude', session))
   return matches.length === 1 && !matches[0]?.contested ? matches[0] : undefined
 }
-const rowReceipt = (agent: string, session: string | undefined, messages: readonly Omit<Message, 'nonce'>[]): { receipt?: Receipt } => {
-  const one = session === undefined ? undefined : messages.filter(message => message.to === `${agent || 'claude'}:${session}`).at(-1)
+const rowReceipt = (agent: string, session: string | undefined, messages: readonly Omit<Message, 'nonce' | 'hash'>[]): { receipt?: Receipt } => {
+  const one = session === undefined ? undefined : messages.filter(message => message.to === address(agent || 'claude', session)).at(-1)
   return one === undefined ? {} : { receipt: { id: one.id, status: one.status, reply: one.reply, error: one.error } }
 }
 
@@ -843,6 +843,8 @@ const PAGE_SCRIPT = String.raw`
     if (!receipt) return null;
     var labels = { queued: 'messagesQueued', uncertain: 'messagesUncertain', accepted: 'messagesAccepted', acknowledged: 'messagesAcknowledged', rejected: 'messagesRejected' };
     if (receipt.status === 'acknowledged' || receipt.status === 'rejected') Object.keys(messageAttempts).forEach(function (slot) { if (messageAttempts[slot].id === receipt.id) delete messageAttempts[slot]; });
+    // The server already took a nonce ACK off; a receipt kept from a version 1 store was
+    // acknowledged with the message id instead.
     var reply = receipt.reply || '';
     var ack = 'ACK ' + receipt.id;
     if (reply.indexOf(ack) === 0 && (reply.length === ack.length || /\s/.test(reply.charAt(ack.length)))) reply = reply.slice(ack.length).trim();

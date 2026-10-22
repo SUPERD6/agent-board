@@ -3066,8 +3066,8 @@ test('a refused close on the page says why next to the close button', async () =
 
 test('unexpected server read and action errors return a reason and log their stacks', async () => {
   const source = BOARD_SCRIPT
-    .replace('\n    view: freshView,\n    pending,', '\n    view: () => { throw new TypeError("synthetic server read failure") },\n    pending,')
-    .replace('\n    tidy,\n    paste,', '\n    tidy: () => { throw new TypeError("synthetic server action failure") },\n    paste,')
+    .replace(/\n( +)view: freshView,\n( +)pending,/, '\n$1view: () => { throw new TypeError("synthetic server read failure") },\n$2pending,')
+    .replace(/\n( +)tidy,\n( +)paste,/, '\n$1tidy: () => { throw new TypeError("synthetic server action failure") },\n$2paste,')
   assert.ok(source.includes('synthetic server read failure') && source.includes('synthetic server action failure'))
   const board = await page('', {}, [], undefined, source)
   try {
@@ -4167,7 +4167,9 @@ const timer = setInterval(() => {
   const agents = { AGENT_BOARD_GROK: stand, AGENT_BOARD_CODEX: stand }
   const board = await page('', agents, ['--allow-resume'])
   const script = join(board.dir, 'agent-board.mjs')
-  const env = { ...process.env, CLAUDE_PROGRESS_FILE: '', NO_COLOR: '1', HOME: board.dir, USERPROFILE: board.dir, TEMP: board.dir, TMP: board.dir, TMPDIR: board.dir, XDG_RUNTIME_DIR: join(board.dir, 'run'), ...agents }
+  // Every home and settings folder an agent or the board reads is the fixture's own.
+  const homes = ['HOME', 'USERPROFILE', 'TEMP', 'TMP', 'TMPDIR', 'APPDATA', 'LOCALAPPDATA', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME', 'CLAUDE_CONFIG_DIR', 'HERMES_HOME', 'CODEX_HOME', 'GROK_HOME', 'OPENCLAW_STATE_DIR']
+  const env = { ...process.env, ...Object.fromEntries(homes.map(key => [key, board.dir])), CLAUDE_PROGRESS_FILE: '', NO_COLOR: '1', XDG_RUNTIME_DIR: join(board.dir, 'run'), ...agents }
   const ran = () => (existsSync(calls) ? readFileSync(calls, 'utf8').split('\n').filter(Boolean) : [])
   // A condition, not a fixed number of sleeps, advances each phase. The test's existing
   // deadline still bounds a missing signal; cancellation also releases the stand-in below.

@@ -51,7 +51,8 @@ keeps its permissions; make that folder private yourself.
 `--messages-dir /private/local/message-data` overrides the location;
 `/api/ping` reports the actual `messagesDirectory`.
 
-The directory holds `messages.json` (message text, target binding, id and receipts) and a
+The directory holds `messages.json` (the text of open messages, a hash of each finished
+one's text, target binding, id and receipts) and a
 `server.lock` containing the owning PID. A live owner, including one returning `EPERM` to
 the liveness probe, causes `MESSAGE_STORE_IN_USE`. A dead owner (`ESRCH`) or malformed PID
 is removed; lock creation makes at most three attempts, including when another process
@@ -90,15 +91,42 @@ are labelled synthetic. No live model or desktop acceptance is inferred from tho
 An adapter timeout after transport acceptance is persisted as `uncertain` with a bounded
 error code (for example `ACK_TIMEOUT`); it does not stay indefinitely labelled accepted.
 
-IDs are scoped to this message store. An exact retry returns the existing receipt, even
-after restart. Reusing an id with different text, source, binding or turn fails with
-`ID_CONFLICT`. A claim is never automatically replayed. Before each action or snapshot,
-finished messages older than 24 hours are deleted, including their text. Finished means
-acknowledged, rejected, or uncertain with error `EXPIRED` or `DISMISSED`. Accepted or uncertain messages
+### Message ids
+
+- The client mints every message id: `AB-` followed by a random UUID, as the board page
+  already does. Any id must match `[A-Za-z0-9][A-Za-z0-9_-]{0,127}`.
+- The hub never mints an id, and it refuses a send without one (`INVALID_ID`).
+- A retry carries the same id, with the same target, turn, source and text, and gets the
+  same receipt, even after a restart. A send never returns the nonce, so a retry after the
+  message was handed out does not learn it either. Once the receiver acknowledges, the reply
+  a send or the board returns is what follows `ACK <nonce>`, without that ACK line's prefix.
+- Reusing an id with a different text, source, binding or turn fails with `ID_CONFLICT`.
+
+IDs are scoped to this message store. A claim is never automatically replayed. Before each
+action or snapshot, finished messages older than 24 hours are deleted. Finished means
+acknowledged, rejected, or uncertain with error `EXPIRED` or `DISMISSED`. A message drops its
+text the moment it finishes and keeps only a SHA-256 hash of it (of the text as a JSON
+string), which is what an exact retry is compared with, and the first 200 characters of its
+reply; a repeated receipt is compared with those. Accepted or uncertain messages
 older than 30 minutes become final `uncertain` / `EXPIRED`; they no longer block delivery,
 are never handed out again, and reject later receipts with `MESSAGE_EXPIRED`. The page
-continues to show these as no reply confirmed. The 1000-message limit applies after pruning.
-Deduplication ends when a record is deleted. Never change its id merely to bypass uncertainty.
+continues to show these as no reply confirmed.
+
+The store holds at most 1,000 open messages (`MESSAGE_LIMIT`); finished ones do not count,
+so a store full of finished messages still accepts new ones, short of the 2,000-record
+ceiling below. It keeps the newest 1,000
+finished messages; past that the oldest finished ones are deleted before their 24 hours,
+so the file stops growing with the number of messages sent. Two kinds are never deleted by
+that count, only after their 24 hours: a message that was handed out and then expired or
+was dismissed, since it may have arrived and the page sends its id again, and each
+session's latest delivery, which that session's next send takes its hop count from. Those
+can still fill the file, so the store holds at most 2,000 records: past that, the ones older
+than 30 minutes go too, each session's latest delivery before a message in doubt, and only
+when none is that old is a send refused with `MESSAGE_LIMIT`, until one is. Deduplication ends when a record is deleted, and so does its part in
+counting hops. Never change its id merely to bypass uncertainty. A temp file a hub left
+when it was killed while saving is deleted at the next start, and a save that meets the file held for a moment by another program, as a
+virus scanner can on Windows, tries again for up to about 0.2 seconds before the store
+answers `MESSAGE_STORE_BUSY`.
 
 The local hub accepts `POST /api/messages/dismiss` with only `{ "id": "<message-id>" }`,
 using the board token and the same browser-origin rules as sending. No receiver secret
@@ -120,6 +148,18 @@ neither receives messages or can report a receipt, sends to either fail with `CO
 and its card offers Copy even with `--allow-resume`. A stale message press reports that
 the session is contested instead of resuming it.
 Each connection stays contested until it ends, even after the other disconnects.
+
+A receiver that restarts within its 15-second lease registers again with its old
+connection id and secret as `connection` and `secret` (`message-client.mjs`: pass
+`replaces: connector.credentials()` to `attach`). The hub then ends the old connection as
+a disconnect would, and the new one is not contested by it. A wrong secret fails with
+`CONNECTOR_NOT_CONNECTED`, and another session's credentials with `REPLACE_MISMATCH`; neither
+changes anything. Credentials whose lease already ran out are not needed: that
+registration is an ordinary new one.
+
+A registration may name its `origin`. Only `local` is accepted for now, and anything else
+fails with `ORIGIN_UNSUPPORTED`; an omitted origin is `local`. Each message records the
+origin of its sender, and a store saved before this field loads as `local`.
 
 ## Delivery boundary and acknowledgement
 
@@ -160,7 +200,9 @@ Restart keeps claimed messages uncertain and never redelivers them; repeated res
 and disconnects do not reset their age limit. Expiry or dismissal lets the card send again.
 Stores are saved as version 2;
 version 1 loads with `hops: 1`, `claimed: 0`, and an empty nonce. Such legacy messages cannot
-be acknowledged and expire under the age rule.
+be acknowledged and expire under the age rule. A message saved without `origin` or `hash`
+loads as `local` with the hash of the text it kept. A store that cannot be read gives its
+`server.lock` back, so moving the damaged file aside is all a retry needs.
 
 Busy is separate from disconnected. A verified session can send while doing native work;
 its adapter renews the lease with `receive: false` and leaves incoming messages queued

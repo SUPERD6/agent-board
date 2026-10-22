@@ -34,9 +34,11 @@ export const boardClient = address => {
   return {
     send: body => call('send', body),
     expect: body => call('expect', body),
-    attach: async ({ agent, session, surface, turn, scope = 'turn', verify, canReceive, deliver, onError = () => undefined }) => {
+    // replaces: the { connection, secret } of this receiver's own earlier connection, from
+    // credentials() before a restart, so the board ends it instead of marking both contested.
+    attach: async ({ agent, session, surface, turn, scope = 'turn', replaces, verify, canReceive, deliver, onError = () => undefined }) => {
       if (typeof verify !== 'function' || typeof deliver !== 'function' || canReceive !== undefined && typeof canReceive !== 'function' || !await verify()) throw new Error('HOST_NOT_CONNECTED')
-      const registered = await call('register', { agent, session, surface, turn, scope })
+      const registered = await call('register', { agent, session, surface, turn, scope, ...(replaces === undefined ? {} : { connection: replaces.connection, secret: replaces.secret }) })
       const credentials = { connection: registered.id, secret: registered.secret }
       let isClosed = false, isPolling = false, leaseUntil = registered.expires
       const close = async () => {
@@ -98,6 +100,8 @@ export const boardClient = address => {
       void poll()
       return {
         id: registered.id, agent, session, surface, turn, close,
+        // A function, so the secret never lands in a log of this object.
+        credentials: () => ({ ...credentials }),
         send: async body => {
           let isOwned = false
           try { isOwned = !isClosed && await verify() } catch { /* An unverifiable owner cannot send. */ }

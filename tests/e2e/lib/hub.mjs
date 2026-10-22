@@ -8,6 +8,7 @@ import { attachAntigravitySession } from '../../../scripts/antigravity-session-c
 import { deliveryText } from '../../../hooks/messaging.ts'
 import { makeWorld } from './world.mjs'
 import { block } from './writers.mjs'
+import { readStore } from './hub-wire.mjs'
 import { pageDom, serve } from './surfaces.mjs'
 import { noMachineIds, noSilentPress, seenWithin } from './expect.mjs'
 import { knownFailure } from './known.mjs'
@@ -187,7 +188,9 @@ export const receiptBudget = async hub => {
   return { pagePollMs, measuredMs: combined + RECEIPT_SLACK_MS }
 }
 
-export const withHub = async (specs, fn) => {
+// prepare({ world, messages }) runs once the actors' blocks are written and before the server starts,
+// to put more on the board or in the message folder first; callers that pass none see no change.
+export const withHub = async (specs, fn, { prepare } = {}) => {
   const world = makeWorld()
   // Messaging leases and latency use real clocks in both parent and server; with no jump,
   // world.now is the real time too.
@@ -196,10 +199,12 @@ export const withHub = async (specs, fn) => {
   try {
     const actors = specs.map((spec, index) => ({ ...spec, session: `${String(index + 1).padStart(8, '0')}-2222-4333-8444-555555555555`, block: (0xa1000001 + index).toString(16), title: spec.title ?? `Prepare ${spec.agent} ${index + 1}`, received: [], errors: [] }))
     for (const actor of actors) block(world, { agent: actor.agent, session: actor.block, resume: actor.session, dir: world.root, title: actor.title, updated: new Date().toISOString(), steps: ['- [~] Review synthetic message'] })
-    server = await serve.start(world, ['--messages-dir', dirname(world.write('messages/.keep', ''))])
+    const messages = dirname(world.write('messages/.keep', ''))
+    await prepare?.({ world, messages })
+    server = await serve.start(world, ['--messages-dir', messages])
     let dom
     const hub = {
-      world, server, actors,
+      world, server, actors, messages,
       snapshot: async () => (await server.get('/api/board')).json(),
       page: async () => {
         const model = (await hub.snapshot()).model
@@ -254,15 +259,20 @@ export const withHub = async (specs, fn) => {
           const snapshot = await hub.snapshot()
           receipt = snapshot.messaging.messages.find(one => one.id === sent.id)
           actor.refresh?.()
-          received = actor.received.find(one => receipt?.reply === 'ACK ' + one.nonce || receipt?.reply.startsWith('ACK ' + one.nonce + ' '))
+          // The board shows the reply without the nonce its ACK line carries, so the store says which
+          // delivery was acknowledged.
+          const stored = receipt?.status === 'acknowledged' ? readStore(hub.messages).find(one => one.id === sent.id)?.reply ?? '' : ''
+          received = actor.received.find(one => stored === 'ACK ' + one.nonce || stored.startsWith('ACK ' + one.nonce + ' '))
           card = (await hub.card(actor)).textContent
           return card
         }, text => receipt?.status === 'acknowledged' && received && text.includes('Replied'), Math.max(1, budget.measuredMs - budget.pagePollMs - (performance.now() - sent.started)))
         const elapsed = performance.now() - sent.started + budget.pagePollMs
         assert.ok(elapsed <= budget.measuredMs, `${elapsed} ms including the page poll exceeds ${budget.measuredMs} ms`)
         assert.ok(received, 'Native transport did not receive this message')
+        assert.ok(!JSON.stringify(receipt).includes(received.nonce), 'The board shows the nonce: ' + JSON.stringify(receipt))
         assert.equal(received.text, sent.text)
-        assert.equal(received.prompt, deliveryText({ ...receipt, nonce: received.nonce }))
+        // A finished message no longer carries its text, so the sent text stands in for it.
+        assert.equal(received.prompt, deliveryText({ ...receipt, text: sent.text, nonce: received.nonce }))
         assert.equal(receipt.from, sent.from)
         assert.equal(receipt.to, actor.agent + ':' + actor.session)
         console.log(`receipt ${actor.agent}: ${Math.round(elapsed)} ms`)
