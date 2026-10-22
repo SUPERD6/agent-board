@@ -1,4 +1,4 @@
-import { execFileSync, spawn, spawnSync } from 'node:child_process'
+import childProcess, { execFileSync, spawn, spawnSync } from 'node:child_process'
 import fs, { chmodSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { hostname, tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -30,7 +30,7 @@ const { buildView } = await import('../hooks/view.ts')
 const { EN } = await import('../hooks/strings-en.ts')
 const { ZH_TW } = await import('../hooks/i18n.ts')
 const { ZH_CN } = await import('../hooks/strings-zh-cn.ts')
-const { computerName, isPrivateDacl, localAliases, runningAccount, whoamiAccount } = await import('../scripts/private-folder.ts')
+const { computerName, isPrivateDacl, localAliases, privateFolder, runningAccount, whoamiAccount } = await import('../scripts/private-folder.ts')
 
 const nonceOf = prompt => prompt.match(/Reply first with this line alone: ACK ([0-9a-f]{6})/)[1]
 // The board shows a reply without the nonce its ACK line carries; the store keeps the line as it came.
@@ -502,9 +502,43 @@ test('on Windows the message folder grants only the current user', { skip: proce
   } finally { store?.close(); rmSync(dir, { recursive: true, force: true }) }
 })
 
+// The folder's entries are read back after the removals: an entry icacls was asked to remove and
+// did not stops the board.
+test("on Windows a folder that still holds another account's entry after the removals is refused", { skip: process.platform !== 'win32' ? 'Windows ACLs require whoami and icacls' : false }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'board-store-acl-readback-'))
+  try {
+    const options = { windowsHide: true, encoding: 'utf8', timeout: 10_000 }
+    const icacls = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'icacls.exe')
+    const folder = join(dir, 'messages')
+    mkdirSync(folder)
+    // Users may read it: an explicit entry the board has to remove itself.
+    execFileSync(icacls, [folder, '/grant', '*S-1-5-32-545:(OI)(CI)(RX)'], options)
+    const original = childProcess.execFileSync
+    const removed = []
+    childProcess.execFileSync = (file, args, ...rest) => {
+      if (Array.isArray(args) && args.includes('/remove')) {
+        removed.push(args[args.indexOf('/remove') + 1])
+        return ''
+      }
+      return original(file, args, ...rest)
+    }
+    syncBuiltinESMExports()
+    try {
+      assert.throws(() => privateFolder(folder), /PRIVATE_FOLDER/)
+      assert.ok(removed.includes('*S-1-5-32-545'), removed.join(' '))
+    } finally {
+      childProcess.execFileSync = original
+      syncBuiltinESMExports()
+    }
+    // With the removals done, the same folder passes.
+    privateFolder(folder)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
 test("restarts and disconnects do not extend an uncertain message's age limit", () => {
   const dir = mkdtempSync(join(tmpdir(), 'board-message-age-'))
-  const claimedAt = Date.now() - OPEN_LIMIT_MS + 5000
+  // A minute before it expires: three restarts on a loaded runner fit well inside that.
+  const claimedAt = Date.now() - OPEN_LIMIT_MS + 60_000
   const connection = { ...target, expires: claimedAt + OPEN_LIMIT_MS * 2 }
   const claimed = claimMessages(queueMessage({ messages: [] }, input, 'board', connection, claimedAt - 1).state, connection, claimedAt, 'abcdef').state
   let state = claimed, store
@@ -613,6 +647,14 @@ test("a handed-out message that expired and a session's latest delivery outlast 
   assert.equal(relieved.messages.length, OPEN_CAP + FINISHED_KEEP_COUNT - 1)
   assert.ok(!relieved.messages.some(one => one.id === 'delivered'))
   assert.equal(queueMessage(relieved, { ...input, id: 'one-more' }, 'board', connection, old).message.status, 'queued')
+  // While the open messages fill their own cap, a send is refused whatever goes, so the old ones in
+  // doubt stay: a retry of one is still not delivered again.
+  const opened = Array.from({ length: OPEN_CAP }, (_, i) => ({ ...doubt, id: 'open-' + i, to: 'codex:open' + i, status: 'queued', error: '', claimed: 0, nonce: '', reply: '', updated: old }))
+  const capped = { messages: [...stuck.messages.slice(0, FINISHED_KEEP_COUNT), ...opened] }
+  assert.equal(pruneMessages(capped, old), capped)
+  // One open message short of that cap, an old one in doubt goes, so the send finds room.
+  const nearly = { messages: [...stuck.messages.slice(0, FINISHED_KEEP_COUNT + 1), ...opened.slice(1)] }
+  assert.equal(pruneMessages(nearly, old).messages.length, OPEN_CAP + FINISHED_KEEP_COUNT - 1)
 })
 
 test('an uncertain message stops blocking after the age limit and is never handed out again', () => {
@@ -735,7 +777,8 @@ test('an ACK copied from the message text does not acknowledge', () => {
 
 test('a multi-line reply after ACK is refused and nothing past the ACK line is stored', () => {
   const state = claimMessages(queueMessage({ messages: [] }, input, 'board', target, 1000).state, target, 1001, 'abcdef').state
-  for (const reply of ['ACK abcdef\nSECRET', 'ACK abcdef\rSECRET', 'ACK abcdef ' + 'x'.repeat(ACK_MAX), undefined]) assert.throws(() => messageReceipt(state, target, { id: input.id, nonce: 'abcdef', status: 'acknowledged', reply }, 1002), /ACK_REQUIRED/)
+  // The last two start with a well-formed ACK line, so only the line-break check refuses them.
+  for (const reply of ['ACK abcdef\nSECRET', 'ACK abcdef\rSECRET', 'ACK abcdef ' + 'x'.repeat(ACK_MAX), undefined, 'ACK abcdef ok\nSECRET', 'ACK abcdef ok\rSECRET']) assert.throws(() => messageReceipt(state, target, { id: input.id, nonce: 'abcdef', status: 'acknowledged', reply }, 1002), /ACK_REQUIRED/)
   assert.equal(state.messages[0].reply, '')
   const accepted = messageReceipt(state, target, { id: input.id, nonce: 'abcdef', status: 'acknowledged', reply: 'ACK abcdef' }, 1002)
   assert.equal(accepted.messages[0].reply, 'ACK abcdef')
@@ -892,6 +935,12 @@ test('a store written before origins and hashes loads as local with the hash of 
       writeFileSync(join(dir, 'messages.json'), JSON.stringify({ version: 2, messages: [broken] }))
       assert.throws(() => createMessaging(dir).close(), /INVALID_MESSAGE_STORE|INVALID_TEXT/)
     }
+    // A file of valid records holds no more than the two caps allow; one record more is refused.
+    const records = count => Array.from({ length: count }, (_, i) => ({ ...older, id: 'AB-STORED-' + i }))
+    writeFileSync(join(dir, 'messages.json'), JSON.stringify({ version: 2, messages: records(OPEN_CAP + FINISHED_KEEP_COUNT) }))
+    createMessaging(dir).close()
+    writeFileSync(join(dir, 'messages.json'), JSON.stringify({ version: 2, messages: records(OPEN_CAP + FINISHED_KEEP_COUNT + 1) }))
+    assert.throws(() => createMessaging(dir).close(), /INVALID_MESSAGE_STORE/)
   } finally { store?.close(); rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -984,6 +1033,18 @@ test('a retried send never returns the nonce of a message already handed out', a
   const shown = (await board.call('/api/board')).body
   assert.equal(shown.messaging.messages[0].reply, 'on it')
   assert.ok(!JSON.stringify(acknowledged).includes(claimed.nonce) && !JSON.stringify(shown).includes(claimed.nonce))
+  // A reply that is the ACK line alone is shown as no reply at all.
+  const bare = { ...message, id: 'retry-bare-ack' }
+  assert.equal((await board.call('/api/messages/send', bare)).body.status, 'queued')
+  const second = (await board.call('/api/messages/poll', { connection: receiver.id, secret: receiver.secret, turn: 'turn1' })).body.messages[0]
+  assert.equal(second.id, bare.id)
+  assert.equal((await board.call('/api/messages/receipt', { connection: receiver.id, secret: receiver.secret, id: bare.id, nonce: second.nonce, status: 'acknowledged', reply: `ACK ${second.nonce}` })).status, 200)
+  const bareRetry = (await board.call('/api/messages/send', bare)).body
+  assert.equal(bareRetry.status, 'acknowledged')
+  assert.equal(bareRetry.reply, '')
+  const bareShown = (await board.call('/api/board')).body
+  assert.equal(bareShown.messaging.messages.find(one => one.id === bare.id).reply, '')
+  assert.ok(!JSON.stringify(bareRetry).includes(second.nonce) && !JSON.stringify(bareShown).includes(second.nonce))
 }))
 
 test('two texts that differ only by a lone surrogate are two texts to a retry', () => {
@@ -1107,6 +1168,25 @@ test('a store held for a moment by another program is written on a retry, and th
     } finally { await receiver.close() }
   }, failingRename)
 })
+
+test('a store rename refused for another reason is not retried, and the receiver hears of it', async () => fixture(async (board, dir) => {
+  const errors = [], deliveries = []
+  const receiver = await boardClient(board.address).attach({
+    agent: 'fixture', session: 'storage-denied', turn: 'turn1', surface: 'Synthetic storage denied', verify: async () => true,
+    onError: error => errors.push(error), deliver: async message => { deliveries.push(message.id); return 'ACK ' + message.nonce },
+  })
+  try {
+    // One failure only: a hub that retried it would write the store on its second try.
+    writeFileSync(join(dir, 'fail-message-rename'), 'EACCES 1')
+    assert.equal((await board.call('/api/messages/send', { ...input, target: receiver.id })).body.status, 'queued')
+    await waitFor(() => errors.length > 0)
+    assert.equal(existsSync(join(dir, 'fail-message-rename')), false)
+    // The claim's own failure, not a busy store or a timeout: the receiver stops instead of retrying.
+    assert.equal(errors[0].message, 'synthetic message rename failure')
+    assert.equal(errors[0].isRetryable, false)
+    assert.deepEqual(deliveries, [])
+  } finally { await receiver.close() }
+}, failingRename))
 
 // A disposable loopback proxy faults only heartbeat responses. The real store still
 // decides whether a message was durably claimed before the response was lost.

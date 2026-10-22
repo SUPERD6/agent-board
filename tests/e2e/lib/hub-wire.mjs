@@ -13,7 +13,8 @@ const isAlive = pid => {
 export const killServe = async server => {
   if (!server.isOwned()) return false
   process.kill(server.pid, 'SIGKILL')
-  for (let waited = 0; waited < 100 && isAlive(server.pid); waited += 1) await pause(50)
+  // Up to 20 seconds: a loaded Windows runner can take more than a few to reap a killed process.
+  for (let waited = 0; waited < 400 && isAlive(server.pid); waited += 1) await pause(50)
   return !isAlive(server.pid)
 }
 

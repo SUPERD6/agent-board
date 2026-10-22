@@ -44,9 +44,11 @@ The default store is `agent-board-<16-hex-board-hash>-messages` beside the board
 file: in the account-owned `XDG_RUNTIME_DIR`, otherwise the account's temporary folder on
 Windows or `~/.cache/agent-board` elsewhere. The hash identifies the same progress file as
 the address file. The directory is created with mode 0700. On Windows, a newly created
-store and every default store are made your account's alone: the board takes ownership,
-removes inherited and other accounts' access, and reads the result back. If it cannot,
-startup stops with `MESSAGE_STORE_ACL`. An existing folder supplied with `--messages-dir`
+store and every default store are made your account's alone: the board makes your account
+the folder's owner, removes inherited and other accounts' access, and reads the access
+entries back (the owner is set, not read back). If it cannot, startup stops with
+`MESSAGE_STORE_ACL`. For a new or default store, a board run as SYSTEM, LocalService or
+NetworkService always stops there: run it as a person's account. An existing folder supplied with `--messages-dir`
 keeps its permissions; make that folder private yourself.
 `--messages-dir /private/local/message-data` overrides the location;
 `/api/ping` reports the actual `messagesDirectory`.
@@ -65,7 +67,12 @@ store errors suggest moving a possibly damaged `messages.json` out before retryi
 
 Keep the store private and local. Do not use a shared drive or publish it. Any local
 program that can read the address file can send with its bearer URL; the board cannot
-identify the person pressing Send. Connector secrets and URLs must not be posted to
+identify the person pressing Send. Such a program can also keep your sends refused: if it
+registers a session, sends, claims the message and disconnects, over and over, each round
+leaves a message in doubt for 30 minutes, and at one round every 1.8 seconds or faster the
+store stays at `MESSAGE_LIMIT` until it stops. The connection cap does not stop it, since
+each disconnect frees its place. It has to run as your account or an administrator; stop
+it, and the store frees itself within 30 minutes. Connector secrets and URLs must not be posted to
 issues. Messaging opens no listener beyond the existing loopback board; all LAN
 `/api/messages/*` requests are refused and LAN board JSON omits messaging and receipts.
 Setup installs no background receiver. Reopen with the same command and directory. Closing the board
@@ -198,8 +205,9 @@ omits nonces; only the receiver's claimed delivery supplies one. Receipts cannot
 hub's reserved `EXPIRED` or `DISMISSED` errors. Send and claim still require the current turn.
 Restart keeps claimed messages uncertain and never redelivers them; repeated restarts
 and disconnects do not reset their age limit. Expiry or dismissal lets the card send again.
-Stores are saved as version 2;
-version 1 loads with `hops: 1`, `claimed: 0`, and an empty nonce. Such legacy messages cannot
+Stores are saved as version 2, which earlier releases cannot read: before going back to one,
+move both `messages.json` and `server.lock` out of the folder, since 0.24.0 and earlier take
+the lock before they read the store and keep it after refusing the file. Version 1 loads with `hops: 1`, `claimed: 0`, and an empty nonce. Such legacy messages cannot
 be acknowledged and expire under the age rule. A message saved without `origin` or `hash`
 loads as `local` with the hash of the text it kept. A store that cannot be read gives its
 `server.lock` back, so moving the damaged file aside is all a retry needs.
