@@ -1,7 +1,13 @@
 import { randomBytes } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { lstatSync, mkdirSync, readFileSync, unlinkSync } from 'node:fs'
+import { hostname } from 'node:os'
 import { join, resolve } from 'node:path'
+
+// This computer's NetBIOS name, which whoami prints as a local account's domain. A board started
+// with a trimmed environment has no COMPUTERNAME; Windows takes the name from the host name's
+// first 15 characters.
+export const computerName = (env: string | undefined, host: string): string => env !== undefined && env !== '' ? env : host.slice(0, 15)
 
 // SDDL writes this computer's own Administrator (RID 500) as LA and its Guest (RID 501) as LG. A
 // local account's SID shares their domain part, so for a local account the two letters can be
@@ -19,9 +25,9 @@ export const whoamiAccount = (output: string): { sid: string, domain: string } |
 }
 
 // The account this process runs as, from whoami's row, and the SDDL letters that name it there.
-export const runningAccount = (whoami: string, computer: string | undefined): { sid: string, own: Record<string, string> } | undefined => {
+export const runningAccount = (whoami: string, env: string | undefined, host: string): { sid: string, own: Record<string, string> } | undefined => {
   const account = whoamiAccount(whoami)
-  return account === undefined ? undefined : { sid: account.sid, own: localAliases(account.sid, account.domain, computer) }
+  return account === undefined ? undefined : { sid: account.sid, own: localAliases(account.sid, account.domain, computerName(env, host)) }
 }
 
 export const isPrivateDacl = (sddl: string, sid: string, aliases: Record<string, string> = {}): boolean => {
@@ -49,7 +55,7 @@ export const privateFolder = (dir: string): void => {
     const options = { encoding: 'utf8' as const, windowsHide: true, timeout: 10_000, stdio: 'pipe' as const }
     const system = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')
     const icacls = join(system, 'icacls.exe')
-    const account = runningAccount(execFileSync(join(system, 'whoami.exe'), ['/user', '/fo', 'csv', '/nh'], options), process.env.COMPUTERNAME)
+    const account = runningAccount(execFileSync(join(system, 'whoami.exe'), ['/user', '/fo', 'csv', '/nh'], options), process.env.COMPUTERNAME, hostname())
     if (account === undefined) throw new Error('PRIVATE_FOLDER')
     const { sid, own } = account
     // /L acts on the folder itself: a folder swapped for a junction never passes its owner and

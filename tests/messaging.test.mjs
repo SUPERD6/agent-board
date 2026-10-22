@@ -1,6 +1,6 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import fs, { chmodSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { hostname, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createServer, request } from 'node:http'
 import { createHash } from 'node:crypto'
@@ -30,7 +30,7 @@ const { buildView } = await import('../hooks/view.ts')
 const { EN } = await import('../hooks/strings-en.ts')
 const { ZH_TW } = await import('../hooks/i18n.ts')
 const { ZH_CN } = await import('../hooks/strings-zh-cn.ts')
-const { isPrivateDacl, localAliases, runningAccount, whoamiAccount } = await import('../scripts/private-folder.ts')
+const { computerName, isPrivateDacl, localAliases, runningAccount, whoamiAccount } = await import('../scripts/private-folder.ts')
 
 const nonceOf = prompt => prompt.match(/Reply first with this line alone: ACK ([0-9a-f]{6})/)[1]
 // The board shows a reply without the nonce its ACK line carries; the store keeps the line as it came.
@@ -66,9 +66,14 @@ test("a private folder check reads the local Administrator's own entry, which Wi
   assert.deepEqual(own, { LA: admin, LG: 'S-1-5-21-123-456-789-501' })
   assert.deepEqual(localAliases(admin, 'RUNNER-HOST', 'runner-host'), own)
   // The board reads its account and aliases from whoami's row and COMPUTERNAME in one step.
-  assert.deepEqual(runningAccount('"RUNNER-HOST\\runneradmin","S-1-5-21-123-456-789-500"\r\n', 'runner-host'), { sid: admin, own })
-  assert.deepEqual(runningAccount('"CORP\\admin","S-1-5-21-123-456-789-500"\r\n', 'runner-host'), { sid: admin, own: {} })
-  assert.equal(runningAccount('', 'runner-host'), undefined)
+  assert.deepEqual(runningAccount('"RUNNER-HOST\\runneradmin","S-1-5-21-123-456-789-500"\r\n', 'runner-host', 'other-host'), { sid: admin, own })
+  assert.deepEqual(runningAccount('"CORP\\admin","S-1-5-21-123-456-789-500"\r\n', 'runner-host', 'corp'), { sid: admin, own: {} })
+  assert.equal(runningAccount('', 'runner-host', 'runner-host'), undefined)
+  // Without COMPUTERNAME (a board started with a trimmed environment) the name comes from the host
+  // name's first 15 characters, as Windows makes it.
+  assert.equal(computerName('RUNNER-HOST', 'other-host'), 'RUNNER-HOST')
+  for (const missing of [undefined, '']) assert.equal(computerName(missing, 'fv-az1234-567890-runner'), 'fv-az1234-56789')
+  for (const missing of [undefined, '']) assert.deepEqual(runningAccount('"FV-AZ1234-56789\\runneradmin","S-1-5-21-123-456-789-500"', missing, 'fv-az1234-567890-runner').own, own)
   assert.equal(isPrivateDacl('D:PAI(A;OICI;FA;;;LA)', admin, own), true)
   assert.equal(isPrivateDacl('D:PAI(A;OICI;FA;;;LG)', 'S-1-5-21-123-456-789-501', own), true)
   // Without the aliases, or for a domain account (whose domain is not this computer), LA is
@@ -442,7 +447,7 @@ test('on Windows the message folder grants only the current user', { skip: proce
   const system = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')
   const icacls = join(system, 'icacls.exe')
   const who = execFileSync(join(system, 'whoami.exe'), ['/user', '/fo', 'csv', '/nh'], options)
-  const { sid, own } = runningAccount(who, process.env.COMPUTERNAME)
+  const { sid, own } = runningAccount(who, process.env.COMPUTERNAME, hostname())
   // A refusal says only MESSAGE_STORE_ACL, so a failure here shows the folder's entries as icacls
   // saves them and the account it ran as.
   const open = (folder, isDefault) => {
@@ -486,6 +491,14 @@ test('on Windows the message folder grants only the current user', { skip: proce
     const before = execFileSync(icacls, [override], options)
     store = createMessaging(override)
     assert.equal(execFileSync(icacls, [override], options), before)
+    store.close()
+    store = undefined
+    // A board started with a trimmed environment has no COMPUTERNAME and still makes its folder.
+    const trimmed = join(dir, 'trimmed')
+    const computer = process.env.COMPUTERNAME
+    delete process.env.COMPUTERNAME
+    try { store = open(trimmed) } finally { if (computer !== undefined) process.env.COMPUTERNAME = computer }
+    check(trimmed)
   } finally { store?.close(); rmSync(dir, { recursive: true, force: true }) }
 })
 
