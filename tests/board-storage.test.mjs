@@ -8,6 +8,9 @@ import { basename, join } from 'node:path'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { BOARD_SCRIPT } from '../hooks/board-script.ts'
+import { EN } from '../hooks/strings-en.ts'
+import { ZH_TW } from '../hooks/i18n.ts'
+import { ZH_CN } from '../hooks/strings-zh-cn.ts'
 
 const NOW = Date.UTC(2026, 9, 17, 12)
 const month = `${new Date(NOW).getFullYear()}-${String(new Date(NOW).getMonth() + 1).padStart(2, '0')}`
@@ -39,16 +42,22 @@ const fixture = run => {
   }
 }
 
-const failed = (result, path, code) => {
+// isUnchanged: the press took back everything it wrote, so it says nothing was changed (#248);
+// otherwise it must never say so.
+const failed = (result, path, code, lang = 'en', isUnchanged = false) => {
+  const s = { en: EN, 'zh-TW': ZH_TW, 'zh-CN': ZH_CN }[lang]
   assert.equal(result.error, undefined)
   assert.equal(result.status, 1, result.stdout + result.stderr)
   const said = result.stdout + result.stderr
   assert.ok(said.includes(path.endsWith('progress.md') ? 'your progress file' : basename(path)), said)
   assert.ok(!said.includes(path), said)
-  assert.ok(code === 'EACCES' ? /read-only or locked|\u552f\u8b80|\u53ea\u8bfb/.test(said) : said.includes(code === 'ENOSPC' ? 'the disk is full' : code), result.stdout + result.stderr)
+  const why = code === 'EACCES' ? s.storageReadOnly : code === 'ENOSPC' ? s.storageFull : s.storageUnknown
+  assert.ok(said.includes(why), said)
+  assert.ok(!said.includes(code), said)
   assert.ok(!(result.stdout + result.stderr).includes('Done:'))
   assert.ok(!(result.stdout + result.stderr).includes('Archived “'))
-  assert.ok(!(result.stdout + result.stderr).includes('nothing changed'))
+  assert.equal(/nothing (was )?changed|沒有改動|没有改动/.test(said), isUnchanged, said)
+  if (isUnchanged) assert.ok(said.includes(s.boardSaveFailed(s.fileProgress, why)), said)
 }
 
 test('--tidy reports failed persistence and retries an archive-first sweep without duplicate entries', () => fixture(({ paths, play }) => {
@@ -124,6 +133,9 @@ for (const kind of ['board', 'archive', 'journal']) {
 
 for (const kind of ['board', 'archive', 'journal']) {
   for (const operation of ['write', 'rename']) {
+    // A failed board replacement takes back the tick's journal line, so it says nothing was
+    // changed (#248); the history files fail after nothing was taken back. The titles stay as
+    // they are because the #211 changelog fragment names them.
     test(`a failed ${kind} temp ${operation} preserves old bytes and reports incomplete persistence`, () => fixture(({ dir, paths, play }) => {
       const target = paths[kind]
       const before = readFileSync(target, 'utf8')
@@ -133,10 +145,11 @@ for (const kind of ['board', 'archive', 'journal']) {
       const fault = operation === 'write'
         ? `const original = fs.writeFileSync\nfs.writeFileSync = (path, data, ...args) => { if (String(path).startsWith(${JSON.stringify(target + '.')}) && String(path).endsWith('.board-tmp')) { original(path, 'partial', ...args); throw Object.assign(new Error('injected full disk'), { code: '${code}' }) } return original(path, data, ...args) }`
         : `const original = fs.renameSync\nfs.renameSync = (from, to) => { if (String(to) === ${JSON.stringify(target)}) throw Object.assign(new Error('injected rename failure'), { code: '${code}' }); return original(from, to) }`
-      failed(play(kind === 'archive' ? 'a' : 'x', fault), target, code)
+      failed(play(kind === 'archive' ? 'a' : 'x', fault), target, code, 'en', kind === 'board')
       assert.equal(readFileSync(target, 'utf8'), before)
       assert.ok(!readdirSync(dir).some(name => name.endsWith('.board-tmp')))
       if (kind !== 'board') assert.equal(readFileSync(paths.board, 'utf8'), FILE)
+      else assert.equal(readFileSync(paths.journal, 'utf8'), HISTORY)
       assert.ok(readFileSync(paths.archive, 'utf8').includes('KEEP_OLD_HISTORY_7C4'))
       assert.ok(readFileSync(paths.journal, 'utf8').includes('KEEP_OLD_HISTORY_7C4'))
       const recovered = play(kind === 'archive' ? 'a' : 'x')
@@ -206,7 +219,7 @@ test('replacing board and history retains their POSIX permission bits despite a 
 
 test('the error and recovery notice keeps the affected path and error code in every language', () => fixture(({ paths, play }) => {
   const fault = `const original = fs.renameSync\nfs.renameSync = (from, to) => { if (String(to) === ${JSON.stringify(paths.archive)}) throw Object.assign(new Error('injected failure'), { code: 'EACCES' }); return original(from, to) }`
-  for (const lang of ['en', 'zh-TW', 'zh-CN']) failed(play('a', fault, lang), paths.archive, 'EACCES')
+  for (const lang of ['en', 'zh-TW', 'zh-CN']) failed(play('a', fault, lang), paths.archive, 'EACCES', lang)
 }))
 
 for (const operation of ['statSync', 'chmodSync']) {
@@ -238,8 +251,9 @@ test('a journal read that fails only when persisting a tick leaves that step unt
 
 test('a pre-existing temp is neither truncated nor deleted by a failed board action', () => fixture(({ dir, paths, play }) => {
   const fault = `const temp = ${JSON.stringify(paths.board)} + '.' + process.pid + '.' + Date.now().toString(36) + '.board-tmp'\nfs.writeFileSync(temp, 'FOREIGN_TEMP')`
-  failed(play('x', fault), paths.board, 'EEXIST')
+  failed(play('x', fault), paths.board, 'EEXIST', 'en', true)
   assert.equal(readFileSync(paths.board, 'utf8'), FILE)
+  assert.equal(readFileSync(paths.journal, 'utf8'), HISTORY)
   const temp = readdirSync(dir).find(name => name.endsWith('.board-tmp'))
   assert.ok(temp)
   assert.equal(readFileSync(join(dir, temp), 'utf8'), 'FOREIGN_TEMP')
@@ -251,7 +265,7 @@ test('watch recovers on its next redraw after a read error and restores raw mode
   const result = play('', fault, 'en', true)
   assert.equal(result.error, undefined)
   assert.equal(result.status, 1, result.stdout + result.stderr)
-  assert.ok(result.stderr.includes('your progress file') && !result.stderr.includes(paths.board) && result.stderr.includes('EIO'))
+  assert.ok(result.stderr.includes(EN.fileProgress) && !result.stderr.includes(paths.board) && result.stderr.includes(EN.storageUnknown))
   assert.ok(result.stdout.includes('Keep the evidence'), result.stdout)
   assert.ok(result.stderr.includes('RAW_RESTORED'))
   assert.equal(readFileSync(paths.board, 'utf8'), FILE)

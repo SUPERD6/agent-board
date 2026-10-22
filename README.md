@@ -20,6 +20,7 @@ You have Claude Code on one project, Codex on another, Antigravity on a third. O
 1. Find the agent you use in [Pick your agent](#pick-your-agent).
 2. Run its command, or paste the install prompt below the table into that agent.
 3. Open the board: `/progress` in Claude Code, `$agent-board` in Codex, `/board` in OpenCode, or `node ~/.agent-board/agent-board.mjs --serve` in any terminal.
+   In the Claude desktop app, which cannot show the pane, the footer shows the board's status and `/progress` gives you a link to the board page, where you can answer questions and archive work; if that page cannot start, it opens the read-only page. The board page needs the board script that `/progress connect` installs, or the next session start updates.
 
 Every agent except Claude Code connects through this repository, with Node.js 18+:
 
@@ -153,13 +154,13 @@ The page listens on 127.0.0.1 only, and its address carries a random key: anythi
 
 ## Colours and marks
 
-The pane follows Claude Code's theme (`/config`, then **Theme**); the page and `progress.html` follow your computer's light or dark mode. Every mark has its own shape, so it reads without colour:
+The pane follows Claude Code's theme (`/config`, then **Theme**); the page and `progress.html` follow your computer's light or dark mode until you pick Light or Dark at the top right of the page. Every mark has its own shape, so it reads without colour; the pages draw a step still to do as a small dot rather than a ring, so it does not look like a button:
 
 | Mark | Means | | Mark | Means |
 |:-:|---|---|:-:|---|
 | ● | Waiting on you | | ◐ | Running, or waiting on someone else |
 | ▸ | Doing now | | ! | Stuck |
-| ○ | To do | | ⚑ | Due within two weeks |
+| ○ • | To do (a ring in the pane, a small dot on the pages) | | ⚑ | Due within two weeks |
 | ✓ | Done | | – | Cancelled |
 
 ## Troubleshooting

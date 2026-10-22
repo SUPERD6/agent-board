@@ -137,6 +137,7 @@ export const pageDom = async (source, first, post, { clipboard = true, legacyCop
     }
     get textContent() { return this.text + this.childNodes.map(child => child.textContent).join(' ') }
     appendChild(child) {
+      child.parentNode = this
       this.childNodes.push(child)
       return child
     }
@@ -145,7 +146,14 @@ export const pageDom = async (source, first, post, { clipboard = true, legacyCop
       assert.equal(position, 'afterend')
       get('main').appendChild(child)
     }
-    remove() { get('main').removeChild(this) }
+    get firstChild() { return this.childNodes[0] ?? null }
+    insertBefore(child, before) {
+      child.parentNode = this
+      const index = this.childNodes.indexOf(before)
+      this.childNodes.splice(index < 0 ? this.childNodes.length : index, 0, child)
+      return child
+    }
+    remove() { this.parentNode?.removeChild(this) }
     setAttribute(name, value) { this.attributes[name] = value }
     getAttribute(name) { return this.attributes[name] ?? null }
     addEventListener(name, callback) { this.events[name] = callback }
@@ -168,9 +176,8 @@ export const pageDom = async (source, first, post, { clipboard = true, legacyCop
   const navigator = {}
   const setClipboard = available => { navigator.clipboard = available ? { writeText: async text => { copied.push(text) } } : undefined }
   setClipboard(clipboard)
-  get('copy-text').hidden = true
-  get('copy-text').setAttribute('readonly', '')
   const document = {
+    body: get('body'),
     execCommand: () => legacyCopy,
     getElementById: get,
     createElement: tag => new Element(tag),
@@ -226,18 +233,24 @@ export const pageDom = async (source, first, post, { clipboard = true, legacyCop
 }
 
 export const serve = {
-  start: async (world, args = []) => {
+  // lifetimeMs: how long the kill check waits, from the server's start, before it stops a server
+  // nobody stopped; idleMinutes: the page's own idle exit. A long run (the soak) raises both. The
+  // default is well past the slowest journey on a slow Windows runner, so a healthy server is
+  // never lost mid-journey.
+  start: async (world, args = [], { lifetimeMs = 90000, idleMinutes = 5 } = {}) => {
     let pid, timer, url, recordPath, isStopped = false
+    // The address file holds a `path` of its own (the progress.md it serves), so the file's own
+    // place is kept as `file`, apart from what it holds.
     const records = () => readdirSync(world.root, { recursive: true }).map(String)
       .filter(name => /agent-board-[a-f0-9]+\.json$/.test(name)).flatMap(name => {
-        const path = join(world.root, name)
-        try { return [{ path, ...JSON.parse(readFileSync(path, 'utf8')) }] } catch { return [] }
+        const file = join(world.root, name)
+        try { return [{ ...JSON.parse(readFileSync(file, 'utf8')), file }] } catch { return [] }
       })
     const discover = () => {
       const record = records().find(one => url ? one.url === url.href : true)
       if (!record) return
       pid ??= record.pid
-      recordPath ??= record.path
+      recordPath ??= record.file
       url ??= new URL(record.url)
     }
     const alive = () => {
@@ -258,7 +271,8 @@ export const serve = {
         headers: { 'x-board-token': url.searchParams.get('t') },
         signal: AbortSignal.timeout(1500),
       }).catch(() => undefined)
-      if (response?.ok && isRecorded() && alive()) process.kill(pid)
+      // A server that exits between the check and the kill is gone, which is what was wanted.
+      if (response?.ok && isRecorded() && alive()) { try { process.kill(pid) } catch {} }
     } }
     ownedServers.add(owner)
     const stop = async () => {
@@ -279,15 +293,13 @@ export const serve = {
     }
     world.cleanups.push(stop)
     try {
-      const output = successful(await runProcess(process.execPath, [world.script, '--serve', '--no-open', '--idle-minutes', '5', ...args], {
-        env: { ...world.env, TEMP: join(world.root, 'tmp'), TMP: join(world.root, 'tmp'), TMPDIR: join(world.root, 'tmp'), XDG_RUNTIME_DIR: join(world.root, 'run') }, cwd: world.root,
-      }))
+      const output = await terminal.screen(world, ['--serve', '--no-open', '--idle-minutes', String(idleMinutes), ...args])
       const match = output.match(/http:\/\/127\.0\.0\.1:\d+\/\?t=[\w-]+/)
       assert.ok(match, output)
       url = new URL(match[0])
       discover()
       assert.ok(pid && recordPath, 'The isolated runtime owns its server address file')
-      timer = setTimeout(() => { void owner.killRecorded() }, 20000)
+      timer = setTimeout(() => { void owner.killRecorded().catch(() => {}) }, lifetimeMs)
       const call = async (method, path, body) => {
         const response = await fetch(new URL(path, url), { method, headers: { 'x-board-token': url.searchParams.get('t'), ...(body === undefined ? {} : { 'content-type': 'application/json' }) }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(5000) })
         const text = await response.text()
@@ -319,7 +331,10 @@ export const serve = {
         const after = dom.cards().find(one => matches(one.textContent, cardMatch) && dom.buttons(one).some(button => matches(button.textContent, buttonMatch)))?.textContent ?? ''
         return { before, after, card: String(cardMatch), button: button.textContent, surface: 'serve', requests: dom.requests }
       }
-      return { url: url.href, get, post, page, press, stop, pid, get dom() { return dom }, get pollMs() { return dom?.pollMs } }
+      // isOwned: the pid is alive and the world's address file still names it and this address. It
+      // does not ask the server, so after a hard crash a leftover file and a reused pid would pass:
+      // a caller that ends the server itself first asks it (as killRecorded and the soak do).
+      return { url: url.href, get, post, page, press, stop, pid, isOwned: () => isRecorded() && alive(), get dom() { return dom }, get pollMs() { return dom?.pollMs } }
     } catch (error) {
       await stop()
       throw error
