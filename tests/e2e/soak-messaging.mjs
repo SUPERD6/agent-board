@@ -127,7 +127,7 @@ const reportMarkdown = report => {
     if (traffic.receipts) lines.push(`- Receipts the hub accepted, by status: ${Object.entries(traffic.receipts).map(([name, many]) => `${name} ${count(many)}`).join(', ')}.`)
     const unasked = Object.entries(traffic.unasked ?? {}).filter(([, many]) => many > 0)
     if (unasked.length > 0) lines.push(`- Refused although the soak had not asked for it: ${unasked.map(([name, many]) => `${name} ${count(many)}`).join(', ')}.`)
-    lines.push(`- Sessions: ${count(traffic.registered)} registered, ${count(traffic.ended)} ended (${count(traffic.endedByDisconnect)} by disconnect, ${count(traffic.endedByExpiry)} by letting the lease run out), ${count(traffic.duplicates)} registered twice and so contested, most live at once ${count(traffic.mostLive)}.`)
+    lines.push(`- Sessions: ${count(traffic.registered)} registered, ${count(traffic.ended)} ended (${count(traffic.endedByDisconnect)} by disconnect, ${count(traffic.endedByExpiry)} by letting the lease run out), ${count(traffic.duplicates)} registered twice and so contested (${count(traffic.duplicatesSkipped ?? 0)} more were not, as they still held a message after 30 s), most live at once ${count(traffic.mostLive)}.`)
     lines.push(`- Requests: ${count(traffic.requests)}; ${count(traffic.failures)} failed unexpectedly; ${count(traffic.resent)} sent again after a kept-alive connection closed first.`)
     for (const [name, one] of Object.entries(traffic.latency ?? {})) lines.push(`- ${name}: a typical one took ${one.median} ms, one in 20 took longer than ${one.p95} ms, the slowest took ${one.max} ms (${count(one.count)} requests).`)
   }
@@ -260,7 +260,7 @@ const soak = async ({ minutes, out }) => {
   const sentLog = []
   const byOutcome = { ack: 0, reject: 0, uncertain: 0, dismiss: 0, drop: 0, hold: 0 }
   const latency = { 'page poll': [], 'receiver poll': [], send: [], receipt: [] }
-  const tally = { requests: 0, resent: 0, sent: 0, registered: 0, ended: 0, endedByDisconnect: 0, endedByExpiry: 0, duplicates: 0, mostLive: 0, mostConnections: 0, claimed: 0, answered: 0 }
+  const tally = { requests: 0, resent: 0, sent: 0, registered: 0, ended: 0, endedByDisconnect: 0, endedByExpiry: 0, duplicates: 0, duplicatesSkipped: 0, mostLive: 0, mostConnections: 0, claimed: 0, answered: 0 }
   const leaks = { file: 0, api: 0, replies: 0, example: undefined }
   const invariants = { ghosts: 0, missing: 0, example: undefined }
   const stray = new Set()
@@ -612,9 +612,15 @@ const soak = async ({ minutes, out }) => {
       return conn
     }
     // The same agent and session registering again: both connections are contested from then on.
+    // A contested connection's receipt is refused CONTESTED, as it should be, so a session is
+    // contested only once it holds nothing: nothing new is sent to it from here on, and it
+    // registers again once what it holds is answered.
     const connectDuplicate = async session => {
+      session.isContesting = true
+      const isQuiet = () => session.state === 'live' && session.open.size === 0 && session.busy === 0
+      if (!await until(isQuiet, 30000)) { session.isContesting = false; tally.duplicatesSkipped += 1; return }
       const conn = await connect(session, true)
-      if (conn === undefined) return
+      if (conn === undefined) { session.isContesting = false; return }
       tally.duplicates += 1
       session.contested = true
       const copy = { number: session.number, state: 'live', conn, leaseFloor: Date.now(), turn: session.turn }
@@ -641,7 +647,7 @@ const soak = async ({ minutes, out }) => {
       session.endBeginAt = Date.now()
       if (kind === 'disconnect') {
         // One last message that its receiver will drop after claiming it.
-        if (!session.stuck && session.contested === false && session.open.size === 0) {
+        if (!session.stuck && session.contested === false && !session.isContesting && session.open.size === 0) {
           session.dropOnClaim = true
           await sendMessage(undefined, session, 'drop')
         }
@@ -822,7 +828,7 @@ const soak = async ({ minutes, out }) => {
     // live receiver that has room, so a refusal is rare and counted.
     let inFlight = 0
     let isSending = true
-    const isFree = (session, fromKey) => session.state === 'live' && !session.contested && !session.stuck && Date.now() - session.registeredAt > 1500 && session.open.size < OPEN_MOST && (session.openFrom.get(fromKey) ?? 0) === 0 && session.busy === 0
+    const isFree = (session, fromKey) => session.state === 'live' && !session.contested && !session.isContesting && !session.stuck && Date.now() - session.registeredAt > 1500 && session.open.size < OPEN_MOST && (session.openFrom.get(fromKey) ?? 0) === 0 && session.busy === 0
     const pick = list => list.length === 0 ? undefined : list[Math.floor(random() * list.length)]
     const canForward = one => one.lastHops <= 1 && ![...one.open].some(id => (plans.get(id)?.hops ?? 0) >= 2)
     const sendOne = async () => {
@@ -840,7 +846,7 @@ const soak = async ({ minutes, out }) => {
     // cap and are accepted; the one after the cap is the fourth.
     let provoked = 0
     const provoke = async () => {
-      const free = liveSessions().filter(one => !one.contested && !one.stuck && one.open.size === 0 && one.busy === 0 && Date.now() - one.registeredAt > 1500)
+      const free = liveSessions().filter(one => !one.contested && !one.isContesting && !one.stuck && one.open.size === 0 && one.busy === 0 && Date.now() - one.registeredAt > 1500)
       const target = pick(free)
       if (target !== undefined) {
         await sendMessage(undefined, target, 'ack')
@@ -915,7 +921,7 @@ const soak = async ({ minutes, out }) => {
     pager.isStopped = true
     await pageRun
     hold.isActive = true
-    const candidates = liveSessions().filter(one => !one.stuck && !one.contested && one.open.size === 0 && one.busy === 0)
+    const candidates = liveSessions().filter(one => !one.stuck && !one.contested && !one.isContesting && one.open.size === 0 && one.busy === 0)
     const chosen = []
     while (chosen.length < HELD && candidates.length > 0) chosen.push(candidates.splice(Math.floor(random() * candidates.length), 1)[0])
     const heldIds = []
@@ -1079,6 +1085,9 @@ const soak = async ({ minutes, out }) => {
     if (tally.registered < 2 * ENDING) shortfalls.push(`only ${count(tally.registered)} sessions registered, ${count(2 * ENDING)} are needed`)
     if (tally.sent < wantedSent) shortfalls.push(`only ${count(tally.sent)} messages were sent, ${count(wantedSent)} are needed`)
     for (const code of Object.keys(refused)) if (refused[code] === 0) shortfalls.push(`no send was refused ${code}`)
+    // A session still holding a message after 30 s is not contested; a few may be (stuck ones never
+    // go quiet), but most of the planned ones must be.
+    if (isFullRun && tally.duplicates < DUPLICATES / 2) shortfalls.push(`only ${count(tally.duplicates)} sessions were registered twice, ${count(DUPLICATES / 2)} are needed (${count(tally.duplicatesSkipped)} still held a message after 30 s)`)
     const unaskedAll = Object.values(unasked).reduce((sum, many) => sum + many, 0)
     if (unaskedAll > UNASKED_SHARE * tally.sent) shortfalls.push(`${count(unaskedAll)} sends meant to be accepted were refused busy or contested, more than ${UNASKED_SHARE * 100}% of ${count(tally.sent)}`)
     for (const status of ['acknowledged', 'rejected', 'uncertain']) if (receipts[status] === 0) shortfalls.push(`no receiver's receipt was ${status}`)

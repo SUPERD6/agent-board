@@ -30,7 +30,7 @@ const { buildView } = await import('../hooks/view.ts')
 const { EN } = await import('../hooks/strings-en.ts')
 const { ZH_TW } = await import('../hooks/i18n.ts')
 const { ZH_CN } = await import('../hooks/strings-zh-cn.ts')
-const { isPrivateDacl } = await import('../scripts/private-folder.ts')
+const { isPrivateDacl, localAliases, runningAccount, whoamiAccount } = await import('../scripts/private-folder.ts')
 
 const nonceOf = prompt => prompt.match(/Reply first with this line alone: ACK ([0-9a-f]{6})/)[1]
 // The board shows a reply without the nonce its ACK line carries; the store keeps the line as it came.
@@ -52,6 +52,38 @@ test('a private folder check accepts only a protected folder with one full-contr
     `O:${sid}D:P${entry}`, `D:P${entry}S:`, `D:P${entry}\n`,
   ]) assert.equal(isPrivateDacl(sddl, sid), false, sddl)
   assert.equal(isPrivateDacl('D:P(A;OICI;FA;;;BA)', 'BA'), false)
+})
+
+test("a private folder check reads the local Administrator's own entry, which Windows writes as LA, and no other account's", () => {
+  const admin = 'S-1-5-21-123-456-789-500'
+  // whoami prints one CSV row; the domain and the SID come from that row, whatever surrounds it.
+  const local = whoamiAccount('\r\n"runner-host\\runneradmin","S-1-5-21-123-456-789-500"\r\n')
+  assert.deepEqual(local, { sid: admin, domain: 'runner-host' })
+  assert.deepEqual(whoamiAccount('"CORP\\admin","S-1-5-21-9-8-7-500"\r\n'), { sid: 'S-1-5-21-9-8-7-500', domain: 'CORP' })
+  for (const output of ['', '"runneradmin","S-1-5-21-1-2-3-500"', '"HOST\\user","not-a-sid"']) assert.equal(whoamiAccount(output), undefined, output)
+  // whoami's domain and COMPUTERNAME can differ in case, either way round.
+  const own = localAliases(local.sid, local.domain, 'RUNNER-HOST')
+  assert.deepEqual(own, { LA: admin, LG: 'S-1-5-21-123-456-789-501' })
+  assert.deepEqual(localAliases(admin, 'RUNNER-HOST', 'runner-host'), own)
+  // The board reads its account and aliases from whoami's row and COMPUTERNAME in one step.
+  assert.deepEqual(runningAccount('"RUNNER-HOST\\runneradmin","S-1-5-21-123-456-789-500"\r\n', 'runner-host'), { sid: admin, own })
+  assert.deepEqual(runningAccount('"CORP\\admin","S-1-5-21-123-456-789-500"\r\n', 'runner-host'), { sid: admin, own: {} })
+  assert.equal(runningAccount('', 'runner-host'), undefined)
+  assert.equal(isPrivateDacl('D:PAI(A;OICI;FA;;;LA)', admin, own), true)
+  assert.equal(isPrivateDacl('D:PAI(A;OICI;FA;;;LG)', 'S-1-5-21-123-456-789-501', own), true)
+  // Without the aliases, or for a domain account (whose domain is not this computer), LA is
+  // another account and the folder is not private.
+  assert.equal(isPrivateDacl('D:PAI(A;OICI;FA;;;LA)', admin), false)
+  assert.deepEqual(localAliases(admin, 'CORP', 'runner-host'), {})
+  assert.deepEqual(localAliases(admin, 'RUNNER-HOST', undefined), {})
+  assert.deepEqual(localAliases(admin, '', ''), {})
+  assert.deepEqual(localAliases('S-1-12-1-123-456-789-500', 'AzureAD', 'AzureAD'), {})
+  // A local account that is not the Administrator never reads LA or LG as its own entry.
+  const user = 'S-1-5-21-123-456-789-1001'
+  const theirs = localAliases(user, 'RUNNER-HOST', 'RUNNER-HOST')
+  for (const alias of ['LA', 'LG']) assert.equal(isPrivateDacl(`D:PAI(A;OICI;FA;;;${alias})`, user, theirs), false, alias)
+  assert.equal(isPrivateDacl(`D:PAI(A;OICI;FA;;;${user})`, user, theirs), true)
+  assert.equal(isPrivateDacl(`D:PAI(A;OICI;FA;;;LA)(A;OICI;FA;;;${user})`, user, theirs), false)
 })
 
 test('a store failure gives advice that fits its cause', () => {
@@ -213,7 +245,8 @@ test('transport acceptance is distinct from an actual reply and cannot grant too
 })
 
 const start = async (dir, fault = '', args = ['--messages-dir', join(dir, 'messages')]) => {
-  const runtime = join(dir, 'runtime'); mkdirSync(runtime, { recursive: true })
+  // The board uses XDG_RUNTIME_DIR only when no other account can open it.
+  const runtime = join(dir, 'runtime'); mkdirSync(runtime, { recursive: true, mode: 0o700 })
   const script = join(dir, 'board.mjs'), progress = join(dir, 'progress.md')
   writeFileSync(script, `globalThis.AGENT_BOARD = ${JSON.stringify({ path: progress, lang: 'en' })}\n${BOARD_SCRIPT}`)
   if (!readFileSyncSafe(progress)) writeFileSync(progress, '# Synthetic board\n')
@@ -289,6 +322,21 @@ test('--serve keeps a private message store without a flag and LAN still gets 40
   assert.ok(lan)
   for (const action of ['register', 'send', 'poll', 'receipt']) assert.equal((await lanCall(lan, '/api/messages/' + action, {})).status, 403)
 }, syntheticLan, []))
+
+test('--serve keeps its messages out of an XDG_RUNTIME_DIR other accounts can open', { skip: process.platform === 'win32' ? 'POSIX folder modes' : false }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'board-runtime-open-'))
+  const runtime = join(dir, 'runtime')
+  mkdirSync(runtime)
+  chmodSync(runtime, 0o755)
+  let board
+  try {
+    board = await start(dir, '', [])
+    const hash = createHash('sha256').update(join(dir, 'progress.md')).digest('hex').slice(0, 16)
+    assert.equal((await board.call('/api/ping')).body.messagesDirectory, join(dir, '.cache', 'agent-board', `agent-board-${hash}-messages`))
+    assert.equal(statSync(runtime).mode & 0o777, 0o755)
+    assert.deepEqual(readdirSync(runtime), [])
+  } finally { await board?.close().catch(() => undefined); rmSync(dir, { recursive: true, force: true }) }
+})
 
 test('a server.lock left by a dead process does not stop --serve; a live one does', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'board-lock-'))
@@ -393,7 +441,18 @@ test('on Windows the message folder grants only the current user', { skip: proce
   const options = { windowsHide: true, encoding: 'utf8', timeout: 10_000 }
   const system = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')
   const icacls = join(system, 'icacls.exe')
-  const sid = /,"(S-\d+(?:-\d+)+)"\s*$/.exec(execFileSync(join(system, 'whoami.exe'), ['/user', '/fo', 'csv', '/nh'], options))[1]
+  const who = execFileSync(join(system, 'whoami.exe'), ['/user', '/fo', 'csv', '/nh'], options)
+  const { sid, own } = runningAccount(who, process.env.COMPUTERNAME)
+  // A refusal says only MESSAGE_STORE_ACL, so a failure here shows the folder's entries as icacls
+  // saves them and the account it ran as.
+  const open = (folder, isDefault) => {
+    try { return createMessaging(folder, isDefault) } catch (error) {
+      const saved = join(dir, 'failed-acl.txt')
+      let descriptor = ''
+      try { execFileSync(icacls, [folder, '/save', saved], options); descriptor = readFileSync(saved, 'utf16le') } catch (inner) { descriptor = String(inner) }
+      throw new Error(`${error.message} as ${who.trim()} (COMPUTERNAME ${process.env.COMPUTERNAME}): ${descriptor}`, { cause: error })
+    }
+  }
   const check = folder => {
     const listed = execFileSync(icacls, [folder], options)
     assert.ok(!listed.includes('(I)'), listed)
@@ -401,24 +460,24 @@ test('on Windows the message folder grants only the current user', { skip: proce
     execFileSync(icacls, [folder, '/save', saved], options)
     const descriptor = readFileSync(saved, 'utf16le')
     const sddl = descriptor.split(/\r?\n/).find(line => line.startsWith('D:'))
-    assert.ok(isPrivateDacl(sddl, sid), descriptor)
+    assert.ok(isPrivateDacl(sddl, sid, own), descriptor)
     const entries = [...descriptor.matchAll(/\(A;([^;]*);([^;]*);;;([^;)]+)\)/g)]
     assert.equal(entries.length, 1, descriptor)
     assert.equal(entries[0][1], 'OICI', descriptor)
     assert.equal(entries[0][2], 'FA', descriptor)
-    assert.equal(entries[0][3], sid, descriptor)
+    assert.equal(own[entries[0][3]] ?? entries[0][3], sid, descriptor)
   }
   let store
   try {
     const created = join(dir, 'created')
-    store = createMessaging(created)
+    store = open(created)
     check(created)
     store.close()
     store = undefined
     const existing = join(dir, 'default')
     mkdirSync(existing)
     execFileSync(icacls, [existing, '/grant', '*S-1-5-32-545:(OI)(CI)(RX)'], options)
-    store = createMessaging(existing, true)
+    store = open(existing, true)
     check(existing)
     store.close()
     store = undefined
