@@ -1132,6 +1132,10 @@ const serveBoard = async (): Promise<void> => {
     child.unref()
     return { url, stderr }
   }
+  // Whether the lock no longer holds `held`: gone, or another pid. A lock that cannot be read counts as unchanged.
+  const isTaken = (lock: string, held: string): boolean => {
+    try { return readFileSync(lock, 'utf8') !== held } catch (error) { return (error as NodeJS.ErrnoException).code === 'ENOENT' }
+  }
   for (let attempt = 0; attempt < 2; attempt++) {
     const { url, stderr } = await startPage()
     if (url !== null) return show(url)
@@ -1157,9 +1161,11 @@ const serveBoard = async (): Promise<void> => {
     // A hub killed without stopping leaves its pid, and after a restart that number can belong to
     // another program. The hub of the default folder leaves its address beside the lock, so the
     // lock is moved only when that address no longer answers. A hub still starting has no address
-    // yet, and another board using this folder through --messages-dir writes none, so neither is
-    // ever taken over. A folder given here through --messages-dir is never taken over either.
+    // yet, and another board using this folder through --messages-dir writes none and removes
+    // any left from before it took the lock, so neither is ever taken over. A folder given here
+    // through --messages-dir is never taken over either.
     if (/^[1-9][0-9]*$/.test(held)) {
+      let isMoved = false
       try {
         const owner = JSON.parse(readFileSync(join(messagesDirectory(), 'server.owner'), 'utf8')) as Partial<Running>
         if (owner.pid === Number(held) && typeof owner.port === 'number' && Number.isInteger(owner.port) && typeof owner.url === 'string'
@@ -1167,10 +1173,13 @@ const serveBoard = async (): Promise<void> => {
           && owner.port === Number(new URL(owner.url).port)
           && await ping({ pid: owner.pid, port: owner.port, url: owner.url, path: '', built: '' }, 5000) === null
           && readFileSync(lock, 'utf8') === held) {
-          try { moveLockAside(lock, held) } catch {}
-          continue
+          isMoved = moveLockAside(lock, held)
         }
       } catch {}
+      // Another try only when this --serve moved the lock, or the lock is gone or holds another pid.
+      // It may be gone because its hub stopped meanwhile; another --serve's page may still be starting.
+      // The next try waits for that page; the same pid (put back, or never moved) is not tried again.
+      if (isMoved || isTaken(lock, held)) continue
     }
     process.stdout.write(`\n${storeCode ? s.serveStoreFailed(storeCode, messagesDirectory()) : s.serveFailed(s.serveNotStarted)}\n`)
     return

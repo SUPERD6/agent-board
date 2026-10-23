@@ -56,19 +56,25 @@ keeps its permissions; make that folder private yourself.
 The directory holds `messages.json` (the text of open messages, a hash of each finished
 one's text, target binding, id and receipts) and a
 `server.lock` containing the owning PID. It also holds `server.owner`, the address of the
-hub of the default folder, written once it listens and removed when it stops. The folder
-is private like the address file. A live owner, including one returning `EPERM` to
-the liveness probe, causes `MESSAGE_STORE_IN_USE`. A dead owner (`ESRCH`) or malformed PID
-is removed; lock creation makes at most three attempts, including when another process
-removes the old lock during recovery. PIDs outside 1..2147483647 are malformed.
+hub of the default folder, written once it listens and removed when it stops. A hub that
+takes the lock first removes any `server.owner` left from before, so a hub never starts
+beside a record written under an earlier lock. The folder is private like the address file.
+A live owner, including one returning `EPERM` to the liveness probe, causes
+`MESSAGE_STORE_IN_USE`.
+A dead owner (`ESRCH`) or malformed PID is removed; lock creation makes at most three
+attempts, including when another process removes the old lock during recovery.
+PIDs outside 1..2147483647 are malformed.
 With the default folder, `--serve` waits up to 10 seconds for the owner's page.
 If none appears and that hub no longer answers at the address beside the lock (nothing
 listens there, or the program there refuses the hub's token or does not answer like a
-board page, as any other program would), it treats the lock as left by a hub that was killed: after a restart, its number can belong
-to another program. It moves the lock aside once and starts the page. A lock with no such
-address (a hub still starting, a hub killed before it listened, or another board using the
-folder through `--messages-dir`) and a folder given with `--messages-dir` are never taken
-over this way, nor is one whose hub accepts its token or does not answer in time.
+board page, as any other program would), it treats the lock as left by a hub that was
+killed: after a restart, its number can belong to another program. It moves the lock aside
+once and starts the page. If the moved lock cannot be read, it is put back and no page
+starts; if another `--serve` took the lock meanwhile, this one tries once more. A lock
+with no such address (a hub still starting, a hub killed before it listened, or another
+board using the folder through `--messages-dir`) and a folder given with `--messages-dir`
+are never taken over this way, nor is one whose hub accepts its token or does not answer
+in time.
 If the message folder cannot open, `--serve` names the folder and error code. For
 any `MESSAGE_STORE_IN_USE` that remains, check for another running board first; if none
 is running, delete that folder's `server.lock` and try again. Permission errors ask you

@@ -28,12 +28,17 @@ const replaceFile = (from: string, to: string): void => {
   }
 }
 
-// Two hubs can find the same dead pid. Only one can move the lock aside, and one that moved a
-// lock another hub had just taken puts it back.
+// Two hubs can find the same dead pid. Only one can move the lock aside, and one that cannot
+// read it or finds that another hub had just taken it puts it back.
 export const moveLockAside = (lock: string, recorded: string): boolean => {
   const aside = `${lock}.${process.pid}.stale`
   renameSync(lock, aside)
-  if (readFileSync(aside, 'utf8') !== recorded) {
+  let moved: string
+  try { moved = readFileSync(aside, 'utf8') } catch (error) {
+    try { linkSync(aside, lock) } catch {} finally { try { unlinkSync(aside) } catch {} }
+    throw error
+  }
+  if (moved !== recorded) {
     try { linkSync(aside, lock) } catch {} finally { try { unlinkSync(aside) } catch {} }
     return false
   }
@@ -88,8 +93,15 @@ const openMessaging = (directory: string, isDefault = false) => {
     }
     throw new Error('MESSAGE_STORE_IN_USE')
   }
-  acquire()
   const release = (): void => { if (existsSync(lock) && readFileSync(lock, 'utf8') === String(process.pid)) unlinkSync(lock) }
+  acquire()
+  // An owner record belongs only to the lock it was written under.
+  try { unlinkSync(owner) } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      try { release() } catch {}
+      throw error
+    }
+  }
   let state: MessageState = { messages: [] }
   const connections = new Map<string, Live>()
   const expectations = new Map<string, SessionExpectation>()

@@ -285,6 +285,14 @@ const start = async (dir, fault = '', args = ['--messages-dir', join(dir, 'messa
   return { address, call, close, exited }
 }
 const readFileSyncSafe = file => { try { return readFileSync(file, 'utf8') } catch { return null } }
+// On Windows a page killed a moment ago can still hold its folder, and rmSync does not retry that
+// error, so a failed assertion would be hidden behind it.
+const removeKilledPageFolder = async dir => {
+  for (let attempt = 0; ; attempt++) {
+    try { return rmSync(dir, { recursive: true, force: true }) } catch (error) { if (attempt >= 50) throw error }
+    await pause(200)
+  }
+}
 const fixture = async (fn, fault = '', args) => {
   const dir = mkdtempSync(join(tmpdir(), 'board-messages-'))
   const board = await start(dir, fault, args)
@@ -419,6 +427,7 @@ test('a --serve takes over its default folder\'s lock only when the hub its owne
     const url = new URL(page.url)
     assert.equal(pageOwner.pid, page.pid)
     assert.equal(pageOwner.port, Number(url.port))
+    assert.equal(pageOwner.url, page.url)
     const closed = await fetch(new URL('/api/close', url), { method: 'POST', headers: { 'x-board-token': url.searchParams.get('t'), 'content-type': 'application/json' }, body: '{}', signal: AbortSignal.timeout(5000) })
     assert.equal(closed.status, 200)
     await closed.json()
@@ -524,11 +533,207 @@ test('a --serve takes over its default folder\'s lock only when the hub its owne
     let page
     try { page = JSON.parse(readFileSync(addressFile, 'utf8')) } catch {}
     const pid = page?.pid ?? pagePid
-    if (pid && pid !== process.pid) {
+    if (Number.isInteger(pid) && pid > 1 && pid !== process.pid) {
       try { process.kill(pid, 0); process.kill(pid) } catch {}
       await waitFor(() => { try { process.kill(pid, 0); return false } catch { return true } })
     }
-    rmSync(dir, { recursive: true, force: true })
+    await removeKilledPageFolder(dir)
+  }
+})
+
+test('a hub removes an owner record left from before it took the lock, so a --serve never takes over a --messages-dir hub that record names', { timeout: 120_000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'board-store-old-owner-'))
+  const otherDir = mkdtempSync(join(tmpdir(), 'board-store-old-owner-hub-'))
+  const runtime = join(dir, 'runtime')
+  mkdirSync(runtime, { mode: 0o700 })
+  const progress = join(dir, 'progress.md'), script = join(dir, 'board.mjs')
+  const hash = createHash('sha256').update(progress).digest('hex').slice(0, 16)
+  const folder = join(runtime, `agent-board-${hash}-messages`)
+  mkdirSync(folder)
+  const lock = join(folder, 'server.lock'), owner = join(folder, 'server.owner'), addressFile = join(runtime, `agent-board-${hash}.json`)
+  writeFileSync(progress, '# Synthetic\n')
+  writeFileSync(script, `globalThis.AGENT_BOARD = ${JSON.stringify({ path: progress, lang: 'en' })}\n${BOARD_SCRIPT}`)
+  const options = {
+    env: { ...process.env, CLAUDE_PROGRESS_FILE: '', HOME: dir, USERPROFILE: dir, TEMP: dir, TMP: dir, TMPDIR: dir, XDG_RUNTIME_DIR: runtime },
+    windowsHide: true, encoding: 'utf8', timeout: 40_000,
+  }
+  let hub
+  try {
+    const closedServer = createServer()
+    await new Promise((done, fail) => {
+      closedServer.once('error', fail)
+      closedServer.listen(0, '127.0.0.1', done)
+    })
+    const closedPort = closedServer.address().port
+    await new Promise((done, fail) => closedServer.close(error => error ? fail(error) : done()))
+    hub = await start(otherDir, `fs.writeFileSync(${JSON.stringify(owner)}, JSON.stringify({ pid: process.pid, port: ${JSON.stringify(closedPort)}, url: ${JSON.stringify(`http://127.0.0.1:${closedPort}/?t=synthetic`)} }))`, ['--messages-dir', folder])
+    const hubPid = readFileSync(lock, 'utf8')
+    assert.equal(existsSync(owner), false)
+
+    const result = spawnSync(process.execPath, [script, '--serve', '--no-open'], options)
+    assert.equal(result.error, undefined)
+    assert.ok(result.stdout.includes(EN.serveStoreFailed('MESSAGE_STORE_IN_USE', folder)), result.stdout + result.stderr)
+    assert.ok(!result.stdout.includes('http://127.0.0.1:'))
+    assert.equal(readFileSync(lock, 'utf8'), hubPid)
+    assert.equal((await hub.call('/api/board')).status, 200)
+  } finally {
+    if (hub) await hub.close().catch(() => undefined)
+    let page
+    try { page = JSON.parse(readFileSync(addressFile, 'utf8')) } catch {}
+    if (Number.isInteger(page?.pid) && page.pid > 1 && page.pid !== process.pid) {
+      try { process.kill(page.pid, 0); process.kill(page.pid) } catch {}
+      await waitFor(() => { try { process.kill(page.pid, 0); return false } catch { return true } })
+    }
+    await removeKilledPageFolder(otherDir)
+    await removeKilledPageFolder(dir)
+  }
+})
+
+test('a --serve whose read of the moved lock fails puts the lock back and starts no second page', { timeout: 120_000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'board-store-moved-lock-read-'))
+  const runtime = join(dir, 'runtime')
+  mkdirSync(runtime, { mode: 0o700 })
+  const progress = join(dir, 'progress.md'), script = join(dir, 'board.mjs')
+  const hash = createHash('sha256').update(progress).digest('hex').slice(0, 16)
+  const folder = join(runtime, `agent-board-${hash}-messages`)
+  mkdirSync(folder)
+  const lock = join(folder, 'server.lock'), owner = join(folder, 'server.owner'), addressFile = join(runtime, `agent-board-${hash}.json`)
+  const preload = join(dir, 'serve-fault.cjs'), reads = join(dir, 'reads.log'), spawns = join(dir, 'spawns.log')
+  writeFileSync(progress, '# Synthetic\n')
+  writeFileSync(script, `globalThis.AGENT_BOARD = ${JSON.stringify({ path: progress, lang: 'en' })}\n${BOARD_SCRIPT}`)
+  const options = {
+    env: { ...process.env, CLAUDE_PROGRESS_FILE: '', HOME: dir, USERPROFILE: dir, TEMP: dir, TMP: dir, TMPDIR: dir, XDG_RUNTIME_DIR: runtime },
+    windowsHide: true, encoding: 'utf8', timeout: 60_000,
+  }
+  try {
+    const closedServer = createServer()
+    await new Promise((done, fail) => {
+      closedServer.once('error', fail)
+      closedServer.listen(0, '127.0.0.1', done)
+    })
+    const closedPort = closedServer.address().port
+    await new Promise((done, fail) => closedServer.close(error => error ? fail(error) : done()))
+    writeFileSync(lock, String(process.pid))
+    writeFileSync(owner, JSON.stringify({ pid: process.pid, port: closedPort, url: `http://127.0.0.1:${closedPort}/?t=synthetic` }))
+    writeFileSync(preload, `const fs = require('node:fs')
+const childProcess = require('node:child_process')
+const read = fs.readFileSync
+let hasFailed = false
+fs.readFileSync = (file, ...args) => {
+  if (String(file).endsWith('.stale')) {
+    hasFailed = true
+    fs.appendFileSync(${JSON.stringify(reads)}, 'read\\n')
+    throw Object.assign(new Error('synthetic read failure'), { code: 'EIO' })
+  }
+  if (hasFailed && String(file).endsWith('server.lock')) throw Object.assign(new Error('synthetic read failure'), { code: 'EIO' })
+  return read(file, ...args)
+}
+const spawn = childProcess.spawn
+childProcess.spawn = (command, args, ...rest) => {
+  if (Array.isArray(args) && args.includes('--serve-child')) fs.appendFileSync(${JSON.stringify(spawns)}, 'spawn\\n')
+  return spawn(command, args, ...rest)
+}
+require('node:module').syncBuiltinESMExports()
+`)
+
+    const result = spawnSync(process.execPath, ['-r', preload, script, '--serve', '--no-open'], options)
+    assert.equal(result.error, undefined)
+    assert.ok(result.stdout.includes(EN.serveStoreFailed('MESSAGE_STORE_IN_USE', folder)), result.stdout + result.stderr)
+    assert.ok(!result.stdout.includes('http://127.0.0.1:'))
+    assert.equal(readFileSync(lock, 'utf8'), String(process.pid))
+    assert.deepEqual(readdirSync(folder).filter(name => name.endsWith('.stale')), [])
+    assert.equal(readFileSync(reads, 'utf8').trim().split(/\r?\n/).length, 1)
+    assert.equal(readFileSync(spawns, 'utf8').trim().split(/\r?\n/).length, 1)
+  } finally {
+    let page
+    try { page = JSON.parse(readFileSync(addressFile, 'utf8')) } catch {}
+    if (Number.isInteger(page?.pid) && page.pid > 1 && page.pid !== process.pid) {
+      try { process.kill(page.pid, 0); process.kill(page.pid) } catch {}
+      await waitFor(() => { try { process.kill(page.pid, 0); return false } catch { return true } })
+    }
+    await removeKilledPageFolder(dir)
+  }
+})
+
+test('a --serve whose lock another --serve took meanwhile tries once more', { timeout: 180_000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'board-store-lock-already-moved-'))
+  const runtime = join(dir, 'runtime')
+  mkdirSync(runtime, { mode: 0o700 })
+  const progress = join(dir, 'progress.md'), script = join(dir, 'board.mjs')
+  const hash = createHash('sha256').update(progress).digest('hex').slice(0, 16)
+  const folder = join(runtime, `agent-board-${hash}-messages`)
+  mkdirSync(folder)
+  const lock = join(folder, 'server.lock'), owner = join(folder, 'server.owner'), addressFile = join(runtime, `agent-board-${hash}.json`)
+  const parentPid = join(dir, 'parent.pid'), spawns = join(dir, 'spawns.log')
+  writeFileSync(progress, '# Synthetic\n')
+  writeFileSync(script, `globalThis.AGENT_BOARD = ${JSON.stringify({ path: progress, lang: 'en' })}\n${BOARD_SCRIPT}`)
+  const options = {
+    env: { ...process.env, CLAUDE_PROGRESS_FILE: '', HOME: dir, USERPROFILE: dir, TEMP: dir, TMP: dir, TMPDIR: dir, XDG_RUNTIME_DIR: runtime },
+    windowsHide: true, encoding: 'utf8', timeout: 60_000,
+  }
+  try {
+    const closedServer = createServer()
+    await new Promise((done, fail) => {
+      closedServer.once('error', fail)
+      closedServer.listen(0, '127.0.0.1', done)
+    })
+    const closedPort = closedServer.address().port
+    await new Promise((done, fail) => closedServer.close(error => error ? fail(error) : done()))
+    writeFileSync(owner, JSON.stringify({ pid: process.pid, port: closedPort, url: `http://127.0.0.1:${closedPort}/?t=synthetic` }))
+    const faults = [
+      `const read = fs.readFileSync
+let hasTaken = false
+fs.readFileSync = (file, ...args) => {
+  if (!hasTaken && String(file).endsWith('server.owner')) {
+    hasTaken = true
+    fs.writeFileSync(${JSON.stringify(lock)}, String(process.pid))
+    fs.writeFileSync(${JSON.stringify(parentPid)}, String(process.pid))
+  }
+  return read(file, ...args)
+}
+`,
+      `const rename = fs.renameSync
+fs.renameSync = (from, to, ...args) => {
+  if (String(from).endsWith('server.lock') && String(to).endsWith('.stale')) {
+    fs.writeFileSync(${JSON.stringify(lock)}, String(process.pid))
+    fs.writeFileSync(${JSON.stringify(parentPid)}, String(process.pid))
+    throw Object.assign(new Error('synthetic lock already moved'), { code: 'ENOENT' })
+  }
+  return rename(from, to, ...args)
+}
+`,
+    ]
+    for (const [index, fault] of faults.entries()) {
+      const preload = join(dir, `serve-fault-${index}.cjs`)
+      writeFileSync(lock, String(process.pid))
+      writeFileSync(spawns, '')
+      writeFileSync(preload, `const fs = require('node:fs')
+const childProcess = require('node:child_process')
+${fault}
+const spawn = childProcess.spawn
+childProcess.spawn = (command, args, ...rest) => {
+  if (Array.isArray(args) && args.includes('--serve-child')) fs.appendFileSync(${JSON.stringify(spawns)}, 'spawn\\n')
+  return spawn(command, args, ...rest)
+}
+require('node:module').syncBuiltinESMExports()
+`)
+
+      const result = spawnSync(process.execPath, ['-r', preload, script, '--serve', '--no-open'], options)
+      assert.equal(result.error, undefined)
+      assert.equal(readFileSync(spawns, 'utf8').trim().split(/\r?\n/).length, 2)
+      assert.equal(readFileSync(lock, 'utf8'), readFileSync(parentPid, 'utf8'))
+      assert.notEqual(readFileSync(parentPid, 'utf8'), String(process.pid))
+      assert.ok(result.stdout.includes(EN.serveStoreFailed('MESSAGE_STORE_IN_USE', folder)), result.stdout + result.stderr)
+      assert.ok(!result.stdout.includes('http://127.0.0.1:'))
+    }
+  } finally {
+    let page
+    try { page = JSON.parse(readFileSync(addressFile, 'utf8')) } catch {}
+    if (Number.isInteger(page?.pid) && page.pid > 1 && page.pid !== process.pid) {
+      try { process.kill(page.pid, 0); process.kill(page.pid) } catch {}
+      await waitFor(() => { try { process.kill(page.pid, 0); return false } catch { return true } })
+    }
+    await removeKilledPageFolder(dir)
   }
 })
 
@@ -1107,6 +1312,15 @@ test('a lock file still empty a moment after it was created is in use, and one l
     store = createMessaging(dir)
     assert.equal(readFileSync(join(dir, 'server.lock'), 'utf8'), String(process.pid))
   } finally { store?.close(); rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('a hub that cannot remove an old owner record gives its lock back and does not start', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'board-message-owner-unlink-'))
+  try {
+    mkdirSync(join(dir, 'server.owner'))
+    assert.throws(() => createMessaging(dir), error => error.code !== undefined && error.code !== 'ENOENT')
+    assert.equal(existsSync(join(dir, 'server.lock')), false)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
 test('a lock that changed before it was moved aside is put back', () => {
