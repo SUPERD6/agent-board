@@ -55,19 +55,30 @@ keeps its permissions; make that folder private yourself.
 
 The directory holds `messages.json` (the text of open messages, a hash of each finished
 one's text, target binding, id and receipts) and a
-`server.lock` containing the owning PID. A live owner, including one returning `EPERM` to
+`server.lock` containing the owning PID. It also holds `server.owner`, the address of the
+hub of the default folder, written once it listens and removed when it stops. The folder
+is private like the address file. A live owner, including one returning `EPERM` to
 the liveness probe, causes `MESSAGE_STORE_IN_USE`. A dead owner (`ESRCH`) or malformed PID
 is removed; lock creation makes at most three attempts, including when another process
 removes the old lock during recovery. PIDs outside 1..2147483647 are malformed.
+With the default folder, `--serve` waits up to 10 seconds for the owner's page.
+If none appears and that hub no longer answers at the address beside the lock (nothing
+listens there, or the program there refuses the hub's token or does not answer like a
+board page, as any other program would), it treats the lock as left by a hub that was killed: after a restart, its number can belong
+to another program. It moves the lock aside once and starts the page. A lock with no such
+address (a hub still starting, a hub killed before it listened, or another board using the
+folder through `--messages-dir`) and a folder given with `--messages-dir` are never taken
+over this way, nor is one whose hub accepts its token or does not answer in time.
 If the message folder cannot open, `--serve` names the folder and error code. For
-`MESSAGE_STORE_IN_USE`, check for another running board first; if none is running,
-delete that folder's `server.lock` and try again. Permission errors ask you to check
-that the folder belongs to your account and other accounts cannot open it. Other
+any `MESSAGE_STORE_IN_USE` that remains, check for another running board first; if none
+is running, delete that folder's `server.lock` and try again. Permission errors ask you
+to check that the folder belongs to your account and other accounts cannot open it. Other
 store errors suggest moving a possibly damaged `messages.json` out before retrying.
 
 Keep the store private and local. Do not use a shared drive or publish it. Any local
-program that can read the address file can send with its bearer URL; the board cannot
-identify the person pressing Send. Such a program can also keep your sends refused: if it
+program that can read the address file or `server.owner`, which holds the same bearer URL,
+can send with it; the board cannot identify the person pressing Send. Such a program can
+also keep your sends refused: if it
 registers a session, sends, claims the message and disconnects, over and over, each round
 leaves a message in doubt for 30 minutes, and at one round every 1.8 seconds or faster the
 store stays at `MESSAGE_LIMIT` until it stops. The connection cap does not stop it, since

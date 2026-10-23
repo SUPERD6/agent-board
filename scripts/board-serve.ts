@@ -253,7 +253,8 @@ export const startServer = (o: ServeOptions): void => {
   const stop = (): void => {
     if (isStopping) return
     isStopping = true
-    messaging.close()
+    // A lock a scanner holds for a moment must not stop the page from closing; the next start recovers the pid once this process is gone.
+    try { messaging.close() } catch {}
     closeLan()
     server.close()
     server.closeAllConnections()
@@ -451,7 +452,10 @@ export const startServer = (o: ServeOptions): void => {
       if (!res.headersSent) json(res, 500, {})
     })
   })
-  server.on('error', () => { messaging.close(); o.onStop() })
+  server.on('error', () => {
+    try { messaging.close() } catch {}
+    o.onStop()
+  })
   // The page asks every 3 seconds while it is open; the server goes once nobody has asked for
   // `idleMs` and no reply is on its way.
   const idle = setInterval(() => {
@@ -461,6 +465,11 @@ export const startServer = (o: ServeOptions): void => {
   server.on('close', () => clearInterval(idle))
   server.listen(o.port, '127.0.0.1', () => {
     port = (server.address() as AddressInfo).port
-    if (!o.onReady(`http://127.0.0.1:${port}/?t=${token}`, port)) stop()
+    const url = `http://127.0.0.1:${port}/?t=${token}`
+    if (!o.onReady(url, port)) stop()
+    else if (o.isDefaultMessagesDirectory) {
+      // A later --serve asks this address before it moves a lock this hub left behind.
+      try { messaging.recordOwner(port, url) } catch {}
+    }
   })
 }

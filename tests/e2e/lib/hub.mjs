@@ -252,7 +252,7 @@ export const withHub = async (specs, fn, { prepare } = {}) => {
         await source.connector.send({ id, target: target.connector.id, turn: target.connector.turn, text })
         return { id, text, started, from: source.agent + ':' + source.session }
       },
-      receipt: async (actor, sent) => {
+      receipt: async (actor, sent, { extraMs = 0 } = {}) => {
         let receipt, card, received
         const budget = await receiptBudget(hub)
         await seenWithin(async () => {
@@ -265,9 +265,9 @@ export const withHub = async (specs, fn, { prepare } = {}) => {
           received = actor.received.find(one => stored === 'ACK ' + one.nonce || stored.startsWith('ACK ' + one.nonce + ' '))
           card = (await hub.card(actor)).textContent
           return card
-        }, text => receipt?.status === 'acknowledged' && received && text.includes('Replied'), Math.max(1, budget.measuredMs - budget.pagePollMs - (performance.now() - sent.started)))
+        }, text => receipt?.status === 'acknowledged' && received && text.includes('Replied'), Math.max(1, budget.measuredMs + extraMs - budget.pagePollMs - (performance.now() - sent.started)))
         const elapsed = performance.now() - sent.started + budget.pagePollMs
-        assert.ok(elapsed <= budget.measuredMs, `${elapsed} ms including the page poll exceeds ${budget.measuredMs} ms`)
+        assert.ok(elapsed <= budget.measuredMs + extraMs, `${elapsed} ms including the page poll exceeds ${budget.measuredMs + extraMs} ms`)
         assert.ok(received, 'Native transport did not receive this message')
         assert.ok(!JSON.stringify(receipt).includes(received.nonce), 'The board shows the nonce: ' + JSON.stringify(receipt))
         assert.equal(received.text, sent.text)

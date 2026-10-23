@@ -23,7 +23,7 @@ registerHooks({ resolve(specifier, context, next) {
     return next(`${specifier}.ts`, context)
   }
 } })
-const { createMessaging } = await import('../scripts/board-messaging.ts')
+const { createMessaging, moveLockAside } = await import('../scripts/board-messaging.ts')
 const { serveModel } = await import('../hooks/serve.ts')
 const { parseProgress } = await import('../hooks/parse.ts')
 const { buildView } = await import('../hooks/view.ts')
@@ -381,7 +381,7 @@ fs.readFileSync = (file, ...args) => {
   } finally { await board?.close(); rmSync(dir, { recursive: true, force: true }) }
 })
 
-test('a --serve whose message folder is locked by a live process says which folder and why', () => {
+test('a --serve takes over its default folder\'s lock only when the hub its owner record names no longer answers; a lock without that record, a hub that answers, or a folder given with --messages-dir is never taken over', { timeout: 240_000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'board-store-failure-'))
   const runtime = join(dir, 'runtime')
   mkdirSync(runtime, { mode: 0o700 })
@@ -389,25 +389,147 @@ test('a --serve whose message folder is locked by a live process says which fold
   const hash = createHash('sha256').update(progress).digest('hex').slice(0, 16)
   const folder = join(runtime, `agent-board-${hash}-messages`)
   mkdirSync(folder)
-  writeFileSync(join(folder, 'server.lock'), String(process.pid))
+  const lock = join(folder, 'server.lock'), owner = join(folder, 'server.owner'), addressFile = join(runtime, `agent-board-${hash}.json`)
   writeFileSync(progress, '# Synthetic\n')
   writeFileSync(script, `globalThis.AGENT_BOARD = ${JSON.stringify({ path: progress, lang: 'en' })}\n${BOARD_SCRIPT}`)
+  const options = {
+    env: { ...process.env, CLAUDE_PROGRESS_FILE: '', HOME: dir, USERPROFILE: dir, TEMP: dir, TMP: dir, TMPDIR: dir, XDG_RUNTIME_DIR: runtime },
+    windowsHide: true, encoding: 'utf8', timeout: 40_000,
+  }
+  let pagePid
   try {
-    const result = spawnSync(process.execPath, [script, '--serve', '--no-open'], {
-      env: { ...process.env, CLAUDE_PROGRESS_FILE: '', HOME: dir, USERPROFILE: dir, TEMP: dir, TMP: dir, TMPDIR: dir, XDG_RUNTIME_DIR: runtime },
-      windowsHide: true, encoding: 'utf8', timeout: 30_000,
+    const closedServer = createServer()
+    await new Promise((done, fail) => {
+      closedServer.once('error', fail)
+      closedServer.listen(0, '127.0.0.1', done)
     })
+    const closedPort = closedServer.address().port
+    await new Promise((done, fail) => closedServer.close(error => error ? fail(error) : done()))
+    writeFileSync(lock, String(process.pid))
+    writeFileSync(owner, JSON.stringify({ pid: process.pid, port: closedPort, url: `http://127.0.0.1:${closedPort}/?t=synthetic` }))
+    const result = spawnSync(process.execPath, [script, '--serve', '--no-open'], options)
     assert.equal(result.error, undefined)
-    assert.ok(result.stdout.includes(EN.serveStoreFailed('MESSAGE_STORE_IN_USE', folder)), result.stdout + result.stderr)
-    assert.ok(!result.stdout.includes('http://127.0.0.1:'))
-    assert.equal(readFileSync(join(folder, 'server.lock'), 'utf8'), String(process.pid))
-    const direct = spawnSync(process.execPath, [script, '--serve-child'], {
-      env: { ...process.env, CLAUDE_PROGRESS_FILE: '', HOME: dir, USERPROFILE: dir, TEMP: dir, TMP: dir, TMPDIR: dir, XDG_RUNTIME_DIR: runtime },
-      windowsHide: true, encoding: 'utf8', timeout: 30_000,
-    })
+    assert.ok(result.stdout.includes('http://127.0.0.1:'), result.stdout + result.stderr)
+    const page = JSON.parse(readFileSync(addressFile, 'utf8'))
+    pagePid = page.pid
+    assert.ok(Number.isInteger(page.pid) && page.pid > 0)
+    assert.notEqual(page.pid, process.pid)
+    assert.equal(readFileSync(lock, 'utf8'), String(page.pid))
+    const pageOwner = JSON.parse(readFileSync(owner, 'utf8'))
+    const url = new URL(page.url)
+    assert.equal(pageOwner.pid, page.pid)
+    assert.equal(pageOwner.port, Number(url.port))
+    const closed = await fetch(new URL('/api/close', url), { method: 'POST', headers: { 'x-board-token': url.searchParams.get('t'), 'content-type': 'application/json' }, body: '{}', signal: AbortSignal.timeout(5000) })
+    assert.equal(closed.status, 200)
+    await closed.json()
+    await waitFor(() => { try { process.kill(page.pid, 0); return false } catch { return true } })
+    pagePid = undefined
+    assert.equal(existsSync(owner), false)
+    assert.equal(existsSync(lock), false)
+
+    writeFileSync(lock, String(process.pid))
+    const direct = spawnSync(process.execPath, [script, '--serve-child'], options)
+    assert.equal(direct.error, undefined)
     assert.notEqual(direct.status, 0)
     assert.equal(direct.stderr.trim(), 'MESSAGE_STORE_FAILED MESSAGE_STORE_IN_USE')
-  } finally { rmSync(dir, { recursive: true, force: true }) }
+    assert.equal(readFileSync(lock, 'utf8'), String(process.pid))
+
+    const answering = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ messagesDirectory: folder }))
+    })
+    try {
+      await new Promise((done, fail) => {
+        answering.once('error', fail)
+        answering.listen(0, '127.0.0.1', done)
+      })
+      const answeringPort = answering.address().port
+      writeFileSync(owner, JSON.stringify({ pid: process.pid, port: answeringPort, url: `http://127.0.0.1:${answeringPort}/?t=synthetic` }))
+      const named = await new Promise(done => {
+        const child = spawn(process.execPath, [script, '--serve', '--no-open'], { ...options, stdio: ['ignore', 'pipe', 'pipe'] })
+        let stdout = '', stderr = '', error
+        child.stdout.setEncoding('utf8')
+        child.stderr.setEncoding('utf8')
+        child.stdout.on('data', chunk => { stdout += chunk })
+        child.stderr.on('data', chunk => { stderr += chunk })
+        child.once('error', value => { error = value })
+        child.once('close', (status, signal) => done({ stdout, stderr, status, signal, error }))
+      })
+      assert.equal(named.error, undefined)
+      assert.ok(named.stdout.includes(EN.serveStoreFailed('MESSAGE_STORE_IN_USE', folder)), named.stdout + named.stderr)
+      assert.ok(!named.stdout.includes('http://127.0.0.1:'))
+      assert.equal(readFileSync(lock, 'utf8'), String(process.pid))
+    } finally {
+      await new Promise(done => answering.close(() => done()))
+    }
+
+    rmSync(owner, { force: true })
+    writeFileSync(lock, String(process.pid))
+    const missing = spawnSync(process.execPath, [script, '--serve', '--no-open'], options)
+    assert.equal(missing.error, undefined)
+    assert.ok(missing.stdout.includes(EN.serveStoreFailed('MESSAGE_STORE_IN_USE', folder)), missing.stdout + missing.stderr)
+    assert.ok(!missing.stdout.includes('http://127.0.0.1:'))
+    assert.equal(readFileSync(lock, 'utf8'), String(process.pid))
+
+    writeFileSync(owner, JSON.stringify({ pid: process.pid + 1, port: closedPort, url: `http://127.0.0.1:${closedPort}/?t=synthetic` }))
+    const different = spawnSync(process.execPath, [script, '--serve', '--no-open'], options)
+    assert.equal(different.error, undefined)
+    assert.ok(different.stdout.includes(EN.serveStoreFailed('MESSAGE_STORE_IN_USE', folder)), different.stdout + different.stderr)
+    assert.ok(!different.stdout.includes('http://127.0.0.1:'))
+    assert.equal(readFileSync(lock, 'utf8'), String(process.pid))
+
+    const silent = createServer(() => {})
+    const sockets = new Set()
+    silent.on('connection', socket => {
+      sockets.add(socket)
+      socket.once('close', () => sockets.delete(socket))
+    })
+    try {
+      await new Promise((done, fail) => {
+        silent.once('error', fail)
+        silent.listen(0, '127.0.0.1', done)
+      })
+      const silentPort = silent.address().port
+      writeFileSync(owner, JSON.stringify({ pid: process.pid, port: silentPort, url: `http://127.0.0.1:${silentPort}/?t=synthetic` }))
+      const unanswered = await new Promise(done => {
+        const child = spawn(process.execPath, [script, '--serve', '--no-open'], { ...options, stdio: ['ignore', 'pipe', 'pipe'] })
+        let stdout = '', stderr = '', error
+        child.stdout.setEncoding('utf8')
+        child.stderr.setEncoding('utf8')
+        child.stdout.on('data', chunk => { stdout += chunk })
+        child.stderr.on('data', chunk => { stderr += chunk })
+        child.once('error', value => { error = value })
+        child.once('close', (status, signal) => done({ stdout, stderr, status, signal, error }))
+      })
+      assert.equal(unanswered.error, undefined)
+      assert.ok(unanswered.stdout.includes(EN.serveStoreFailed('MESSAGE_STORE_IN_USE', folder)), unanswered.stdout + unanswered.stderr)
+      assert.ok(!unanswered.stdout.includes('http://127.0.0.1:'))
+      assert.equal(readFileSync(lock, 'utf8'), String(process.pid))
+    } finally {
+      for (const socket of sockets) socket.destroy()
+      await new Promise(done => silent.close(() => done()))
+    }
+
+    const store = join(dir, 'store')
+    mkdirSync(store)
+    writeFileSync(join(store, 'server.lock'), String(process.pid))
+    writeFileSync(join(store, 'server.owner'), JSON.stringify({ pid: process.pid, port: closedPort, url: `http://127.0.0.1:${closedPort}/?t=synthetic` }))
+    const explicit = spawnSync(process.execPath, [script, '--serve', '--no-open', '--messages-dir', store], options)
+    assert.equal(explicit.error, undefined)
+    assert.ok(explicit.stdout.includes(EN.serveStoreFailed('MESSAGE_STORE_IN_USE', store)), explicit.stdout + explicit.stderr)
+    assert.ok(!explicit.stdout.includes('http://127.0.0.1:'))
+    assert.equal(readFileSync(join(store, 'server.lock'), 'utf8'), String(process.pid))
+  } finally {
+    // Only a page this test started can have written into its private runtime folder.
+    let page
+    try { page = JSON.parse(readFileSync(addressFile, 'utf8')) } catch {}
+    const pid = page?.pid ?? pagePid
+    if (pid && pid !== process.pid) {
+      try { process.kill(pid, 0); process.kill(pid) } catch {}
+      await waitFor(() => { try { process.kill(pid, 0); return false } catch { return true } })
+    }
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('a message store the account cannot read reports its permission code and gives permission advice', { skip: process.getuid?.() === 0 ? 'root reads any file' : false }, () => {
@@ -975,6 +1097,9 @@ test('a lock file still empty a moment after it was created is in use, and one l
   let store
   try {
     writeFileSync(join(dir, 'server.lock'), '')
+    // A lock that new stays just created however slowly the runner reaches the next line.
+    const soon = new Date(Date.now() + 60_000)
+    utimesSync(join(dir, 'server.lock'), soon, soon)
     assert.throws(() => createMessaging(dir), /MESSAGE_STORE_IN_USE/)
     assert.equal(readFileSync(join(dir, 'server.lock'), 'utf8'), '')
     const old = new Date(Date.now() - 60_000)
@@ -983,6 +1108,41 @@ test('a lock file still empty a moment after it was created is in use, and one l
     assert.equal(readFileSync(join(dir, 'server.lock'), 'utf8'), String(process.pid))
   } finally { store?.close(); rmSync(dir, { recursive: true, force: true }) }
 })
+
+test('a lock that changed before it was moved aside is put back', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'board-message-lock-aside-'))
+  const lock = join(dir, 'server.lock')
+  try {
+    writeFileSync(lock, '123')
+    assert.equal(moveLockAside(lock, '456'), false)
+    assert.equal(readFileSync(lock, 'utf8'), '123')
+    assert.deepEqual(readdirSync(dir).filter(name => name.endsWith('.stale')), [])
+    assert.equal(moveLockAside(lock, '123'), true)
+    assert.equal(existsSync(lock), false)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('a hub whose lock cannot be removed still stops when asked', async () => fixture(async (board, dir) => {
+  const lock = join(dir, 'messages', 'server.lock')
+  const pid = readFileSync(lock, 'utf8')
+  assert.equal((await board.call('/api/close', {})).status, 200)
+  let timer
+  try {
+    const code = await Promise.race([board.exited, new Promise((done, fail) => { timer = setTimeout(() => fail(new Error('hub did not stop within 10 seconds')), 10_000) })])
+    assert.equal(code, 0)
+  } finally { clearTimeout(timer) }
+  assert.deepEqual(readdirSync(join(dir, 'runtime')).filter(name => /^agent-board-.*\.json$/.test(name)), [])
+  assert.equal(readFileSync(lock, 'utf8'), pid)
+  const restarted = await start(dir)
+  try {
+    assert.notEqual(readFileSync(lock, 'utf8'), pid)
+    assert.ok((await restarted.call('/api/board')).body.messaging.enabled)
+  } finally { await restarted.close() }
+}, `const original = fs.unlinkSync
+fs.unlinkSync = (file, ...args) => {
+  if (String(file) === path.join(directory, 'messages', 'server.lock')) throw Object.assign(new Error('synthetic lock unlink failure'), { code: 'EPERM' })
+  return original(file, ...args)
+}`))
 
 test('a hub that finds a dead pid in the lock after another hub took it puts that lock back and does not start', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'board-message-lock-race-'))

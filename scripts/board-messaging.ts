@@ -28,6 +28,19 @@ const replaceFile = (from: string, to: string): void => {
   }
 }
 
+// Two hubs can find the same dead pid. Only one can move the lock aside, and one that moved a
+// lock another hub had just taken puts it back.
+export const moveLockAside = (lock: string, recorded: string): boolean => {
+  const aside = `${lock}.${process.pid}.stale`
+  renameSync(lock, aside)
+  if (readFileSync(aside, 'utf8') !== recorded) {
+    try { linkSync(aside, lock) } catch {} finally { try { unlinkSync(aside) } catch {} }
+    return false
+  }
+  unlinkSync(aside)
+  return true
+}
+
 // Only a host adapter can register a receiving session. Registrations and secrets die with
 // this server; message ids and receipts survive restart so uncertainty is never auto-retried.
 const openMessaging = (directory: string, isDefault = false) => {
@@ -41,6 +54,7 @@ const openMessaging = (directory: string, isDefault = false) => {
   }
   const file = join(root, 'messages.json')
   const lock = join(root, 'server.lock')
+  const owner = join(root, 'server.owner')
   const acquire = (): void => {
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
@@ -67,15 +81,7 @@ const openMessaging = (directory: string, isDefault = false) => {
             if (code !== 'ESRCH') throw probe
           }
         }
-        // Two hubs can find the same dead pid. Only one can move the lock aside, and one that moved a
-        // lock another hub had just taken puts it back.
-        const aside = `${lock}.${process.pid}.stale`
-        renameSync(lock, aside)
-        if (readFileSync(aside, 'utf8') !== recorded) {
-          try { linkSync(aside, lock) } catch {} finally { try { unlinkSync(aside) } catch {} }
-          throw new Error('MESSAGE_STORE_IN_USE')
-        }
-        unlinkSync(aside)
+        if (!moveLockAside(lock, recorded)) throw new Error('MESSAGE_STORE_IN_USE')
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
       }
@@ -153,7 +159,14 @@ const openMessaging = (directory: string, isDefault = false) => {
     return one
   }
   return {
-    close: release,
+    recordOwner: (port: number, url: string): void => {
+      writeFileSync(owner, JSON.stringify({ pid: process.pid, port, url }), { mode: 0o600 })
+    },
+    close: (): void => {
+      // A lock left behind keeps its owner record so the next start can take it over.
+      release()
+      try { if (JSON.parse(readFileSync(owner, 'utf8')).pid === process.pid) unlinkSync(owner) } catch {}
+    },
     snapshot: (now: number, reports: readonly ProgressBinding[] = []) => {
       expire(now)
       for (const [id, one] of expectations) expectations.set(id, observeSession(one, reports, now))

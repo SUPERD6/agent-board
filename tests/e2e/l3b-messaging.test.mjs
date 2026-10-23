@@ -11,9 +11,9 @@ import { block } from './lib/writers.mjs'
 import { finishedRecord, isFinishedRecord, readStore, seedStore } from './lib/hub-wire.mjs'
 
 const text = 'Review route /health?mode=ready — 測試 intact\nKeep both lines.'
-const nativeDelivery = async (hub, source, receiver, id = 'AB-synthetic-message') => {
+const nativeDelivery = async (hub, source, receiver, id = 'AB-synthetic-message', options) => {
   const sent = await hub.send(source, receiver, text, id)
-  const result = await hub.receipt(receiver, sent)
+  const result = await hub.receipt(receiver, sent, options)
   await hub.cleanPage(sent)
   return { ...result, sent }
 }
@@ -160,7 +160,17 @@ describe('L3b messages between sessions and agents', { timeout: 90000, concurren
     assert.ok(rows.length >= LIVE_SESSIONS, `The board shows ${rows.length} tasks, not the scale budget`)
     assert.equal(readStore(hub.messages).filter(isFinishedRecord).length, FINISHED_KEPT)
     assert.equal((await hub.snapshot()).messaging.messages.length, FINISHED_KEPT)
-    const { sent } = await nativeDelivery(hub, 'page', receiver)
+    // A delivery needs a claim, a receipt and the page poll that reads it: each is a full-store request.
+    // Cap the allowance so a slowdown of every request still fails the budget.
+    const snapshotTimes = []
+    for (let index = 0; index < 3; index++) {
+      const started = performance.now()
+      await hub.snapshot()
+      snapshotTimes.push(performance.now() - started)
+    }
+    const slowest = Math.max(...snapshotTimes)
+    console.log(`size cap: ${Math.round(slowest)} ms per snapshot`)
+    const { sent } = await nativeDelivery(hub, 'page', receiver, undefined, { extraMs: Math.min(Math.ceil(3 * slowest), 8000) })
     // The new message finishes into a full store: the oldest finished one goes, so the file stays at its cap.
     const store = readStore(hub.messages)
     assert.equal(store.filter(isFinishedRecord).length, FINISHED_KEPT)

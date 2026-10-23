@@ -17,6 +17,7 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { archivableAsking, confirmMatches, confirmTask, mergeBlock, takeArchivable, takeManualDone, takeTask, setManualStep } from '../hooks/blocks'
 import type { ConfirmedTask } from '../hooks/blocks'
 import { startServer } from './board-serve'
+import { moveLockAside } from './board-messaging'
 import { idleTimeout } from '../hooks/serve'
 import { boardKey, boardScreen, boardText, CHAT_MAX, chatText, doneToday, emptyBoardState, peekInbox, boardItems, pinned, redact } from '../hooks/board'
 import type { BoardAction, BoardState } from '../hooks/board'
@@ -1104,36 +1105,48 @@ const serveBoard = async (): Promise<void> => {
     return value === undefined ? [] : [name, value]
   })
   if (args.includes('--allow-resume')) rest.push('--allow-resume')
-  // In the board's own folder, not the agent's, so the server holds no project folder open.
-  const child = spawn(process.execPath, [script, '--serve-child', ...rest], { cwd: dirname(path), detached: true, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
-  let stderr = ''
-  child.stderr?.on('data', (chunk: Buffer) => { stderr = (stderr + chunk.toString('utf8')).slice(-16_384) })
-  // The child prints its address once it listens; it exits at once when it cannot.
-  const url = await new Promise<string | null>(done => {
-    let out = ''
-    const timer = setTimeout(() => done(null), 10_000)
-    const end = (value: string | null): void => {
-      clearTimeout(timer)
-      done(value)
-    }
-    child.stdout?.on('data', (chunk: Buffer) => {
-      out += chunk.toString('utf8')
-      if (out.includes('\n')) end(out.split('\n')[0]?.trim() || null)
+  const startPage = async (): Promise<{ url: string | null; stderr: string }> => {
+    // In the board's own folder, not the agent's, so the server holds no project folder open.
+    const child = spawn(process.execPath, [script, '--serve-child', ...rest], { cwd: dirname(path), detached: true, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
+    let stderr = ''
+    child.stderr?.on('data', (chunk: Buffer) => { stderr = (stderr + chunk.toString('utf8')).slice(-16_384) })
+    // The child prints its address once it listens; it exits at once when it cannot.
+    const url = await new Promise<string | null>(done => {
+      let out = ''
+      const timer = setTimeout(() => done(null), 10_000)
+      const end = (value: string | null): void => {
+        clearTimeout(timer)
+        done(value)
+      }
+      child.stdout?.on('data', (chunk: Buffer) => {
+        out += chunk.toString('utf8')
+        if (out.includes('\n')) end(out.split('\n')[0]?.trim() || null)
+      })
+      child.once('close', () => end(null))
+      child.once('error', () => end(null))
     })
-    child.once('close', () => end(null))
-    child.once('error', () => end(null))
-  })
-  // One that has not answered in time would start late and hold a page nobody was told about.
-  if (url === null && child.exitCode === null) child.kill()
-  child.stdout?.destroy()
-  child.stderr?.destroy()
-  child.unref()
-  if (url === null) {
+    // One that has not answered in time would start late and hold a page nobody was told about.
+    if (url === null && child.exitCode === null) child.kill()
+    child.stdout?.destroy()
+    child.stderr?.destroy()
+    child.unref()
+    return { url, stderr }
+  }
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const { url, stderr } = await startPage()
+    if (url !== null) return show(url)
     // Another `--serve` started at the same moment may have written its address first: this
     // page stopped then, and that one is the page to show. When it took the message folder
     // first, this page stopped before that one had written its address, so it is given the
     // few seconds a page takes to start.
     const storeCode = /^MESSAGE_STORE_FAILED ([A-Z][A-Z0-9_]{0,63})\r?$/m.exec(stderr)?.[1]
+    const lock = join(messagesDirectory(), 'server.lock')
+    let held = ''
+    if (attempt === 0 && storeCode === 'MESSAGE_STORE_IN_USE' && flag('--messages-dir') === undefined) {
+      try {
+        held = readFileSync(lock, 'utf8')
+      } catch { held = '' }
+    }
     const until = Date.now() + (storeCode === 'MESSAGE_STORE_IN_USE' ? 10_000 : 0)
     for (;;) {
       const other = await runningPage()
@@ -1141,10 +1154,27 @@ const serveBoard = async (): Promise<void> => {
       if (Date.now() >= until) break
       await new Promise(done => setTimeout(done, 200))
     }
+    // A hub killed without stopping leaves its pid, and after a restart that number can belong to
+    // another program. The hub of the default folder leaves its address beside the lock, so the
+    // lock is moved only when that address no longer answers. A hub still starting has no address
+    // yet, and another board using this folder through --messages-dir writes none, so neither is
+    // ever taken over. A folder given here through --messages-dir is never taken over either.
+    if (/^[1-9][0-9]*$/.test(held)) {
+      try {
+        const owner = JSON.parse(readFileSync(join(messagesDirectory(), 'server.owner'), 'utf8')) as Partial<Running>
+        if (owner.pid === Number(held) && typeof owner.port === 'number' && Number.isInteger(owner.port) && typeof owner.url === 'string'
+          && /^http:\/\/127\.0\.0\.1:\d+\/\?t=[\w-]+$/.test(owner.url)
+          && owner.port === Number(new URL(owner.url).port)
+          && await ping({ pid: owner.pid, port: owner.port, url: owner.url, path: '', built: '' }, 5000) === null
+          && readFileSync(lock, 'utf8') === held) {
+          try { moveLockAside(lock, held) } catch {}
+          continue
+        }
+      } catch {}
+    }
     process.stdout.write(`\n${storeCode ? s.serveStoreFailed(storeCode, messagesDirectory()) : s.serveFailed(s.serveNotStarted)}\n`)
     return
   }
-  await show(url)
 }
 
 // The home folder, or none when the computer does not say: a failure must not raise another.
