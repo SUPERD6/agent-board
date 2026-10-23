@@ -1475,7 +1475,8 @@ test('the sh reporter logs CLEANUP_FAILED when its sweep fails, but not for a fi
   mkdirSync(tools, { recursive: true })
   // A stand-in find on PATH says what a real one would, and fails.
   const sweep = async (complaint, session) => {
-    f.save(join(tools, 'find'), `#!/bin/sh\nprintf '%s' "$LC_ALL" > "$HOME/sweep-locale"\n${complaint ? `printf '%s\\n' '${complaint}' >&2\n` : ''}exit 1\n`)
+    // Only the sweep that removes files records its locale: the counted age look runs after it.
+    f.save(join(tools, 'find'), `#!/bin/sh\ncase " $* " in *" -exec "*) printf '%s' "$LC_ALL" > "$HOME/sweep-locale" ;; esac\n${complaint ? `printf '%s\\n' '${complaint}' >&2\n` : ''}exit 1\n`)
     chmodSync(join(tools, 'find'), 0o700)
     const out = await nativeProcess('/bin/sh', [script, 'codex', 'prompt'], { ...f.env, LC_ALL: 'POSIX', PATH: `${tools}${delimiter}${f.env.PATH}` }, JSON.stringify({ session_id: session, prompt: 'PRIVATE_RAW_PROMPT' }))
     assert.equal(out.error, undefined, hookFailure(out))

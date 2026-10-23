@@ -169,6 +169,8 @@ export type Overview = { waiting: number; active: number; due: number; today: nu
 
 export type View = {
   warning?: string
+  // What the board cleared in the last 7 days (retention.ts); absent when it cleared nothing.
+  pruned?: string
   current: CurrentView | null
   pr: PrView | null
   overview: Overview
@@ -1012,4 +1014,34 @@ export const progressBar = (done: number, total: number, width: number): { fille
   const filled = total === 0 ? 0 : Math.round((done / total) * cells)
 
   return { filled: '━'.repeat(filled), rest: '─'.repeat(cells - filled) }
+}
+
+// The board's view, built once for the same inputs (#373). After each change of the file the pane,
+// the line under the prompt and the reminders each asked for it, and on a big board each build took
+// a third of a second. Inputs are compared by value, so a copy read again counts as the same; the
+// strings table by its language. It keeps the last `size` views, so the dashboard's view (no
+// session) does not push the session's out. A view it hands out is shared: callers copy, never
+// change it.
+export const viewCache = (size = 2): { view: (...args: Parameters<typeof buildView>) => View; built: () => number } => {
+  let kept: Array<{ args: readonly unknown[]; key: string; view: View }> = []
+  let built = 0
+  const keyOf = (args: readonly unknown[]): string => JSON.stringify(args.map((arg, index) => (index === 6 ? (arg as Strings | undefined)?.lang ?? null : arg ?? null)))
+
+  return {
+    view: (...args) => {
+      const same = kept.find(one => one.args.length === args.length && one.args.every((arg, index) => arg === args[index]))
+      if (same !== undefined) return same.view
+      const key = keyOf(args)
+      const found = kept.find(one => one.key === key)
+      if (found !== undefined) {
+        kept = [{ ...found, args }, ...kept.filter(one => one !== found)]
+        return found.view
+      }
+      built += 1
+      const view = buildView(...args)
+      kept = [{ args, key, view }, ...kept].slice(0, size)
+      return view
+    },
+    built: () => built,
+  }
 }
