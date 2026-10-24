@@ -547,6 +547,68 @@ test('an idle poll reads the questions again once another session changes the le
   expect(world.reads).toContain(LEDGER)
 })
 
+test('idle polls run no question pass while only this session\'s background jobs change its list', async ($, on) => {
+  const board = `## demo\n${block('a1b2c301', 'waiting', 1, '- [?] Publish the first plan, OK?')}`
+  const world = makeWorld([[FILE, board]])
+  world.env = english
+  const clock = engineBeneath(on, world)
+  on('tool.call', { tool: 'SyntheticBackground' }, () => ({ result: 'Synthetic job started' }))
+  await $.session.start(START)
+  for (let n = 0; n < 3; n++) await clock.advance(2000)
+  const board0 = world.files.get(FILE)
+  const jobs = (): unknown => Object.entries(world.store ?? {}).find(([key]) => key.startsWith('mirror:'))?.[1]
+  // Before each poll a background job starts: this session's list changes (its job count and
+  // ids) and no file does. None of that is a question, so no poll has anything to pass again.
+  const passed: boolean[] = []
+  for (let n = 0; n < 5; n++) {
+    await $.tool.call({ tool: 'SyntheticBackground', tool_use_id: `synthetic-job-${n}`, run_in_background: true })
+    world.reads = []
+    await clock.advance(2000)
+    passed.push(world.reads.includes(LEDGER))
+  }
+  expect(jobs()).toMatchObject({ backgroundJobs: 5 })
+  expect(world.files.get(FILE)).toBe(board0)
+  expect(passed).toEqual([false, false, false, false, false])
+})
+
+test('remembered answers aging out run no question pass, and after a new answer is taken the polls are quiet again', { timeoutMs: 60_000 }, async ($, on) => {
+  const world = makeWorld([[FILE, '## demo\n']])
+  world.env = english
+  world.reply = prompt => (prompt.includes('TITLE:') ? 'TITLE: Synthetic work\nCONTEXT: Synthetic data\nDONE: Synthetic step\nNEXT: -\nASK: -' : undefined)
+  const clock = engineBeneath(on, world)
+  const turn = (n: number, words = `Synthetic work ${n} is done.`): string => JSON.stringify({ session_id: `synthetic-session-${n}`, cwd: '/work/demo', prompt: 'Synthetic request', last_assistant_message: words })
+  const polls = async (count: number): Promise<boolean[]> => {
+    const passed: boolean[] = []
+    for (let n = 0; n < count; n++) {
+      world.reads = []
+      await clock.advance(2000)
+      passed.push(world.reads.includes(LEDGER))
+    }
+    return passed
+  }
+  await $.session.start(START)
+  // Three other agents' sessions end a turn a minute apart, and the pane remembers each one's answer.
+  for (let n = 1; n <= 3; n++) {
+    put(world, `${INBOX}/codex-turn-${1_760_000_000 + n * 60}-1.json`, turn(n), 1_000 + n)
+    await polls(30)
+  }
+  expect(world.files.get(FILE)!.match(/agent=codex/g)).toHaveLength(3)
+  // Twelve quiet minutes: each answer is kept ten minutes after a pass first carries it, then
+  // dropped. Dropping one leaves nothing new for a pass to find.
+  const quiet = await polls(360)
+  const board0 = world.files.get(FILE)
+  // The first session ends its turn again with the same words: the block stays as it is and no
+  // question file changes. The inbox look and the take read the questions; once the new answer is
+  // carried, no poll passes again.
+  put(world, `${INBOX}/codex-turn-${1_760_001_000}-1.json`, turn(1, 'Synthetic work 1 is done.'), 2_000)
+  const taken = await polls(5)
+  const after = await polls(10)
+  expect(world.files.get(FILE)).toBe(board0)
+  expect(quiet.flatMap((passed, n) => (passed ? [n] : []))).toEqual([])
+  expect(taken.some(Boolean)).toBe(true)
+  expect(after.flatMap((passed, n) => (passed ? [n] : []))).toEqual([])
+})
+
 test('a question file written within the last poll is read again at the next poll, whatever its time and size say', async ($, on) => {
   const board = `## demo\n${block('a1b2c301', 'waiting', 1, '- [?] Publish the first plan, OK?')}`
   const world = makeWorld([[FILE, board]])
