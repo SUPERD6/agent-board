@@ -159,8 +159,8 @@ export const runCodexLocal = async (args: string[], boardPath: string, s: String
 
   if (mode === '--codex-event' || mode === '--codex-report' || mode === '--agent-status') {
     const now = Date.now(), supplied = Number(flag('--hook-started'))
-    // The worker sends its own past start; a future value would hold back this session's queued events.
-    const started = Number.isSafeInteger(supplied) && supplied <= now && supplied >= now - 10000 ? supplied : now
+    // Keep the source time even after a slow launch: re-dating an old Stop can replace a newer prompt.
+    const started = Number.isSafeInteger(supplied) && supplied >= 0 && supplied <= now ? supplied : now
     const value = flag('--hook-deadline')
     const hookDeadline = value === undefined ? Infinity : Number(value)
     if (value !== undefined && !Number.isSafeInteger(hookDeadline)) throw new Error('INVALID_HOOK_DEADLINE')
@@ -248,6 +248,8 @@ export const runCodexLocal = async (args: string[], boardPath: string, s: String
       const saved = readLocal(recordFile)
       const original = saved === null ? null : JSON.parse(saved) as CodexReport & { appliedAt?: number }
       if (original?.agent && original.agent !== agent) throw new Error('SESSION_CONFLICT')
+      // Direct events can arrive out of order too, before they ever enter the pending queue.
+      if (mode !== '--codex-report' && original !== null && (at ?? Date.parse(now)) < (original.appliedAt ?? Date.parse(original.updated))) return original
       const bytes = readBytes(progress) ?? Buffer.alloc(0)
       const text = bytes.toString('utf8')
       const previous = original === null || mode === '--codex-report' ? original : boardConfirmedReport(text, original, owner)
