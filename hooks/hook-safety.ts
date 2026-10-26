@@ -126,7 +126,7 @@ const isReport = args.includes('--codex-report')
 const fail = code => { hookError(code); process.exitCode = isReport ? 1 : 0; if (!isReport && ['cursor', 'gemini', 'antigravity'].includes(agent)) process.stdout.write('{}\\n'); return false }
 const run = async () => {
   const now = Date.now(), supplied = Number(value('--hook-started'))
-  const started = Math.floor(Math.min(performance.timeOrigin, Number.isSafeInteger(supplied) && supplied <= now && supplied >= now - 10000 ? supplied : Infinity))
+  const started = Math.floor(Math.min(performance.timeOrigin, Number.isSafeInteger(supplied) && supplied >= 0 && supplied <= now ? supplied : Infinity))
   if (safeAgent === 'unknown') return fail('UNSUPPORTED_AGENT')
   const required = Number(value('--hook-version'))
   if (!Number.isInteger(required) || required < 1 || required > ${HOOK_VERSION}) return fail('REPORTER_UPGRADE_REQUIRED')

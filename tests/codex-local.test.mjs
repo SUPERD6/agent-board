@@ -790,7 +790,7 @@ test('the hook deadline counts from the process start, not from when the worker 
   const queued = pendingFiles(f)[0]
   assert.ok(queued, 'an expired reporter deadline must save the event in pending/')
   assert.equal(JSON.parse(readFileSync(join(f.root, 'pending', queued))).at, at)
-  for (const [index, invalid] of [String(Date.now() + 60000), String(Date.now() - 11000), '1.5', 'NaN', '9007199254740992'].entries()) {
+  for (const [index, invalid] of [String(Date.now() + 60000), '-1', '1.5', 'NaN', '9007199254740992'].entries()) {
     const id = `invalid-start-session-${index}`
     const out = spawnSync(process.execPath, [worker, ...argv, '--hook-started', invalid], { env: f.env, input: JSON.stringify({ session_id: id }), encoding: 'utf8', windowsHide: true, timeout: 5000 })
     assert.equal(out.status, 0, out.stderr)
@@ -801,13 +801,53 @@ test('the hook deadline counts from the process start, not from when the worker 
   }
 }))
 
+test('an Antigravity worker delayed past ten seconds preserves its event time without overwriting newer work', () => fixture(f => {
+  assert.equal(f.install('--agent', 'antigravity', '--apply').status, 0)
+  const conversationId = 'synthetic-delayed-antigravity-241'
+  const old = Date.now() - 11000, newer = Date.now() - 1000
+  const report = (state, event, at) => f.command(['--agent-status', '--agent', 'antigravity', '--state', state, '--event', event, '--hook-started', String(at)], { conversationId })
+  assert.equal(report('working', 'PreInvocation', newer).status, 0)
+  const before = readFileSync(f.progress)
+  const result = spawnSync(process.execPath, [join(f.root, 'agent-board-hook.mjs'), '--hook-version', '1', '--hook-event', 'Stop', '--agent-status', '--agent', 'antigravity', '--state', 'waiting', '--event', 'Stop', '--progress-file', f.progress, '--hook-started', String(old)], {
+    env: f.env, input: JSON.stringify({ conversationId }), encoding: 'utf8', windowsHide: true, timeout: 5000,
+  })
+  assert.equal(result.status, 0, result.stderr)
+  const queued = pendingFiles(f)
+  assert.equal(queued.length, 1, 'the late worker must queue its expired event instead of re-dating it')
+  assert.equal(JSON.parse(readFileSync(join(f.root, 'pending', queued[0]), 'utf8')).at, old)
+  assert.deepEqual(readFileSync(f.progress), before)
+  assert.equal(report('working', 'PreInvocation', newer).status, 0)
+  assert.deepEqual(pendingFiles(f), [])
+  assert.deepEqual(readFileSync(f.progress), before)
+  const owner = createHash('sha256').update(`antigravity:${conversationId}`).digest('hex')
+  assert.equal(JSON.parse(readFileSync(join(f.root, 'sessions', `${owner}.json`), 'utf8')).appliedAt, newer)
+}))
+
+test('an older live lifecycle event cannot replace a newer state or its update time', () => fixture(f => {
+  assert.equal(f.install('--agent', 'antigravity', '--apply').status, 0)
+  const conversationId = 'synthetic-ordered-antigravity-241'
+  const old = Date.now() - 1500, newer = Date.now() - 1000
+  const report = (state, event, at) => f.command(['--agent-status', '--agent', 'antigravity', '--state', state, '--event', event, '--hook-started', String(at)], { conversationId })
+  assert.equal(report('waiting', 'Stop', newer).status, 0)
+  const before = readFileSync(f.progress)
+  const owner = createHash('sha256').update(`antigravity:${conversationId}`).digest('hex')
+  const record = join(f.root, 'sessions', `${owner}.json`)
+  const previous = readFileSync(record)
+  assert.equal(report('working', 'PostInvocation', old).status, 0)
+  assert.deepEqual(readFileSync(f.progress), before)
+  assert.deepEqual(readFileSync(record), previous)
+  assert.equal(report('working', 'PreInvocation', newer + 1).status, 0)
+  assert.equal(JSON.parse(readFileSync(record, 'utf8')).state, 'working')
+  assert.equal(JSON.parse(readFileSync(record, 'utf8')).appliedAt, newer + 1)
+}))
+
 test('a hook worker that starts after the host would stop it still reads its input and queues the event', () => fixture(f => {
   // A cold Windows PowerShell start can delay Antigravity's worker past its 3 s host limit (#241).
   assert.equal(f.install('--agent', 'antigravity', '--apply').status, 0)
   const worker = join(f.root, 'agent-board-hook.mjs')
   const conversationId = 'late-antigravity-session'
   const argv = ['--hook-version', '1', '--hook-event', 'Stop', '--agent-status', '--agent', 'antigravity', '--state', 'waiting', '--event', 'Stop', '--progress-file', f.progress]
-  // 3 s back is past the 2.7 s input line and leaves 7 s for Node to start inside the 10 s --hook-started window.
+  // Three seconds back is past the input deadline, so the worker must use late-input queueing.
   const at = Date.now() - 3000
   const result = spawnSync(process.execPath, [worker, ...argv, '--hook-started', String(at)], { env: f.env, input: JSON.stringify({ conversationId }), encoding: 'utf8', windowsHide: true, timeout: 20000 })
   assert.equal(result.status, 0, hookFailure(result))
