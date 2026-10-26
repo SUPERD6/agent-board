@@ -1724,6 +1724,22 @@ test('native ownership loss during poll recovery closes the exact binding', asyn
   })
 })
 
+test('a handoff reads its current progress baseline without depending on the last page poll', async () => fixture(async (board, dir) => {
+  await board.call('/api/board')
+  const future = Date.now() + 2000
+  const progress = updated => `## Synthetic\n<!-- auto session=aabbccdd agent=codex state=working updated=${new Date(updated).toISOString()} resume=native-baseline -->\n### Existing report\n- [~] This report preceded the handoff\n<!-- /auto session=aabbccdd -->\n`
+  writeFileSync(join(dir, 'progress.md'), progress(future))
+  const result = await boardClient(board.address).expect({ id: 'baseline1', agent: 'codex', session: 'native-baseline', surface: 'Synthetic', timeoutMs: 10000 })
+  assert.ok(future > result.deadline - 10000, 'the baseline report must be ahead of the handoff clock')
+  await pause(Math.max(0, future - Date.now() + 20))
+  let row = (await board.call('/api/board')).body.messaging.sessions.find(one => one.id === result.id)
+  assert.equal(row.status, 'waiting', 'a report present before the handoff must not count as its new response')
+  assert.equal(row.progress, true)
+  writeFileSync(join(dir, 'progress.md'), progress(Date.now()))
+  row = (await board.call('/api/board')).body.messaging.sessions.find(one => one.id === result.id)
+  assert.equal(row.status, 'reported')
+}))
+
 test('handoffs time out visibly until exact fresh progress appears, independently of a live receiver', async () => fixture(async (board, dir) => {
   const client = boardClient(board.address)
   const request = { id: 'link1', agent: 'antigravity', session: 'native1', surface: 'Synthetic CLI', timeoutMs: 1000 }

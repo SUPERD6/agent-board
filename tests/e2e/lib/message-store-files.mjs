@@ -40,7 +40,7 @@ export const classifyMessageStoreFiles = (entries, ownedPids, previous = message
   const present = new Set(entries.map(one => one.name))
   for (const name of previous.pending) if (!present.has(name)) next.stray.add(name)
   for (const { name, bytes } of entries) {
-    const match = claimName.exec(name)
+    const match = name.match(claimName)
     const pid = Number(match?.[1])
     if (!match || !Number.isSafeInteger(pid) || pid > 2147483647 || !ownedPids.has(pid)) { next.stray.add(name); continue }
     const expected = Buffer.from(JSON.stringify({ version: 1, pid, nonce: match[2] }) + '\n')

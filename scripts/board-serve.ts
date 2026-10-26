@@ -25,7 +25,7 @@ export type ServeOptions = {
   allowResume?: boolean
   messagesDirectory: string
   isDefaultMessagesDirectory?: boolean
-  reports?: () => ProgressBinding[]
+  reports?: (isFresh?: boolean) => ProgressBinding[]
   s: Strings
   port: number
   // What the server answers a second `--serve` with, so it can tell it is the same board.
@@ -355,8 +355,9 @@ export const startServer = (o: ServeOptions): void => {
       if (url.pathname === '/api/board') {
         // A file the board cannot read is named on the page, which would otherwise say it is offline.
         try {
-          const state = isLan ? undefined : messaging.snapshot(Date.now(), o.reports?.())
-          return json(res, 200, { model: serveModel(o.view(), o.pending(false), o.s, sending, isLan, state, o.allowResume), replies: [...replies.values()], messaging: isLan ? undefined : state ?? { enabled: false, connections: [], messages: [] }, now: Date.now() })
+          const shown = o.view()
+          const state = isLan ? undefined : messaging.snapshot(Date.now(), o.reports?.(false))
+          return json(res, 200, { model: serveModel(shown, o.pending(false), o.s, sending, isLan, state, o.allowResume), replies: [...replies.values()], messaging: isLan ? undefined : state ?? { enabled: false, connections: [], messages: [] }, now: Date.now() })
         } catch (error) {
           const note = o.failure(error, isLan)
           if (note === null) {

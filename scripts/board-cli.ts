@@ -426,7 +426,7 @@ const readBoardView = (source: string, now: number) => {
       }
       for (const id of identitiesToRetire(current, next, resolvedQuestionsToRetire(current, projects, null, turns, frozen), proofs?.retired)) keepQuestionProof('retired', sha256(id))
       const latestProofs = readQuestionProofs()
-      if (latestProofs === null) return null
+      if (latestProofs === null) { proofs = null; return null }
       // New retirement proofs change the observation; unchanged validated proofs already produced
       // this result. Repeating it needlessly copies and hashes every retained question (#428).
       if (latestProofs !== proofs) {
@@ -448,12 +448,18 @@ const readBoardView = (source: string, now: number) => {
           const current = parseAnswered(before, answeredAge(answeredPath(path)))
           if (current === null) return null
           const latestProofs = readQuestionProofs()
-          if (latestProofs === null) return null
+          if (latestProofs === null) { proofs = null; return null }
+          proofs = latestProofs
           const next = migratedAnswered(current, lastQuestions, latestProofs.consumed)
           const consumed = new Set(latestProofs.consumed)
+          let hasNewProof = false
           for (const key of current) {
-            if (Object.hasOwn(lastQuestions.legacy, key) && !consumed.has(sha256(key))) keepQuestionProof('consumed', sha256(key))
+            if (Object.hasOwn(lastQuestions.legacy, key) && !consumed.has(sha256(key))) {
+              keepQuestionProof('consumed', sha256(key))
+              hasNewProof = true
+            }
           }
+          if (hasNewProof) { proofs = readQuestionProofs(); if (proofs === null) return null }
           return answeredJson(next) === answeredJson(current) ? before : answeredJson(next)
         })
         if (migrated !== null) answered = parseAnswered(migrated) ?? answered
@@ -465,7 +471,8 @@ const readBoardView = (source: string, now: number) => {
   const tail = progressHealthCache.tail
   const warnings = [...(tail === null ? [] : [s.progressIncomplete(tail.tasks)]), ...sizeWarnings({ progress: Buffer.byteLength(source), store: 0 }, s)]
   const health = progressHealthCache.lines
-  return { ...buildView(projects, [basename(process.cwd())], null, now, countDay(journalToday(now), now), manualDoneSeen(projects, seen, now, s), s, answered, seen, questions, readQuestionProofs(), turns, frozen, observeViewQuestions), ...(warnings.length === 0 ? {} : { warning: warnings.join(' · ') }), ...(health.length === 0 ? {} : { health }) }
+  // Proof writes above refresh this snapshot; drawing need not list the directory again.
+  return { ...buildView(projects, [basename(process.cwd())], null, now, countDay(journalToday(now), now), manualDoneSeen(projects, seen, now, s), s, answered, seen, questions, proofs, turns, frozen, observeViewQuestions), ...(warnings.length === 0 ? {} : { warning: warnings.join(' · ') }), ...(health.length === 0 ? {} : { health }) }
 }
 
 const view = (source = read(path), now = Date.now()) => {
@@ -1048,7 +1055,12 @@ const serveChild = (): void => {
       allowResume: args.includes('--allow-resume'),
       messagesDirectory: messagesDirectory(),
       isDefaultMessagesDirectory: flag('--messages-dir') === undefined,
-      reports: () => parseProgress(read(path)).flatMap(project => project.tasks.flatMap(task => task.auto === null ? [] : [{ agent: task.auto.agent, session: task.auto.resume ?? task.auto.session, updated: task.auto.updated }])),
+      reports: (isFresh = true) => {
+        // A page snapshot follows its synchronous view read. Handoff requests
+        // still read current bytes instead of accepting an older page's baseline.
+        const projects = !isFresh && progressProjectCache !== null ? progressProjectCache.projects : parseProgress(read(path))
+        return projects.flatMap(project => project.tasks.flatMap(task => task.auto === null ? [] : [{ agent: task.auto.agent, session: task.auto.resume ?? task.auto.session, updated: task.auto.updated }]))
+      },
       s,
       port: Number(flag('--port') ?? 0) || 0,
       ping: { path, built, idleMs: idleMs(), allowResume: args.includes('--allow-resume'), messagesDirectory: messagesDirectory() },
