@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto'
 import { performance } from 'node:perf_hooks'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { archiveIntegrity, archiveProblems, liveMemoryLevel, makeRedact, median, percentile, tallyOf, writeReport } from './lib/soak-report.mjs'
+import { classifyMessageStoreFiles, isMessageStoreClean, messageStoreFileState, readMessageStoreFiles } from './lib/message-store-files.mjs'
 
 // L6 messaging soak: the message hub (--serve) at the scale the owner set for M1: 200 registered
 // sessions (never more than 100 live, half of them ended), 5,000 messages (acknowledged, rejected,
@@ -69,7 +70,6 @@ const UNASKED_SHARE = 0.01
 // External memory swings by several MB between memory lines (soak runs of 2026-10-22), which blurs a
 // slope over 3,000 messages by about 1.3 KB per message; only a leak past this shows through it.
 const EXTERNAL_LIMIT = 4096
-const STORE_NAMES = /^(?:messages\.json|server\.lock|[^/\\]+\.tmp)$/
 // What the plan for a message says its receiver does: 70 / 10 / 10 / 5 of the 95 drawn.
 const OUTCOMES = [['ack', 70], ['reject', 10], ['uncertain', 10], ['dismiss', 5]]
 
@@ -263,7 +263,8 @@ const soak = async ({ minutes, out }) => {
   const tally = { requests: 0, resent: 0, sent: 0, registered: 0, ended: 0, endedByDisconnect: 0, endedByExpiry: 0, duplicates: 0, duplicatesSkipped: 0, mostLive: 0, mostConnections: 0, claimed: 0, answered: 0 }
   const leaks = { file: 0, api: 0, replies: 0, example: undefined }
   const invariants = { ghosts: 0, missing: 0, example: undefined }
-  const stray = new Set()
+  let messageFiles = messageStoreFileState()
+  const ownedServePids = new Set()
   const series = report.series
   let serveArgs, serveOptions
   let probeRows = []
@@ -305,6 +306,7 @@ const soak = async ({ minutes, out }) => {
     // near the end; it must outlast one jump (the soak asks the board between jumps).
     serveOptions = { lifetimeMs: total + 6 * 60000, idleMinutes: 2000 }
     server = await serve.start(world, serveArgs, serveOptions)
+    ownedServePids.add(server.pid)
     const token = () => new URL(server.url).searchParams.get('t')
     secrets.push(server.url, new URL(server.url).search, token())
     const firstPid = server.pid
@@ -364,13 +366,16 @@ const soak = async ({ minutes, out }) => {
       try { names = readdirSync(probeDir) } catch { return }
       const next = []
       for (const name of names) {
-        if (!name.startsWith('serve-')) continue
+        const match = /^serve-([1-9][0-9]*)\.jsonl$/.exec(name)
+        if (!match || Number(match[1]) > 2147483647) continue
         let text = ''
         try { text = readFileSync(join(probeDir, name), 'utf8') } catch { continue }
         for (const line of text.split('\n')) {
           if (line === '') continue
           try {
             const row = JSON.parse(line)
+            if (row.role !== 'serve' || row.pid !== Number(match[1])) continue
+            ownedServePids.add(row.pid)
             next.push({ at: row.at, pid: row.pid, rss: row.rss, heap: row.heapUsed, heapAfterGc: row.heapAfterGc, external: row.external, arrayBuffers: row.arrayBuffers, ops: Object.values(row.ops).reduce((sum, value) => sum + value, 0), requests: row.requests })
           } catch {}
         }
@@ -712,7 +717,11 @@ const soak = async ({ minutes, out }) => {
     // The file itself is only read (isContent) when the hub is quiet: on Windows a reader can make the
     // hub's save of the file fail, which would be this soak's doing, not the hub's.
     const takeSample = (reason, { isContent = false } = {}) => {
+      // A child's preload records its PID before publishing its claim. Capture
+      // files first so a restarted child's identity is available for this scan.
+      const files = readMessageStoreFiles(messagesDir)
       readProbe()
+      messageFiles = classifyMessageStoreFiles(files, ownedServePids, messageFiles)
       const row = linesOf(server.pid).at(-1)
       let bytes
       try { bytes = statSync(join(messagesDir, 'messages.json')).size } catch (error) { if (error.code === 'ENOENT') bytes = 0 }
@@ -729,7 +738,6 @@ const soak = async ({ minutes, out }) => {
       store.openMost = Math.max(store.openMost, open ?? 0)
       store.finishedMost = Math.max(store.finishedMost, finished ?? 0)
       if (bytes !== undefined && settle.sent === undefined && tally.sent >= settle.goal && (finished ?? 0) >= FINISHED_CAP) settle = { ...settle, sent: tally.sent, bytes, at: Date.now() }
-      try { for (const name of readdirSync(messagesDir)) if (!STORE_NAMES.test(name)) stray.add(name) } catch {}
       const seconds = Math.round(since() / 1000)
       series.push({ seconds, reason, sent: tally.sent, rssMb: row === undefined ? undefined : Number((row.rss / MEGABYTE).toFixed(1)), fileKb: bytes === undefined ? undefined : Math.round(bytes / 1024), open, finished, hubConnections: lastBoard?.connections })
       report.memory = probeRows.filter(one => one.pid === firstPid).map(one => ({ seconds: Math.round((one.at - epoch0) / 1000), bytes: one.rss, heap: one.heap }))
@@ -947,6 +955,7 @@ const soak = async ({ minutes, out }) => {
     if (restarted !== undefined) {
       crash.restartMs = Math.round(performance.now() - killedAt)
       server = restarted
+      ownedServePids.add(server.pid)
       secrets.push(server.url, new URL(server.url).search, token())
       const lockNow = (() => { try { return readFileSync(join(messagesDir, 'server.lock'), 'utf8') } catch { return undefined } })()
       if (lockNow !== String(server.pid)) crash.problems.push('the lock does not name the new hub')
@@ -1071,7 +1080,7 @@ const soak = async ({ minutes, out }) => {
     // ---- the checks
     clearInterval(sampler)
     setPhase('checks')
-    readProbe()
+    takeSample('final privacy', { isContent: true })
     const hubRows = linesOf(firstPid)
     const outcomes = {}
     const unmeasured = text => ({ skipped: text })
@@ -1134,8 +1143,8 @@ const soak = async ({ minutes, out }) => {
     // what finished messages keep; that fails the check and does not count as clean.
     const isFileRead = store.contentReads > 0 && store.finishedRead > 0
     outcomes.privacy = {
-      ok: isFileRead && leaks.file === 0 && leaks.api === 0 && leaks.replies === 0 && stray.size === 0 && store.unreadable <= 2,
-      line: `${count(leaks.file)} finished messages in the file and ${count(leaks.api)} in the board's answer kept their text, and ${count(leaks.replies)} replies in the board's answer still began with their nonce${leaks.example ? ` (for example ${leaks.example})` : ''}; the file was read ${count(store.contentReads)} times with ${count(store.finishedRead)} finished messages in those reads${isFileRead ? '' : ', so what finished messages keep was never checked'}; ${stray.size === 0 ? 'the message folder held only messages.json, server.lock and a temporary file' : `the message folder also held ${[...stray].join(', ')}`} each time it was looked at; ${count(store.unreadable)} reads of the file met a replacement and were skipped.`,
+      ok: isFileRead && leaks.file === 0 && leaks.api === 0 && leaks.replies === 0 && isMessageStoreClean(messageFiles, server.pid) && store.unreadable <= 2,
+      line: `${count(leaks.file)} finished messages in the file and ${count(leaks.api)} in the board's answer kept their text, and ${count(leaks.replies)} replies in the board's answer still began with their nonce${leaks.example ? ` (for example ${leaks.example})` : ''}; the file was read ${count(store.contentReads)} times with ${count(store.finishedRead)} finished messages in those reads${isFileRead ? '' : ', so what finished messages keep was never checked'}; ${messageFiles.stray.size === 0 ? 'the message folder held only messages.json, server.lock, temporary files and strictly validated claims of hubs started by this run' : `the message folder also held ${[...messageFiles.stray].join(', ')}`}; ${count(messageFiles.pending.size)} claim publications remain unverified and the final current-owner claim ${isMessageStoreClean(messageFiles, server.pid) ? 'was verified' : 'was not verified'}; ${count(store.unreadable)} reads of the file met a replacement and were skipped.`,
     }
 
     outcomes.registrations = {

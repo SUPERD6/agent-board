@@ -31,7 +31,7 @@ export type ServeOptions = {
   // What the server answers a second `--serve` with, so it can tell it is the same board.
   ping: Record<string, unknown>
   view: () => View
-  pending: () => PendingTurn[]
+  pending: (isFresh?: boolean) => PendingTurn[]
   // A tick or an archive, written the way the terminal board writes one: the line to show.
   act: (action: BoardAction) => string
   // Every finished task to the archive now: the line to show.
@@ -356,7 +356,7 @@ export const startServer = (o: ServeOptions): void => {
         // A file the board cannot read is named on the page, which would otherwise say it is offline.
         try {
           const state = isLan ? undefined : messaging.snapshot(Date.now(), o.reports?.())
-          return json(res, 200, { model: serveModel(o.view(), o.pending(), o.s, sending, isLan, state, o.allowResume), replies: [...replies.values()], messaging: state, now: Date.now() })
+          return json(res, 200, { model: serveModel(o.view(), o.pending(false), o.s, sending, isLan, state, o.allowResume), replies: [...replies.values()], messaging: isLan ? undefined : state ?? { enabled: false, connections: [], messages: [] }, now: Date.now() })
         } catch (error) {
           const note = o.failure(error, isLan)
           if (note === null) {
@@ -467,9 +467,13 @@ export const startServer = (o: ServeOptions): void => {
     port = (server.address() as AddressInfo).port
     const url = `http://127.0.0.1:${port}/?t=${token}`
     if (!o.onReady(url, port)) stop()
-    else if (o.isDefaultMessagesDirectory) {
-      // A later --serve asks this address before it moves a lock this hub left behind.
-      try { messaging.recordOwner(port, url) } catch {}
+    else {
+      // Preparing the protected address may block; inactivity starts after publication.
+      lastSeen = Date.now()
+      if (o.isDefaultMessagesDirectory) {
+        // A later --serve asks this address before moving a lock this hub left behind.
+        try { messaging.recordOwner(port, url) } catch {}
+      }
     }
   })
 }

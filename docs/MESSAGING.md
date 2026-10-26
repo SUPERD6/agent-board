@@ -41,8 +41,9 @@ node /path/to/agent-board.mjs --serve
 ```
 
 The default store is `agent-board-<16-hex-board-hash>-messages` beside the board's address
-file: in the account-owned `XDG_RUNTIME_DIR`, otherwise the account's temporary folder on
-Windows or `~/.cache/agent-board` elsewhere. The hash identifies the same progress file as
+file: on Windows, in an account-only `agent-board` child of `XDG_RUNTIME_DIR`, otherwise
+`~/.cache/agent-board`; on other systems, in the account's own `XDG_RUNTIME_DIR`, otherwise
+`~/.cache/agent-board`. The hash identifies the same progress file as
 the address file. The directory is created with mode 0700. On Windows, a newly created
 store and every default store are made your account's alone: the board makes your account
 the folder's owner, removes inherited and other accounts' access, and reads the access
@@ -64,7 +65,8 @@ A live owner, including one returning `EPERM` to the liveness probe, causes
 A dead owner (`ESRCH`) or malformed PID is removed; lock creation makes at most three
 attempts, including when another process removes the old lock during recovery.
 PIDs outside 1..2147483647 are malformed.
-With the default folder, `--serve` waits up to 10 seconds for the owner's page.
+For a legacy PID-only lock with no live or unknown ownership claim, `--serve` using the
+default folder waits up to 10 seconds for the owner's page.
 If none appears and that hub no longer answers at the address beside the lock (nothing
 listens there, or the program there refuses the hub's token or does not answer like a
 board page, as any other program would), it treats the lock as left by a hub that was
@@ -76,8 +78,12 @@ board using the folder through `--messages-dir`) and a folder given with `--mess
 are never taken over this way, nor is one whose hub accepts its token or does not answer
 in time.
 If the message folder cannot open, `--serve` names the folder and error code. For
-any `MESSAGE_STORE_IN_USE` that remains, check for another running board first; if none
-is running, delete that folder's `server.lock` and try again. Permission errors ask you
+any `MESSAGE_STORE_IN_USE` that remains, stop all board servers and inspect `server.lock`,
+`server.owner` and `.message-claim-*.json` together. A valid lifetime claim whose PID is
+live or cannot be checked blocks takeover even when its old port is closed; a reused PID
+does not prove that the claim is stale. Remove only ownership metadata verified to be
+stale, after confirming that no hub is running. Keep `messages.json` and uncertain
+delivery evidence; do not resend uncertain messages. Permission errors ask you
 to check that the folder belongs to your account and other accounts cannot open it. Other
 store errors suggest moving a possibly damaged `messages.json` out before retrying.
 
@@ -458,3 +464,26 @@ Antigravity editor UI or TUI. Synthetic tests and observing a real zero-prompt
 native `init` are not a real delivery result. A native ACK still requires a separate
 explicitly approved disposable-session test. No permanent auto-install or host-wide
 discovery is claimed by this adapter.
+
+
+## Store ownership during restart
+
+Each current hub publishes a PID and random nonce claim before inspecting the
+store lock, and keeps it until all store methods have stopped and lock/owner
+cleanup has finished. Startup and the outer recovery path refuse other live or
+unknown claims. Only a proven-dead process's valid claim is retired. This prevents
+a delayed recovery from admitting a second current writer while it temporarily
+displaces a newer PID lock. A closed hub refuses further reads, writes and owner
+records, including calls after another hub starts.
+
+Empty, malformed or unreadable claims fail closed. Stop every board server before
+inspecting .message-claim-*.json; remove malformed metadata only after verifying
+that no hub remains. Preserve messages.json and uncertain-message evidence.
+Claims are runtime ownership records, not hook trust or a receiving connection.
+
+This protocol requires a fixed local directory with visible completed file
+creation. Older writers do not participate: stop older board processes before
+updating or sharing their message directory. Mixed-version reclaimers and network
+filesystems are not covered by the current-writer exclusivity tests. Concurrent
+contenders may both refuse; retry once the failed starts have exited. This is an
+availability tradeoff, not permission to retry an uncertain message.

@@ -14,6 +14,8 @@ import { observeSession } from '../hooks/messaging.ts'
 import { connectCodexProxy } from '../scripts/codex-message-connector.mjs'
 import { attachCodexSession } from '../scripts/codex-session-connector.mjs'
 import { attachAntigravitySession } from '../scripts/antigravity-session-connector.mjs'
+import { claimMessageStore } from '../scripts/message-store-claim.ts'
+import { classifyMessageStoreFiles, isMessageStoreClean, readMessageStoreFiles } from './e2e/lib/message-store-files.mjs'
 
 // The server store and page modules use the host's extensionless imports; resolve only those
 // local paths, as tests/prompt-hooks.test.mjs does.
@@ -249,6 +251,9 @@ test('transport acceptance is distinct from an actual reply and cannot grant too
   assert.throws(() => messageReceipt(ack, target, { id: input.id, nonce: 'abcdef', status: 'rejected' }, 1004), /RECEIPT_CONFLICT/)
 })
 
+// Windows keeps the address and its default message sibling in the protected child.
+const runtimeFolder = runtime => process.platform === 'win32' ? join(runtime, 'agent-board') : runtime
+
 const start = async (dir, fault = '', args = ['--messages-dir', join(dir, 'messages')]) => {
   // The board uses XDG_RUNTIME_DIR only when no other account can open it.
   const runtime = join(dir, 'runtime'); mkdirSync(runtime, { recursive: true, mode: 0o700 })
@@ -326,7 +331,7 @@ const lanCall = (address, path, body) => new Promise((done, fail) => {
 
 test('--serve keeps a private message store without a flag and LAN still gets 403', async () => fixture(async (board, dir) => {
   const hash = createHash('sha256').update(join(dir, 'progress.md')).digest('hex').slice(0, 16)
-  const directory = join(dir, 'runtime', `agent-board-${hash}-messages`)
+  const directory = join(runtimeFolder(join(dir, 'runtime')), `agent-board-${hash}-messages`)
   assert.equal((await board.call('/api/ping')).body.messagesDirectory, directory)
   assert.ok(statSync(directory).isDirectory())
   if (process.platform !== 'win32') assert.equal(statSync(directory).mode & 0o777, 0o700)
@@ -395,9 +400,9 @@ test('a --serve takes over its default folder\'s lock only when the hub its owne
   mkdirSync(runtime, { mode: 0o700 })
   const progress = join(dir, 'progress.md'), script = join(dir, 'board.mjs')
   const hash = createHash('sha256').update(progress).digest('hex').slice(0, 16)
-  const folder = join(runtime, `agent-board-${hash}-messages`)
-  mkdirSync(folder)
-  const lock = join(folder, 'server.lock'), owner = join(folder, 'server.owner'), addressFile = join(runtime, `agent-board-${hash}.json`)
+  const folder = join(runtimeFolder(runtime), `agent-board-${hash}-messages`)
+  mkdirSync(folder, { recursive: true })
+  const lock = join(folder, 'server.lock'), owner = join(folder, 'server.owner'), addressFile = join(runtimeFolder(runtime), `agent-board-${hash}.json`)
   writeFileSync(progress, '# Synthetic\n')
   writeFileSync(script, `globalThis.AGENT_BOARD = ${JSON.stringify({ path: progress, lang: 'en' })}\n${BOARD_SCRIPT}`)
   const options = {
@@ -548,9 +553,9 @@ test('a hub removes an owner record left from before it took the lock, so a --se
   mkdirSync(runtime, { mode: 0o700 })
   const progress = join(dir, 'progress.md'), script = join(dir, 'board.mjs')
   const hash = createHash('sha256').update(progress).digest('hex').slice(0, 16)
-  const folder = join(runtime, `agent-board-${hash}-messages`)
-  mkdirSync(folder)
-  const lock = join(folder, 'server.lock'), owner = join(folder, 'server.owner'), addressFile = join(runtime, `agent-board-${hash}.json`)
+  const folder = join(runtimeFolder(runtime), `agent-board-${hash}-messages`)
+  mkdirSync(folder, { recursive: true })
+  const lock = join(folder, 'server.lock'), owner = join(folder, 'server.owner'), addressFile = join(runtimeFolder(runtime), `agent-board-${hash}.json`)
   writeFileSync(progress, '# Synthetic\n')
   writeFileSync(script, `globalThis.AGENT_BOARD = ${JSON.stringify({ path: progress, lang: 'en' })}\n${BOARD_SCRIPT}`)
   const options = {
@@ -595,9 +600,9 @@ test('a --serve whose read of the moved lock fails puts the lock back and starts
   mkdirSync(runtime, { mode: 0o700 })
   const progress = join(dir, 'progress.md'), script = join(dir, 'board.mjs')
   const hash = createHash('sha256').update(progress).digest('hex').slice(0, 16)
-  const folder = join(runtime, `agent-board-${hash}-messages`)
-  mkdirSync(folder)
-  const lock = join(folder, 'server.lock'), owner = join(folder, 'server.owner'), addressFile = join(runtime, `agent-board-${hash}.json`)
+  const folder = join(runtimeFolder(runtime), `agent-board-${hash}-messages`)
+  mkdirSync(folder, { recursive: true })
+  const lock = join(folder, 'server.lock'), owner = join(folder, 'server.owner'), addressFile = join(runtimeFolder(runtime), `agent-board-${hash}.json`)
   const preload = join(dir, 'serve-fault.cjs'), reads = join(dir, 'reads.log'), spawns = join(dir, 'spawns.log')
   writeFileSync(progress, '# Synthetic\n')
   writeFileSync(script, `globalThis.AGENT_BOARD = ${JSON.stringify({ path: progress, lang: 'en' })}\n${BOARD_SCRIPT}`)
@@ -661,9 +666,9 @@ test('a --serve whose lock another --serve took meanwhile tries once more', { ti
   mkdirSync(runtime, { mode: 0o700 })
   const progress = join(dir, 'progress.md'), script = join(dir, 'board.mjs')
   const hash = createHash('sha256').update(progress).digest('hex').slice(0, 16)
-  const folder = join(runtime, `agent-board-${hash}-messages`)
-  mkdirSync(folder)
-  const lock = join(folder, 'server.lock'), owner = join(folder, 'server.owner'), addressFile = join(runtime, `agent-board-${hash}.json`)
+  const folder = join(runtimeFolder(runtime), `agent-board-${hash}-messages`)
+  mkdirSync(folder, { recursive: true })
+  const lock = join(folder, 'server.lock'), owner = join(folder, 'server.owner'), addressFile = join(runtimeFolder(runtime), `agent-board-${hash}.json`)
   const parentPid = join(dir, 'parent.pid'), spawns = join(dir, 'spawns.log')
   writeFileSync(progress, '# Synthetic\n')
   writeFileSync(script, `globalThis.AGENT_BOARD = ${JSON.stringify({ path: progress, lang: 'en' })}\n${BOARD_SCRIPT}`)
@@ -1326,26 +1331,35 @@ test('a hub that cannot remove an old owner record gives its lock back and does 
 test('a lock that changed before it was moved aside is put back', () => {
   const dir = mkdtempSync(join(tmpdir(), 'board-message-lock-aside-'))
   const lock = join(dir, 'server.lock')
+  const claim = claimMessageStore(dir)
   try {
     writeFileSync(lock, '123')
-    assert.equal(moveLockAside(lock, '456'), false)
+    assert.equal(moveLockAside(lock, '456', claim), false)
     assert.equal(readFileSync(lock, 'utf8'), '123')
     assert.deepEqual(readdirSync(dir).filter(name => name.endsWith('.stale')), [])
-    assert.equal(moveLockAside(lock, '123'), true)
+    assert.equal(moveLockAside(lock, '123', claim), true)
     assert.equal(existsSync(lock), false)
-  } finally { rmSync(dir, { recursive: true, force: true }) }
+  } finally { claim.release(); rmSync(dir, { recursive: true, force: true }) }
 })
 
 test('a hub whose lock cannot be removed still stops when asked', async () => fixture(async (board, dir) => {
   const lock = join(dir, 'messages', 'server.lock')
   const pid = readFileSync(lock, 'utf8')
+  const runtime = runtimeFolder(join(dir, 'runtime'))
+  const names = readdirSync(runtime).filter(name => /^agent-board-.*\.json$/.test(name))
+  assert.equal(names.length, 1)
+  const addressFile = join(runtime, names[0])
+  const page = JSON.parse(readFileSync(addressFile, 'utf8'))
+  assert.equal(page.pid, Number(pid))
+  assert.equal(page.url, board.address)
   assert.equal((await board.call('/api/close', {})).status, 200)
   let timer
   try {
     const code = await Promise.race([board.exited, new Promise((done, fail) => { timer = setTimeout(() => fail(new Error('hub did not stop within 10 seconds')), 10_000) })])
     assert.equal(code, 0)
   } finally { clearTimeout(timer) }
-  assert.deepEqual(readdirSync(join(dir, 'runtime')).filter(name => /^agent-board-.*\.json$/.test(name)), [])
+  assert.equal(existsSync(addressFile), false)
+  assert.deepEqual(readdirSync(runtime).filter(name => /^agent-board-.*\.json$/.test(name)), [])
   assert.equal(readFileSync(lock, 'utf8'), pid)
   const restarted = await start(dir)
   try {
@@ -2186,3 +2200,275 @@ test('an Antigravity response without its ACK stays uncertain and is never repla
     await waitFor(async () => (await board.call('/api/board')).body.messaging.connections.length === 0)
   } finally { await receiver.close() }
 }))
+
+
+const storeClaims = dir => readdirSync(dir).filter(name => name.startsWith('.message-claim-')).sort()
+const claimName = (pid, nonce) => '.message-claim-' + pid + '-' + nonce + '.json'
+
+test('the messaging soak verifies the real hub claim and its known restart without accepting unknown files', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'board-soak-claim-'))
+  let hub
+  try {
+    hub = createMessaging(dir)
+    let state = classifyMessageStoreFiles(readMessageStoreFiles(dir), new Set([process.pid]))
+    assert.equal(isMessageStoreClean(state, process.pid), true)
+    const first = [...state.observed.keys()][0]
+    hub.close()
+    hub = createMessaging(dir)
+    state = classifyMessageStoreFiles(readMessageStoreFiles(dir), new Set([process.pid]), state)
+    assert.equal(isMessageStoreClean(state, process.pid), true)
+    assert.equal(state.observed.has(first), false)
+    writeFileSync(join(dir, 'unrelated.json'), '{}')
+    state = classifyMessageStoreFiles(readMessageStoreFiles(dir), new Set([process.pid]), state)
+    assert.equal(isMessageStoreClean(state, process.pid), false)
+    assert.ok(state.stray.has('unrelated.json'))
+  } finally { hub?.close(); rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('the messaging soak rejects malformed mismatched oversized and linked claim files', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'board-soak-bad-claim-'))
+  const nonce = 'a'.repeat(32)
+  const name = `.message-claim-${process.pid}-${nonce}.json`
+  const valid = JSON.stringify({ version: 1, pid: process.pid, nonce }) + '\n'
+  const check = (file, bytes, pids = new Set([process.pid])) => {
+    const path = join(dir, file)
+    writeFileSync(path, bytes)
+    const state = classifyMessageStoreFiles(readMessageStoreFiles(dir), pids)
+    assert.ok(state.stray.has(file), file + ': ' + String(bytes))
+    assert.equal(isMessageStoreClean(state, process.pid), false)
+    fs.unlinkSync(path)
+  }
+  try {
+    for (const bytes of [
+      '{}', '{malformed}', 'x'.repeat(513),
+      valid.replace('"version":1', '"version":2'),
+      valid.replace(`"pid":${process.pid}`, '"pid":1'),
+      valid.replace(nonce, 'b'.repeat(32)),
+      valid.replace('}', ',"extra":"private text"}'),
+      valid.replace('"version":1', '"version":0,"version":1'),
+    ]) check(name, bytes)
+    check(name, valid, new Set())
+    for (const pid of ['0', '01', '2147483648']) check(`.message-claim-${pid}-${nonce}.json`, valid)
+    check(`.message-claim-${process.pid}-${nonce.toUpperCase()}.json`, valid)
+    check('.message-claim-unfamiliar.json', valid)
+    const original = join(dir, 'original.tmp')
+    writeFileSync(original, valid)
+    fs.linkSync(original, join(dir, name))
+    const linked = classifyMessageStoreFiles(readMessageStoreFiles(dir), new Set([process.pid]))
+    assert.ok(linked.stray.has(name))
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('the messaging soak requires partial claims to finish and positively identifies the final owner', () => {
+  const pid = process.pid
+  const nonce = 'b'.repeat(32)
+  const name = `.message-claim-${pid}-${nonce}.json`
+  const bytes = Buffer.from(JSON.stringify({ version: 1, pid, nonce }) + '\n')
+  for (const prefix of [Buffer.alloc(0), bytes.subarray(0, 12)]) {
+    const pending = classifyMessageStoreFiles([{ name, bytes: prefix }], new Set([pid]))
+    assert.ok(pending.pending.has(name))
+    assert.equal(isMessageStoreClean(pending, pid), false)
+    const complete = classifyMessageStoreFiles([{ name, bytes }], new Set([pid]), pending)
+    assert.equal(isMessageStoreClean(complete, pid), true)
+    const lost = classifyMessageStoreFiles([], new Set([pid]), pending)
+    assert.ok(lost.stray.has(name))
+    assert.equal(isMessageStoreClean(lost, pid), false)
+  }
+  assert.equal(isMessageStoreClean(classifyMessageStoreFiles([], new Set([pid])), pid), false)
+  const nextPid = pid === 2147483647 ? pid - 1 : pid + 1
+  const nextName = `.message-claim-${nextPid}-${nonce}.json`
+  const nextBytes = Buffer.from(JSON.stringify({ version: 1, pid: nextPid, nonce }) + '\n')
+  const previous = classifyMessageStoreFiles([{ name, bytes }], new Set([pid]))
+  const restarted = classifyMessageStoreFiles([{ name: nextName, bytes: nextBytes }], new Set([pid, nextPid]), previous)
+  assert.equal(isMessageStoreClean(restarted, nextPid), true)
+  assert.equal(isMessageStoreClean(restarted, pid), false)
+})
+
+test('a valid claim naming an unrelated live process stays blocked and its recovery advice preserves message evidence', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'board-live-reused-claim-'))
+  const nonce = 'c'.repeat(32)
+  const name = `.message-claim-${process.pid}-${nonce}.json`
+  const bytes = JSON.stringify({ version: 1, pid: process.pid, nonce }) + '\n'
+  const owner = JSON.stringify({ pid: process.pid, url: 'http://127.0.0.1:1/?t=synthetic' })
+  try {
+    writeFileSync(join(dir, name), bytes)
+    writeFileSync(join(dir, 'server.lock'), String(process.pid))
+    writeFileSync(join(dir, 'server.owner'), owner)
+    writeFileSync(join(dir, 'messages.json'), 'synthetic uncertain evidence')
+    assert.throws(() => createMessaging(dir), /MESSAGE_STORE_IN_USE/)
+    assert.equal(readFileSync(join(dir, name), 'utf8'), bytes)
+    assert.equal(readFileSync(join(dir, 'server.lock'), 'utf8'), String(process.pid))
+    assert.equal(readFileSync(join(dir, 'server.owner'), 'utf8'), owner)
+    assert.equal(readFileSync(join(dir, 'messages.json'), 'utf8'), 'synthetic uncertain evidence')
+    assert.deepEqual(readdirSync(dir).filter(one => one.startsWith('.message-claim-')), [name])
+    for (const s of [EN, ZH_TW, ZH_CN]) {
+      const text = s.serveStoreFailed('MESSAGE_STORE_IN_USE', dir)
+      for (const word of ['server.lock', 'server.owner', '.message-claim-*.json', 'messages.json']) assert.ok(text.includes(word), word)
+    }
+    assert.match(EN.serveStoreFailed('MESSAGE_STORE_IN_USE', dir), /Stop all board servers.*verified.*Keep messages\.json.*do not resend uncertain messages/)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('message store claims refuse another contender and release only their own nonce', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'board-message-claim-'))
+  const first = claimMessageStore(dir)
+  let next
+  try {
+    const names = storeClaims(dir)
+    assert.equal(names.length, 1)
+    const bytes = readFileSync(join(dir, names[0]), 'utf8')
+    assert.throws(() => claimMessageStore(dir), /MESSAGE_STORE_IN_USE/)
+    assert.deepEqual(storeClaims(dir), names)
+    assert.equal(readFileSync(join(dir, names[0]), 'utf8'), bytes)
+    first.check(dir)
+    first.release()
+    next = claimMessageStore(dir)
+    first.release()
+    assert.throws(() => first.check(dir), /MESSAGE_STORE_CLAIM_BLOCKED/)
+    next.check(dir)
+    assert.equal(storeClaims(dir).length, 1)
+  } finally { first.release(); next?.release(); rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('empty malformed and mismatched message claims block startup without being deleted', () => {
+  const nonce = 'e'.repeat(32)
+  for (const raw of ['', '{bad', JSON.stringify({ version: 2, pid: process.pid, nonce }), JSON.stringify({ version: 1, pid: process.pid + 1, nonce })]) {
+    const dir = mkdtempSync(join(tmpdir(), 'board-message-unknown-claim-'))
+    const name = claimName(process.pid, nonce)
+    try {
+      writeFileSync(join(dir, name), raw)
+      assert.throws(() => claimMessageStore(dir), /MESSAGE_STORE_CLAIM_BLOCKED/)
+      assert.deepEqual(storeClaims(dir), [name])
+      assert.equal(readFileSync(join(dir, name), 'utf8'), raw)
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  }
+})
+
+test('an unknown message claim probe refuses startup and preserves its evidence', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'board-message-probe-claim-'))
+  const nonce = 'f'.repeat(32), name = claimName(process.pid, nonce)
+  const bytes = JSON.stringify({ version: 1, pid: process.pid, nonce })
+  const probe = process.kill
+  try {
+    writeFileSync(join(dir, name), bytes)
+    process.kill = (pid, signal) => {
+      if (pid === process.pid && signal === 0) throw Object.assign(new Error('synthetic unknown owner'), { code: 'EPERM' })
+      return probe(pid, signal)
+    }
+    assert.throws(() => claimMessageStore(dir), /MESSAGE_STORE_CLAIM_BLOCKED/)
+    assert.deepEqual(storeClaims(dir), [name])
+    assert.equal(readFileSync(join(dir, name), 'utf8'), bytes)
+  } finally { process.kill = probe; rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('a proven-dead message claim retires but a live legacy PID lock remains untouched', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'board-message-dead-claim-'))
+  let pid = 2147483000
+  for (;;) {
+    try { process.kill(pid, 0); pid-- } catch (error) {
+      if (error.code === 'ESRCH') break
+      throw error
+    }
+  }
+  const nonce = 'd'.repeat(32), name = claimName(pid, nonce)
+  let claim
+  try {
+    writeFileSync(join(dir, name), JSON.stringify({ version: 1, pid, nonce }))
+    claim = claimMessageStore(dir)
+    assert.equal(existsSync(join(dir, name)), false)
+    assert.equal(storeClaims(dir).length, 1)
+    claim.release()
+    writeFileSync(join(dir, 'server.lock'), String(process.pid))
+    assert.throws(() => createMessaging(dir), /MESSAGE_STORE_IN_USE/)
+    assert.equal(readFileSync(join(dir, 'server.lock'), 'utf8'), String(process.pid))
+    assert.deepEqual(storeClaims(dir), [])
+  } finally { claim?.release(); rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('a closed message hub cannot read or write after a successor takes ownership', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'board-message-closed-claim-'))
+  const first = createMessaging(dir)
+  let next
+  try {
+    first.close()
+    next = createMessaging(dir)
+    const claims = storeClaims(dir)
+    assert.throws(() => first.snapshot(Date.now()), /MESSAGE_STORE_CLOSED/)
+    assert.throws(() => first.act('register', { agent: 'codex', session: 'closed', surface: 'Synthetic', turn: 'turn1' }, Date.now()), /MESSAGE_STORE_CLOSED/)
+    assert.throws(() => first.recordOwner(1234, 'http://127.0.0.1:1234/?t=synthetic'), /MESSAGE_STORE_CLOSED/)
+    first.close()
+    assert.deepEqual(storeClaims(dir), claims)
+    assert.equal(readFileSync(join(dir, 'server.lock'), 'utf8'), String(process.pid))
+    assert.equal(next.snapshot(Date.now()).enabled, true)
+  } finally { first.close(); next?.close(); rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('failed message store initialization releases its claim without changing message evidence', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'board-message-failed-claim-'))
+  const file = join(dir, 'messages.json')
+  let next
+  try {
+    writeFileSync(file, '{malformed')
+    assert.throws(() => createMessaging(dir))
+    assert.equal(readFileSync(file, 'utf8'), '{malformed')
+    assert.equal(existsSync(join(dir, 'server.lock')), false)
+    assert.deepEqual(storeClaims(dir), [])
+    writeFileSync(file, JSON.stringify({ version: 2, messages: [] }))
+    next = createMessaging(dir)
+    assert.equal(next.snapshot(Date.now()).enabled, true)
+  } finally { next?.close(); rmSync(dir, { recursive: true, force: true }) }
+})
+
+
+test('a failed claim publication preserves partial evidence and reports a claim problem', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'board-message-partial-claim-'))
+  const write = fs.writeFileSync
+  try {
+    fs.writeFileSync = (file, text, ...args) => {
+      if (String(file).startsWith(dir) && String(file).includes('.message-claim-')) {
+        write(file, '', ...args)
+        throw Object.assign(new Error('synthetic partial publication'), { code: 'EIO' })
+      }
+      return write(file, text, ...args)
+    }
+    syncBuiltinESMExports()
+    assert.throws(() => claimMessageStore(dir), /MESSAGE_STORE_CLAIM_BLOCKED/)
+  } finally {
+    fs.writeFileSync = write
+    syncBuiltinESMExports()
+  }
+  try {
+    const names = storeClaims(dir)
+    assert.equal(names.length, 1)
+    assert.equal(readFileSync(join(dir, names[0]), 'utf8'), '')
+    assert.throws(() => claimMessageStore(dir), /MESSAGE_STORE_CLAIM_BLOCKED/)
+    assert.deepEqual(storeClaims(dir), names)
+    assert.match(EN.serveStoreFailed('MESSAGE_STORE_CLAIM_BLOCKED', dir), /Keep messages\.json/)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('a dead message claim changed during verification remains blocked and is not deleted', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'board-message-changed-claim-'))
+  let pid = 2147483000
+  for (;;) {
+    try { process.kill(pid, 0); pid-- } catch (error) {
+      if (error.code === 'ESRCH') break
+      throw error
+    }
+  }
+  const nonce = 'c'.repeat(32), name = claimName(pid, nonce), file = join(dir, name)
+  const probe = process.kill
+  try {
+    writeFileSync(file, JSON.stringify({ version: 1, pid, nonce }))
+    process.kill = (target, signal) => {
+      if (target === pid && signal === 0) {
+        writeFileSync(file, 'changed')
+        throw Object.assign(new Error('synthetic dead owner'), { code: 'ESRCH' })
+      }
+      return probe(target, signal)
+    }
+    assert.throws(() => claimMessageStore(dir), /MESSAGE_STORE_CLAIM_BLOCKED/)
+    assert.deepEqual(storeClaims(dir), [name])
+    assert.equal(readFileSync(file, 'utf8'), 'changed')
+  } finally { process.kill = probe; rmSync(dir, { recursive: true, force: true }) }
+})

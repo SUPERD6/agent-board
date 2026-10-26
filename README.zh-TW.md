@@ -3,7 +3,7 @@
 <p align="center"><b>每個 AI coding agent 在做什麼，一個看板看完；哪個在等你，就在那裡回它。</b></p>
 
 <p align="center">
-<img alt="會動的看板，分六幕：Claude Code、Codex、Antigravity 和 OpenCode 回報到同一個終端機看板；每一步即時打勾；Codex 的問題跳到最上面；按一個鍵就複製好答案；在看板網頁寫給 Codex 的訊息送達後，看得到它回覆（預覽，0.24.1 起提供）；一行 npx 指令接上每個 agent，0.24.0 起上架 npm。合成資料。" src="docs/images/cover-zh-TW-dark.svg" width="860">
+<img alt="會動的看板，分六幕：Claude Code、Codex、Antigravity 和 OpenCode 回報到同一個終端機看板；每一步即時打勾；Codex 的問題跳到最上面；按一個鍵就複製好答案；在看板網頁寫給 Codex 的訊息送達後，看得到它回覆（預覽，0.24.2 起提供）；一行 npx 指令接上每個 agent，0.24.0 起上架 npm。合成資料。" src="docs/images/cover-zh-TW-dark.svg" width="860">
 </p>
 
 <p align="center"><b>整合</b><br>
@@ -251,4 +251,4 @@ node ~/.agent-board/agent-board.mjs --codex-doctor --agent codex
 
 [MIT](LICENSE)。agent 的圖示來自 [Simple Icons](https://simpleicons.org)（CC0）和 [Lobe Icons](https://github.com/lobehub/lobe-icons)（MIT），這些圖示屬於各自的擁有者；沒有圖示的 agent 以名字的第一個字母表示。
 
-<p align="center"><sub>版本 0.23.5 · <a href="CHANGELOG.md">更新紀錄</a></sub></p>
+<p align="center"><sub>版本 0.24.0 · <a href="CHANGELOG.md">更新紀錄</a></sub></p>

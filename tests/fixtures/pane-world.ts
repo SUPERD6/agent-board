@@ -46,8 +46,14 @@ export type World = {
   env?: Record<string, string>
   stats?: string[]
   reads?: string[]
+  // Every file call, as `<call> <path>`: stat, exists, list, read and write.
+  fileOps?: string[]
+  // A read of a path it gives a promise for waits on that promise, then answers with the text the
+  // file held when it was asked: a promise that never settles is a drive that went away.
+  holdRead?: (path: string) => Promise<unknown> | undefined
   written?: string[]
   beforeRead?: (path: string) => void
+  pauseRead?: { when: (path: string) => boolean; reached: () => void; release: Promise<void> }
   readValue?: (path: string) => unknown
   beforeExists?: (path: string) => void
   mtimes?: Record<string, number>
@@ -63,6 +69,7 @@ export type World = {
   gh?: () => { exitCode: number; stdout: string; stderr: string }
   isMoveRefused?: (path: string) => boolean
   isRemoveRefused?: (path: string) => boolean
+  missingRemoveExitCode?: number
   failNextRemove?: boolean
   hang?: (prompt: string) => boolean
   holdComplete?: { reached: () => void; release: Promise<void> }
@@ -79,9 +86,14 @@ export type World = {
   setupDone?: Promise<void>
   finishSetup?: () => void
   unwritable?: Set<string>
+  // The host's cap on one write, in bytes: a longer write is refused as the host refuses it, and
+  // its path goes in `refused` (#419).
+  writeLimit?: number
+  refused?: string[]
   ignoreQuestionWrites?: boolean
   failQuestionCapture?: 'read' | 'write'
   failStore?: (operation: 'get' | 'set', key: string) => boolean
+  beforeStoreGet?: (key: string) => void | Promise<void>
   beforeStoreSet?: (key: string) => void
   afterStoreSet?: (key: string, value: unknown) => void
   ignoreStore?: (key: string) => boolean
@@ -137,9 +149,12 @@ export const engineBeneath = (on: On, world: World): MockClock => {
   const shared = world.shared
   if (shared === undefined) {
     const store: Record<string, unknown> = world.store ?? { inboxDone: {} }
-    on('store.get', ($, e) => {
+    on('store.get', async ($, e) => {
       world.storeReads?.push(e.key)
-      return world.failStore?.('get', e.key) ? { deny: 'EIO' } : { value: store[e.key] }
+      const pending = world.beforeStoreGet?.(e.key)
+      const value = store[e.key]
+      await pending
+      return world.failStore?.('get', e.key) ? { deny: 'EIO' } : { value }
     })
     on('store.set', ($, e) => {
       world.beforeStoreSet?.(e.key)
@@ -239,6 +254,32 @@ export const engineBeneath = (on: On, world: World): MockClock => {
       if (exitCode === 0 && !world.retainedOnRemove?.has(dir)) world.dirs?.delete(dir)
       return { value: { exitCode, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     }
+    // PowerShell's Remove-Item over a list of paths: with -ErrorAction Stop the first path that is
+    // not there ends the command (exit 1) and the paths after it stay; otherwise it goes on.
+    if (e.argv[0] === 'powershell' && /^Remove-Item /.test(e.argv[3] ?? '')) {
+      world.ran?.push([...e.argv])
+      const command = e.argv[3] ?? ''
+      const paths = [...command.matchAll(/'((?:[^']|'')*)'/g)].map(found => posix((found[1] ?? '').replace(/''/g, "'")))
+      const isStop = command.includes('-ErrorAction Stop')
+      let exitCode = 0
+      for (const path of paths) {
+        if (!world.files.has(path)) {
+          if (!isStop) {
+            exitCode = world.missingRemoveExitCode ?? exitCode
+            continue
+          }
+          exitCode = 1
+          break
+        }
+        if (world.unremovable?.has(path)) {
+          if (isStop) {
+            exitCode = 1
+            break
+          }
+        } else if (!world.retainedOnRemove?.has(path) && world.isRemoveRefused?.(path) !== true) world.files.delete(path)
+      }
+      return { value: { exitCode, stdout: '', stderr: exitCode === 0 ? '' : 'Cannot find path', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
     if (e.argv[0] === 'mv' || e.argv[0] === 'rm') {
       world.ran?.push([...e.argv])
       if (e.argv[0] === 'rm' && world.failNextRemove) {
@@ -310,6 +351,7 @@ export const engineBeneath = (on: On, world: World): MockClock => {
   })
   on('fs.stat', ($, e) => {
     world.stats?.push(e.path)
+    world.fileOps?.push(`stat ${posix(e.path)}`)
     const path = posix(e.path)
     const text = world.files.get(path)
     const isDir = [...world.files.keys()].some(file => file.startsWith(`${path}/`))
@@ -320,10 +362,12 @@ export const engineBeneath = (on: On, world: World): MockClock => {
       : { value: { kind: 'file' as const, size: text.length, mtimeMs, isLink: false } }
   })
   on('fs.exists', ($, e) => {
+    world.fileOps?.push(`exists ${posix(e.path)}`)
     world.beforeExists?.(posix(e.path))
     return { value: world.dirs?.has(posix(e.path)) || world.files.has(posix(e.path)) || [...world.files.keys()].some(path => path.startsWith(`${posix(e.path)}/`)) }
   })
   on('fs.list', ($, e) => {
+    world.fileOps?.push(`list ${posix(e.path ?? '')}`)
     if (world.unlistable?.has(posix(e.path ?? ''))) return { deny: 'EACCES' }
     const dir = `${posix(e.path ?? '').replace(/\/$/, '')}/`
     const names = [...world.files.keys()].filter(path => path.startsWith(dir) && !path.slice(dir.length).includes('/'))
@@ -334,7 +378,20 @@ export const engineBeneath = (on: On, world: World): MockClock => {
   on('fs.read', async ($, e) => {
     const path = posix(e.path)
     world.reads?.push(path)
+    world.fileOps?.push(`read ${path}`)
+    const held = world.holdRead?.(path)
+    if (held !== undefined) {
+      const asked = world.files.get(path)
+      await held
+      return asked === undefined ? { deny: 'ENOENT' } : { value: asked }
+    }
     world.beforeRead?.(path)
+    const paused = world.pauseRead
+    if (paused !== undefined && paused.when(path)) {
+      world.pauseRead = undefined
+      paused.reached()
+      await paused.release
+    }
     const hold = world.holdJournalRead
     if (path.includes('-journal-') && hold !== undefined) {
       world.holdJournalRead = undefined
@@ -350,7 +407,15 @@ export const engineBeneath = (on: On, world: World): MockClock => {
   on('fs.write', async ($, e) => {
     const path = posix(e.path)
     world.written?.push(path)
+    world.fileOps?.push(`write ${path}`)
     if (world.unwritable?.has(path) || (world.failQuestionCapture === 'write' && path.includes('-questions-source-'))) return { deny: 'EACCES' }
+    if (world.writeLimit !== undefined) {
+      const bytes = new TextEncoder().encode(e.text).length
+      if (bytes > world.writeLimit) {
+        world.refused?.push(path)
+        return { deny: `refused: ${bytes} bytes is over the ${world.writeLimit}-byte limit` }
+      }
+    }
     if (world.ignoreQuestionWrites && path.endsWith('-questions.json')) return { value: undefined }
     const hold = world.hold
     if (hold !== undefined && path === FILE) {

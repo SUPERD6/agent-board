@@ -4,6 +4,8 @@ import { dirname, join, resolve } from 'node:path'
 import { address, claimMessages, deliveryText, disconnectMessages, dismissMessage, FINISHED_KEEP_COUNT, HOP_LIMIT, isFinished, messageFields, messageId, messageReceipt, messageText, observeSession, OPEN_CAP, originOf, pruneMessages, queueMessage, shownMessage, textHash } from '../hooks/messaging'
 import type { Connection, MessageState, ProgressBinding, SessionExpectation } from '../hooks/messaging'
 import { privateFolder } from './private-folder'
+import { claimMessageStore } from './message-store-claim'
+import type { MessageStoreClaim } from './message-store-claim'
 
 const LEASE_MS = 15_000
 const LOCK_WRITE_MS = 5_000
@@ -30,7 +32,8 @@ const replaceFile = (from: string, to: string): void => {
 
 // Two hubs can find the same dead pid. Only one can move the lock aside, and one that cannot
 // read it or finds that another hub had just taken it puts it back.
-export const moveLockAside = (lock: string, recorded: string): boolean => {
+export const moveLockAside = (lock: string, recorded: string, claim: MessageStoreClaim): boolean => {
+  claim.check(dirname(lock))
   const aside = `${lock}.${process.pid}.stale`
   renameSync(lock, aside)
   let moved: string
@@ -57,6 +60,16 @@ const openMessaging = (directory: string, isDefault = false) => {
       privateFolder(root)
     } catch { throw new Error('MESSAGE_STORE_ACL') }
   }
+  const claim = claimMessageStore(root)
+  try { return openClaimedMessaging(root, claim) } catch (error) {
+    try { claim.release() } catch (cleanup) { throw new AggregateError([error, cleanup], 'MESSAGE_STORE_CLAIM_BLOCKED') }
+    throw error
+  }
+}
+
+const openClaimedMessaging = (root: string, claim: MessageStoreClaim) => {
+  let isClosed = false
+  const requireOpen = (): void => { if (isClosed) throw new Error('MESSAGE_STORE_CLOSED') }
   const file = join(root, 'messages.json')
   const lock = join(root, 'server.lock')
   const owner = join(root, 'server.owner')
@@ -86,7 +99,7 @@ const openMessaging = (directory: string, isDefault = false) => {
             if (code !== 'ESRCH') throw probe
           }
         }
-        if (!moveLockAside(lock, recorded)) throw new Error('MESSAGE_STORE_IN_USE')
+        if (!moveLockAside(lock, recorded, claim)) throw new Error('MESSAGE_STORE_IN_USE')
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
       }
@@ -107,6 +120,7 @@ const openMessaging = (directory: string, isDefault = false) => {
   const expectations = new Map<string, SessionExpectation>()
   // Every write is pruned first, so the file never holds more than the two caps allow.
   const save = (changed: MessageState, now: number): void => {
+    requireOpen()
     const next = pruneMessages(changed, now)
     if (next === state) return
     const temp = `${file}.${process.pid}.tmp`
@@ -172,12 +186,18 @@ const openMessaging = (directory: string, isDefault = false) => {
   }
   return {
     recordOwner: (port: number, url: string): void => {
+      requireOpen()
       writeFileSync(owner, JSON.stringify({ pid: process.pid, port, url }), { mode: 0o600 })
     },
     close: (): void => {
-      // A lock left behind keeps its owner record so the next start can take it over.
-      release()
-      try { if (JSON.parse(readFileSync(owner, 'utf8')).pid === process.pid) unlinkSync(owner) } catch {}
+      if (isClosed) return
+      // Quiesce every store method before releasing the lifetime claim.
+      isClosed = true
+      try {
+        // A lock left behind keeps its owner record for explicit recovery.
+        release()
+        try { if (JSON.parse(readFileSync(owner, 'utf8')).pid === process.pid) unlinkSync(owner) } catch {}
+      } finally { claim.release() }
     },
     snapshot: (now: number, reports: readonly ProgressBinding[] = []) => {
       expire(now)
