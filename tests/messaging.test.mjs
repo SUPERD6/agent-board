@@ -12,6 +12,7 @@ import { observeSession } from '../hooks/messaging.ts'
 import { connectCodexProxy } from '../scripts/codex-message-connector.mjs'
 import { attachCodexSession } from '../scripts/codex-session-connector.mjs'
 import { attachAntigravitySession } from '../scripts/antigravity-session-connector.mjs'
+import { privateRuntimeFolder } from '../scripts/runtime-folder.ts'
 
 const pause = ms => new Promise(done => setTimeout(done, ms))
 const target = { id: 'binding1', agent: 'codex', session: 'session1', turn: 'turn1', surface: 'fixture', expires: 2000 }
@@ -157,21 +158,70 @@ test('transport acceptance is distinct from an actual reply and cannot grant too
   assert.throws(() => messageReceipt(ack, target, { id: input.id, status: 'rejected' }, 1004), /RECEIPT_CONFLICT/)
 })
 
+// Before it prints its address, the page on Windows checks its folder's and file's access in
+// child processes. The owned child logs each phase, so a slow or failed start says where it was.
+const START_TRACE = String.raw`const fs = require('node:fs'), cp = require('node:child_process'), http = require('node:http')
+const file = process.env.AGENT_BOARD_TEST_START_TRACE
+const log = one => { try { fs.appendFileSync(file, JSON.stringify({ at: Math.round(performance.now()), ...one }) + '\n') } catch {} }
+log({ phase: 'preload' })
+for (const name of ['execFileSync', 'spawnSync']) {
+  const original = cp[name]
+  cp[name] = function (...args) {
+    // A begin line too, so a call still running when the test gives up shows in the trace.
+    const phase = String(args[0]).split(/[\\/]/).pop(), started = performance.now()
+    log({ phase: 'begin ' + phase })
+    try { return original.apply(this, args) } finally { log({ phase, ms: Math.round(performance.now() - started) }) }
+  }
+}
+const listen = http.Server.prototype.listen
+http.Server.prototype.listen = function (...args) { log({ phase: 'listen' }); this.once('listening', () => log({ phase: 'listening' })); return listen.apply(this, args) }
+const write = process.stdout.write
+process.stdout.write = function (...args) { log({ phase: 'address' }); return write.apply(this, args) }
+require('node:module').syncBuiltinESMExports()
+`
+const startTrace = file => {
+  let text = ''
+  try { text = readFileSync(file, 'utf8').trim() } catch { return 'no trace' }
+  if (!text) return 'no trace'
+  // A line cut off by the kill reads as such, and the lines before it still show.
+  const read = line => { try { return JSON.parse(line) } catch { return { phase: 'unreadable line' } } }
+  return text.split('\n').map(read).map(one => one.ms === undefined ? `${one.phase}@${one.at}` : `${one.phase} ${one.ms}ms@${one.at}`).join(', ')
+}
 const start = async (dir, fault = '') => {
   const runtime = join(dir, 'runtime'); mkdirSync(runtime, { recursive: true })
+  // `--serve` makes this folder private before it starts the page (runningPage reads its address
+  // file there first), so the page's 10 s window starts with PowerShell already loaded. The first
+  // PowerShell start on a fresh Windows machine takes seconds (2–3 s on CI) and belongs to `--serve`.
+  const isWindows = process.platform === 'win32', preparedAt = performance.now()
+  if (isWindows) {
+    try { privateRuntimeFolder(join(runtime, 'agent-board')) }
+    catch (error) { throw new Error(`runtime folder not private after ${Math.round(performance.now() - preparedAt)} ms: ${error.message}`) }
+  }
+  const prepared = isWindows ? ` (folder made private in ${Math.round(performance.now() - preparedAt)} ms before)` : ''
   const script = join(dir, 'board.mjs'), progress = join(dir, 'progress.md')
   writeFileSync(script, `globalThis.AGENT_BOARD = ${JSON.stringify({ path: progress, lang: 'en' })}\n${BOARD_SCRIPT}`)
   if (!readFileSyncSafe(progress)) writeFileSync(progress, '# Synthetic board\n')
   const preload = join(dir, 'message-fault.cjs')
   if (fault) writeFileSync(preload, `const fs = require('node:fs')\nconst path = require('node:path')\nconst directory = ${JSON.stringify(dir)}\n${fault}\nrequire('node:module').syncBuiltinESMExports()\n`)
-  const child = spawn(process.execPath, [...(fault ? ['-r', preload] : []), script, '--serve-child', '--messages-dir', join(dir, 'messages')], { windowsHide: true, env: { ...process.env, CLAUDE_PROGRESS_FILE: '', XDG_RUNTIME_DIR: runtime }, stdio: ['ignore', 'pipe', 'pipe'] })
+  const trace = join(dir, 'start-trace.jsonl'), tracer = join(dir, 'start-trace.cjs')
+  // A restart in the same folder starts a new trace, so a report names only its own child.
+  writeFileSync(tracer, START_TRACE); writeFileSync(trace, '')
+  const startedAt = performance.now()
+  const child = spawn(process.execPath, ['-r', tracer, ...(fault ? ['-r', preload] : []), script, '--serve-child', '--messages-dir', join(dir, 'messages')], { windowsHide: true, env: { ...process.env, CLAUDE_PROGRESS_FILE: '', XDG_RUNTIME_DIR: runtime, AGENT_BOARD_TEST_START_TRACE: trace }, stdio: ['ignore', 'pipe', 'pipe'] })
   const exited = new Promise(done => child.once('exit', done))
   const address = await new Promise((done, fail) => {
     let out = '', err = ''
-    const timer = setTimeout(() => { child.kill(); fail(new Error('start timeout ' + err)) }, 10000)
+    const report = () => `after ${Math.round(performance.now() - startedAt)} ms${prepared}; stdout ${out.length} bytes; stderr ${JSON.stringify(err.slice(-2000))}; child: ${startTrace(trace)}`
+    const timer = setTimeout(() => { fail(new Error('start timeout ' + report())); child.kill() }, 10000)
     child.stderr.on('data', b => { err += b })
-    child.stdout.on('data', b => { out += b; if (out.includes('\n')) { clearTimeout(timer); done(out.split('\n')[0].trim()) } })
-    child.once('exit', code => { clearTimeout(timer); fail(new Error('start failed ' + code + ' ' + err)) })
+    child.stdout.on('data', b => {
+      out += b
+      if (!out.includes('\n')) return
+      clearTimeout(timer)
+      if (performance.now() - startedAt > 3000) console.log('# slow board start ' + report())
+      done(out.split('\n')[0].trim())
+    })
+    child.once('exit', (code, signal) => { clearTimeout(timer); fail(new Error('start failed ' + code + ' ' + signal + ' ' + err + ' ' + report())) })
   })
   const url = new URL(address)
   const call = async (path, body, headers = {}) => {
