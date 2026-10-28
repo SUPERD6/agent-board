@@ -1,0 +1,2 @@
+- **Archive now counts every task it archived, also two that share a title (#231).** Two done blocks with the same title and steps make the same archive entry, so the board counted them once and said "Archived 1 task." after archiving both. Entries are now counted with their number, and an entry an earlier try already archived is still not archived twice.
+  Tests: `--tidy counts two done blocks that share a title and steps as two archived tasks`.
