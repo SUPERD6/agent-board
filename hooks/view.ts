@@ -1,4 +1,4 @@
-import type { ProgressAuto, ProgressMirror, ProgressProject, ProgressStep, ProgressStepStatus, ProgressTask } from '../types'
+import type { ProgressAuto, ProgressMirror, ProgressProject, ProgressStep, ProgressStepStatus, ProgressTask, QuestionRecord } from '../types'
 import { askOf, askRank } from './ask'
 import { ZH_TW } from './i18n'
 import type { Strings } from './i18n'
@@ -14,6 +14,8 @@ import { sha256 } from './sha256'
 import { observeQuestions, pendingQuestionSlot, questionScope, questionSlot, questionWords, sourceSnapshot } from './questions'
 import type { QuestionLedger, QuestionProofs } from './questions'
 import { questionAge } from './question-aging'
+import { closedCopies, mergeCopies } from './question-merge'
+import type { Copy } from './question-merge'
 import type { PendingTurn } from './board'
 
 // What the pane shows, worked out from the file and this session's own list, so the
@@ -1006,18 +1008,27 @@ export const buildView = (
     return [{ key: `inbox::${id}`, questionId: id, project: turn.project, task: '', context: '', ...parts, when: '', ...askOf(parts.text, parts.note), where: 'other' as const, agent: turn.agent, session: turn.id ?? '', sessionId: null, resumeVia: null, reopen: null, hideKey: id, step: null, target: null }]
   })
   const own = mine === null ? [] : ownWaiting(mine, observed?.keys).map(item => ({ ...item, questionId: item.hideKey }))
-  const isResolved = (item: WaitingItem): boolean => observed?.ledger.records.find(record => record.id === item.questionId)?.isUnresolved === false
-  const all = [...own, ...waiting, ...inbox].filter(item => !isResolved(item)).map(item => {
-    const record = observed?.ledger.records.find(row => row.id === item.questionId)
-    const age = questionAge(record?.firstObserved ?? 0, now)
-    return { ...item, ageStage: age.stage, when: age.age === null ? s.questionAgeUnknown : relativeTime(record?.firstObserved ?? 0, now, s) }
-  }).sort(
+  // Each record by its id, once: a board holds hundreds of questions and thousands of records.
+  const recordOf = new Map<string, QuestionRecord>()
+  const rankOf = new Map<string, number>()
+  for (const [index, record] of (observed?.ledger.records ?? []).entries()) {
+    if (recordOf.has(record.id)) continue
+    recordOf.set(record.id, record)
+    rankOf.set(record.id, index)
+  }
+  const isResolved = (item: WaitingItem): boolean => recordOf.get(item.questionId ?? '')?.isUnresolved === false
+  const firstSeen = (item: WaitingItem): number => recordOf.get(item.questionId ?? '')?.firstObserved ?? 0
+  const scopeOf = (item: WaitingItem): string => recordOf.get(item.questionId ?? '')?.scope ?? ''
+  const seenAs = (item: WaitingItem) => ({ at: firstSeen(item), rank: rankOf.get(item.questionId ?? '') ?? -1, scope: scopeOf(item) })
+  const aged = (item: WaitingItem): WaitingItem => {
+    const age = questionAge(firstSeen(item), now)
+    return { ...item, ageStage: age.stage, when: age.age === null ? s.questionAgeUnknown : relativeTime(firstSeen(item), now, s) }
+  }
+  const all = [...own, ...waiting, ...inbox].filter(item => !isResolved(item)).map(aged).sort(
     (a, b) => whereRank(a) - whereRank(b) || askRank(a.kind) - askRank(b.kind),
   )
-  const asks: WaitingItem[] = all.filter(item => item.ageStage === 'pending' && (item.hideKey === '' || !marked.has(item.hideKey)))
-  const reminder: WaitingItem[] = all.filter(item => item.ageStage === 'reminder' && (item.hideKey === '' || !marked.has(item.hideKey)))
-  const older: WaitingItem[] = all.filter(item => item.ageStage === 'older' && (item.hideKey === '' || !marked.has(item.hideKey)))
-  const hidden: WaitingItem[] = [...all.filter(item => item.hideKey !== '' && marked.has(item.hideKey)), ...inactiveHidden]
+  const isMarked = (item: WaitingItem): boolean => item.hideKey !== '' && marked.has(item.hideKey)
+  const hidden: WaitingItem[] = [...all.filter(isMarked), ...inactiveHidden]
   const liveQuestions = new Set(all.flatMap(item => item.questionId === undefined ? [] : [item.questionId]))
   for (const { row } of stopped) {
     row.questions = row.questions?.filter(item => item.questionId === undefined || !liveQuestions.has(item.questionId))
@@ -1026,6 +1037,7 @@ export const buildView = (
   for (const item of shownRecent) item.questions = item.questions?.filter(question => question.questionId === undefined || !liveQuestions.has(question.questionId))
   const onShelf = new Set([...stopped.flatMap(({ row }) => row.questions ?? []), ...shownRecent.flatMap(item => item.questions ?? [])].flatMap(item => item.questionId === undefined ? [] : [item.questionId]))
   const shownQuestions = new Set([...all, ...hidden].flatMap(item => item.questionId === undefined ? [] : [item.questionId]))
+  const retained: WaitingItem[] = []
   for (const record of observed?.ledger.records ?? []) {
     if (!record.isUnresolved || record.source === undefined || onShelf.has(record.id) || shownQuestions.has(record.id)) continue
     const source = record.source
@@ -1042,9 +1054,29 @@ export const buildView = (
     const stage = record.isArchived || isInactiveSource || inactiveScopes.has(record.scope) ? 'older' : age.stage
     const item: WaitingItem = { key: `retained::${record.id}`, questionId: record.id, ageStage: stage, project: source.project, task: source.task, context: source.context, ...parts, when: age.age === null ? s.questionAgeUnknown : relativeTime(record.firstObserved, now, s), ...askOf(parts.text, parts.note), where: 'other', agent: source.agent === 'claude' ? '' : source.agent, session: source.session, sessionId: null, resumeVia: null, reopen: null, hideKey: record.id, canHide: false, step: null, target: null }
     if (marked.has(record.id)) hidden.push(item)
-    else if (stage === 'pending') asks.push(item)
-    else if (stage === 'reminder') reminder.push(item)
-    else older.push(item)
+    else retained.push(item)
+  }
+  // The same question asked in several blocks or captures is one card (#463): the newest copy that
+  // can be acted on, with the age of the oldest. The copies of stopped sessions are in the mix, so
+  // a stopped session's copy neither shows beside a live one nor keeps a card open after the
+  // question is closed; the other copies stay in the question list.
+  const staleOf = new Map<WaitingItem, WaitingItem>()
+  const stale: Copy[] = [...stopped.flatMap(({ row }) => row.questions ?? []), ...shownRecent.flatMap(item => item.questions ?? [])].map(item => {
+    const ghost = aged(item)
+    staleOf.set(ghost, item)
+    return { item: ghost, ...seenAs(item), isStale: true }
+  })
+  const merged = mergeCopies([...all.filter(item => !isMarked(item)), ...retained].map(item => ({ item, ...seenAs(item), isStale: false })).concat(stale), closedCopies(observed?.ledger.records ?? [], marked))
+  const asks: WaitingItem[] = merged.shown.filter(item => item.ageStage === 'pending')
+  const reminder: WaitingItem[] = merged.shown.filter(item => item.ageStage === 'reminder')
+  const older: WaitingItem[] = merged.shown.filter(item => item.ageStage === 'older')
+  if (merged.dropped.size > 0) {
+    const dropped = new Set([...merged.dropped].map(ghost => staleOf.get(ghost)))
+    for (const { row } of stopped) {
+      row.questions = row.questions?.filter(item => !dropped.has(item))
+      row.question = row.questions?.[0]?.text ?? null
+    }
+    for (const item of shownRecent) item.questions = item.questions?.filter(question => !dropped.has(question))
   }
   const dueRows = due.map(({ days: _days, ...row }) => row)
   const now1 = asks.find(item => askRank(item.kind) < 2)

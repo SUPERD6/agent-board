@@ -677,7 +677,8 @@ test('the HTML board skips claimed inbox files while keeping the question in pro
   assert.equal(waiting.split(HTML_QUESTION).length - 1, 1, page)
 })
 
-test('the HTML board lists a question in both an agent block and the inbox like the terminal board and --serve', () => {
+// One question asked in a block and in the inbox is one card (#463), like the terminal board and --serve.
+test('the HTML board shows a question that is in both an agent block and the inbox once, like the terminal board and --serve', () => {
   const page = htmlRun({
     file: FILE.replace('Per-key limit — 100 or 300 a minute?', HTML_QUESTION),
     inbox: { [HTML_TURN]: htmlTurn(HTML_QUESTION) },
@@ -685,8 +686,8 @@ test('the HTML board lists a question in both an agent block and the inbox like 
   const pending = page.match(/data-key="section:inbox"[\s\S]*?<\/details>/)?.[0] ?? ''
   const waiting = page.match(/data-key="section:waiting"[\s\S]*?<\/details>/)?.[0] ?? ''
   assert.equal(pending.split(HTML_QUESTION).length - 1, 0, page)
-  assert.equal(waiting.split(HTML_QUESTION).length - 1, 2, page)
-  assert.ok(/● 2<\/span>/.test(page), page)
+  assert.equal(waiting.split(HTML_QUESTION).length - 1, 1, page)
+  assert.ok(/● 1<\/span>/.test(page), page)
 })
 
 test('the HTML board redacts home paths and credentials before clipping pending questions', () => {
@@ -7173,4 +7174,111 @@ test('an emoji counts as two columns when a board line is cut to the width', asy
   const title = '✅'.repeat(150)
   const view = buildView(parseProgress(`## Chat\n### ${title}\n- [ ] Next\n`), [], null, Date.parse('2026-10-25T12:00:00Z'), 0, {}, EN)
   assert.ok(chatText(view, [], [], EN, '/synthetic-home').includes(title), '--chat keeps its existing line budget rather than terminal emoji widths')
+})
+
+// The board's model from the sources, as the page gets it from its server (#463).
+const sourceModel = async (text, now) => {
+  const loader = registerHooks({
+    resolve(specifier, context, nextResolve) {
+      if (context.parentURL?.startsWith(new URL('../hooks/', import.meta.url).href) && /^\.\.?\//.test(specifier) && !/\.[a-z]+$/i.test(specifier)) return nextResolve(`${specifier}.ts`, context)
+      return nextResolve(specifier, context)
+    },
+  })
+  try {
+    const [{ serveModel }, { buildView }, { parseProgress }, { STRINGS }] = await Promise.all([import('../hooks/serve.ts'), import('../hooks/view.ts'), import('../hooks/parse.ts'), import('../hooks/strings.ts')])
+    return JSON.parse(JSON.stringify(serveModel(buildView(parseProgress(text), [], null, now, 0, {}, STRINGS.en), [], STRINGS.en)))
+  } finally { loader.deregister() }
+}
+
+const ONE_LINE_NOW = Date.parse('2026-10-28T12:00:00Z')
+const LONG_STEP = 'Write the report and then check every table twice. '.repeat(6).trim()
+const LONG_TITLE = `Wrote the whole work log into the heading: ${'checked one more thing, '.repeat(12)}done`
+const ONE_LINE_FILE = `## Home
+### Weekly plan
+- [x] A short step
+- [ ] ${LONG_STEP}
+- [ ] Send it
+
+## demo
+<!-- auto session=aaaa1111 agent=codex state=done updated=2026-10-28T11:00:00Z -->
+### ${LONG_TITLE}
+- [x] Finished
+<!-- /auto session=aaaa1111 -->
+`
+const clipsOf = dom => pressWalk(dom.node('board')).filter(node => node.tag === 'details' && node.className?.includes('clip'))
+
+test('a step longer than one line shows one line on the card and its full text on open', async () => {
+  const dom = await pageDom(await sourcePage('en'), await sourceModel(ONE_LINE_FILE, ONE_LINE_NOW))
+  const steps = pressWalk(dom.node('board')).filter(node => node.tag === 'li')
+  assert.equal(steps.length, 3)
+  // The short steps stay as they were; only the long one is a details element.
+  assert.ok(!steps.some(step => step.textContent.includes('A short step') && pressWalk(step).some(node => node.tag === 'details')))
+  const [clip] = steps.flatMap(step => pressWalk(step)).filter(node => node.tag === 'details')
+  assert.equal(clip.open, false)
+  // Its toggle is a summary, which a keyboard reaches and opens with Enter or Space.
+  const summary = clip.childNodes[0]
+  assert.equal(summary.tag, 'summary')
+  const shown = summary.childNodes.find(node => node.className === 'short').textContent
+  assert.ok(Array.from(shown).length <= 80 && shown.endsWith('…'), shown)
+  assert.ok(!/\s{2}|[\r\n]/.test(shown), shown)
+  assert.ok(LONG_STEP.startsWith(shown.slice(0, -1)))
+  // Open, the whole step is there, word for word; nothing is cut from the record.
+  assert.equal(summary.childNodes.find(node => node.className === 'whole').textContent, LONG_STEP)
+  // The Done recently row of a heading that is a whole log reads the same way.
+  const recent = clipsOf(dom).find(node => !steps.flatMap(step => pressWalk(step)).includes(node))
+  const recentLine = recent.childNodes[0].childNodes.find(node => node.className === 'short').textContent
+  assert.ok(recentLine.startsWith('demo · Wrote the whole work log') && recentLine.endsWith('… · 1 h ago'), recentLine)
+  assert.equal(recent.childNodes[0].childNodes.find(node => node.className === 'whole').textContent, `demo · ${LONG_TITLE} · 1 h ago`)
+})
+
+test('a Done button names a long step by its first words', async () => {
+  const text = `## Home\n### Weekly plan\n- [ ] ${LONG_STEP}\n- [ ] Send it\n\n### Ask\n- [?] ${LONG_STEP}?\n`
+  const dom = await pageDom(await sourcePage('en'), await sourceModel(text, ONE_LINE_NOW))
+  const done = dom.buttons().filter(button => button.textContent.startsWith('Done: '))
+  // The plan's next step, the question card, and the question's own task row.
+  assert.equal(done.length, 3, done.map(button => button.textContent).join(' | '))
+  for (const button of done) {
+    const words = button.textContent.slice('Done: '.length)
+    assert.ok(Array.from(words).length <= 36 && words.endsWith('…'), words)
+    assert.ok(LONG_STEP.startsWith(words.slice(0, -1)))
+    // The whole step stays one hover or long press away.
+    assert.ok(button.title.startsWith(LONG_STEP))
+  }
+  // A press still names the whole step, so it ticks that step and no other.
+  done.find(button => button.title === LONG_STEP).click()
+  await dom.flush()
+  assert.equal(dom.requests.at(-1).path, '/api/act')
+  assert.equal(dom.requests.at(-1).body.type, 'tick')
+  assert.equal(dom.requests.at(-1).body.text, LONG_STEP)
+})
+
+test('a clipped step keeps its open state across a refresh', async () => {
+  const model = await sourceModel(ONE_LINE_FILE, ONE_LINE_NOW)
+  const dom = await pageDom(await sourcePage('en'), model)
+  // The page draws the board again only when it changed, so each draw here changes a count.
+  const drawn = count => ({ ...model, counts: { ...model.counts, active: count } })
+  const stepClip = () => clipsOf(dom).find(node => node.parentNode?.tag === 'li')
+  const recentClip = () => clipsOf(dom).find(node => node.parentNode?.tag !== 'li')
+  const first = stepClip()
+  assert.equal(first.open, false)
+  first.open = true
+  first.events.toggle()
+  // The board is drawn again: the step is a new element, and it is still open.
+  await dom.redraw(drawn(7))
+  const second = stepClip()
+  assert.notEqual(second, first)
+  assert.equal(second.open, true)
+  await dom.redraw(drawn(8))
+  assert.equal(stepClip().open, true)
+  // Closing it is kept too.
+  stepClip().open = false
+  stepClip().events.toggle()
+  await dom.redraw(drawn(9))
+  assert.equal(stepClip().open, false)
+  // The Done recently row is a separate one: opening it leaves the step closed.
+  recentClip().open = true
+  recentClip().events.toggle()
+  await dom.redraw(drawn(10))
+  assert.equal(stepClip().open, false)
+  assert.equal(recentClip().open, true)
 })

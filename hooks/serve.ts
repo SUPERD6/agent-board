@@ -1,6 +1,7 @@
 import type { AskKind } from './ask'
 import { answersOf, boardItems, fingerprint, remainingInbox } from './board'
 import type { BoardItem, PendingTurn } from './board'
+import { clipLine, LABEL_ROOM, LINE_ROOM } from './clip'
 import { htmlLang } from './dashboard'
 import { AGENT_ALIASES, agentMarkCss, boardMark, pageBaseCss, pageTokens, themeHead, themeSwitch } from './page-look'
 import { RELAY, ZH_TW } from './i18n'
@@ -80,7 +81,9 @@ export const idleTimeout = (value: string | undefined): number => {
   return Number(value) * 60_000
 }
 
-export type ServeStep = { text: string; note: string; status: string; isCurrent: boolean }
+// `line`, here and on the other texts below, is the text clipped to one line (hooks/clip.ts); it is
+// absent when the text already fits, and the page then shows the text itself.
+export type ServeStep = { text: string; note: string; status: string; isCurrent: boolean; line?: string }
 
 export type ServeAsk = {
   questionId?: string
@@ -91,6 +94,8 @@ export type ServeAsk = {
   agent: string
   task: string
   text: string
+  // The words of a Done button that ticks this question, clipped.
+  label?: string
   note: string
   context: string
   kind: AskKind
@@ -141,6 +146,8 @@ export type ServeRow = {
   pr: string
   steps: ServeStep[]
   next: string | null
+  // The words of the Done button for `next`, clipped; `next` itself is what a press must send back.
+  nextLabel?: string
   // A hand-kept task, the person's own (its agent is '', as Claude Code's is); absent otherwise.
   isOwn?: true
   canArchive: boolean
@@ -183,7 +190,7 @@ export type ServeModel = {
   groups: Array<{ project: string; rows: ServeRow[] }>
   turns: ServeTurn[]
   // Finished in the last day, until it goes to the archive.
-  recent: Array<{ project: string; title: string; when: string; questions?: string[] }>
+  recent: Array<{ project: string; title: string; line?: string; when: string; questions?: string[] }>
 }
 
 // `task` and `session` name the Claude Code session to answer in, the way the pane does.
@@ -194,6 +201,14 @@ const infoOf = (mode: SendMode, agent: string, task: string, session: string, s:
   if (mode === 'none') return s.serveSendNone(name)
 
   return ''
+}
+
+// The text clipped to `room` characters, or undefined when it already fits on one line.
+const clipped = (text: string, room: number): string | undefined => clipLine(text, room).line
+const lined = (text: string): { line?: string } => {
+  const line = clipped(text, LINE_ROOM)
+
+  return line === undefined ? {} : { line }
 }
 
 // The keys are the terminal board's (`boardItems`), so a press names the line it was on.
@@ -221,6 +236,7 @@ export const serveModel = (view: View, pending: readonly PendingTurn[], s: Strin
       const send = onLan(mode)
       // A phone on the local network gets the id, but neither the command nor its folder.
       const hint = replyHint(ask, s, !isLan, true)
+      const label = ask.step === null ? undefined : clipped(ask.text, LABEL_ROOM)
       asks.push({
         ...(connection === undefined ? {} : { delivery: { id: connection.id, turn: connection.turn, agent: connection.agent } }),
         ...(isLan ? {} : rowReceipt(ask.agent, ask.nativeSession, messaging?.messages ?? [])),
@@ -231,6 +247,7 @@ export const serveModel = (view: View, pending: readonly PendingTurn[], s: Strin
         ...(isManual ? { isOwn: true as const } : {}),
         task: ask.task,
         text: ask.text,
+        ...(label === undefined ? {} : { label }),
         note: ask.note,
         context: ask.context,
         kind: ask.kind,
@@ -260,6 +277,7 @@ export const serveModel = (view: View, pending: readonly PendingTurn[], s: Strin
       const baseMode = row.target === null ? (row.auto === null ? 'none' : 'claude') : sendMode(row.agent, row.target)
       const mode = connection ? 'connected' : (messaging || !allowResume) && baseMode === 'send' ? 'open' : baseMode
       const send = onLan(mode)
+      const nextLabel = row.next === null ? undefined : clipped(row.next.step, LABEL_ROOM)
       const rows = idleKeys.has(row.key) ? idle : stoppedKeys.has(row.key) ? stopped : (groups.get(row.project) ?? [])
       if (!idleKeys.has(row.key) && !stoppedKeys.has(row.key)) groups.set(row.project, rows)
       rows.push({
@@ -278,8 +296,9 @@ export const serveModel = (view: View, pending: readonly PendingTurn[], s: Strin
         total: row.total,
         due: row.due?.left ?? null,
         pr: row.pr,
-        steps: row.steps.map(step => ({ text: step.text, note: step.note, status: step.status, isCurrent: step.isCurrent })),
+        steps: row.steps.map(step => ({ text: step.text, note: step.note, status: step.status, isCurrent: step.isCurrent, ...lined(step.note ? `${step.text} — ${step.note}` : step.text) })),
         next: row.next?.step ?? null,
+        ...(nextLabel === undefined ? {} : { nextLabel }),
         canArchive: row.archive !== null,
         canConfirm: row.confirm != null,
         archiveNote: row.auto === 'working' || row.auto === 'waiting' ? s.archiveLive : '',
@@ -325,7 +344,7 @@ export const serveModel = (view: View, pending: readonly PendingTurn[], s: Strin
     older: (view.older ?? []).map(({ project, agent, where, task, text, note, context, when, questionId }) => ({ project, agent, ...(where === 'manual' ? { isOwn: true as const } : {}), task, text, note, context, when, ...(questionId === undefined ? {} : { questionId }) })),
     groups: [...groups].map(([project, rows]) => ({ project, rows })),
     turns,
-    recent: view.recent.map(item => ({ project: item.project, title: item.title, when: item.when, questions: item.questions?.map(question => [question.text, question.note].filter(Boolean).join(' — ')) })),
+    recent: view.recent.map(item => ({ project: item.project, title: item.title, ...lined(item.title), when: item.when, questions: item.questions?.map(question => [question.text, question.note].filter(Boolean).join(' — ')) })),
   }
 }
 
@@ -642,6 +661,7 @@ button.fchip{min-height:28px;padding:0 10px;border-radius:999px;background:var(-
 .composer textarea{display:block;border:0;background:transparent;min-height:52px;padding:10px 12px 2px;outline:none}.composer .cf{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px}.composer .where{flex:1;padding-left:6px;color:var(--muted);font-size:12.5px}.composer button{margin-left:auto;min-height:32px;font-size:13px}
 .ask .where,.turn .where{display:flex;align-items:flex-start;gap:7px}.ask .where>span:last-child,.turn .where>span:last-child{min-width:0}.where .ag{margin-top:1px}.q{display:flex;align-items:baseline;flex-wrap:wrap;gap:8px}.q b{font-size:1.08rem;font-weight:600}.chip{font-size:12px;border:1px solid currentColor;padding:3px 8px;border-radius:999px}
 .meta .ag{width:22px;height:22px;margin-right:6px;vertical-align:middle}.archive-note{font-size:12px}
+.clip{flex:1 1 0;min-width:0}.clip>summary,.clip[open]>summary{display:block;cursor:pointer}.clip>summary::before,.clip[open]>summary::before{content:none}.clip .short{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.clip .whole{display:none;white-space:pre-wrap;overflow-wrap:anywhere}.clip[open] .short{display:none}.clip[open] .whole{display:block}
 .steps li{grid-template-columns:22px minmax(0,1fr);gap:5px 10px;padding:5px 8px;border-radius:8px}.steps li.now{background:var(--inset)}.steps .mk{width:22px;height:22px;display:grid;place-items:center;font-size:14px;cursor:default;user-select:none}
 .history>div{padding:10px 0;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .pfoot{display:flex;align-items:center;gap:10px 16px;flex-wrap:wrap;border-top:1px solid var(--line);padding-top:14px;font-size:12.5px;color:var(--muted)}.pfoot p{margin:0;flex:1 1 22em}.pfoot button{font-size:13px;min-height:32px}.pfoot .press-result{flex-basis:100%}
@@ -896,12 +916,27 @@ const PAGE_SCRIPT = String.raw`
     add(box, input, add(footer, go));
     return box;
   }
-  function stepsList(steps) {
+  // A text longer than a line shows as one clipped line; pressing it, or Enter on it, opens the
+  // whole text in its place. An open one stays open across a redraw (opened[ref]).
+  function clipped(short, whole, cls, ref) {
+    if (!short || short === whole) return el('span', cls, whole);
+    var box = el('details', 'clip ' + cls);
+    box.open = opened[ref] === true;
+    box.addEventListener('toggle', function () { opened[ref] = box.open; });
+    add(box, add(el('summary'), el('span', 'short', short), el('span', 'whole', whole)));
+    return box;
+  }
+  function stepsList(steps, key) {
     var list = el('ol', 'steps');
-    steps.forEach(function (step) {
+    steps.forEach(function (step, index) {
       var item = el('li', step.isCurrent ? 'now' : '');
-      add(item, el('span', 'mk s-' + step.status, GLYPH[step.status] || '•'), el('span', 't' + (step.status === 'done' || step.status === 'cancelled' ? ' t-quiet' : ''), step.text));
-      if (step.note) add(item, el('span', 'sn s-' + step.status, step.note));
+      var cls = 't' + (step.status === 'done' || step.status === 'cancelled' ? ' t-quiet' : '');
+      add(item, el('span', 'mk s-' + step.status, GLYPH[step.status] || '•'));
+      if (step.line) add(item, clipped(step.line, step.note ? step.text + ' — ' + step.note : step.text, cls, 'step:' + key + ':' + index));
+      else {
+        add(item, el('span', cls, step.text));
+        if (step.note) add(item, el('span', 'sn s-' + step.status, step.note));
+      }
       list.appendChild(item);
     });
     return list;
@@ -941,7 +976,11 @@ const PAGE_SCRIPT = String.raw`
     if (ask.command) add(card, el('code', '', '$ ' + ask.command));
     var answers = [];
     var actions = [];
-    if (ask.canTick) answers.push(button(w('serveTickNext', ask.text), function () { act(ask.key, 'tick', '', '', '', '', ask.fp); }, 'primary'));
+    if (ask.canTick) {
+      var tick = button(w('serveTickNext', ask.label || ask.text), function () { act(ask.key, 'tick', '', '', '', '', ask.fp); }, 'primary');
+      if (ask.label) tick.title = ask.text;
+      answers.push(tick);
+    }
     ask.answers.forEach(function (answer, index) {
       var send = ask.send === 'send' || ask.send === 'connected';
       var node = button(answer, function () {
@@ -986,12 +1025,16 @@ const PAGE_SCRIPT = String.raw`
     if (row.archiveNote) add(body, el('div', 'quiet small archive-note', row.archiveNote));
     if (row.context) add(body, el('div', 'quiet', row.context));
     if (row.pr) add(body, el('div', 'quiet', row.pr));
-    if (row.steps.length) add(body, stepsList(row.steps));
+    if (row.steps.length) add(body, stepsList(row.steps, row.key));
     if (row.handoff) add(body, el('div', 'quiet small', row.handoff));
     if (row.send === 'send' || row.send === 'connected') add(body, replyBox(row.key, w('serveMessagePlaceholder', agentName(row.agent)), row.send, row.agent, row.where, row.isSending, row.session, asked, row.fp, row.delivery));
     else if (row.hasCopyBox) add(body, replyBox(row.key, w('serveReplyPlaceholder'), 'copy', row.agent, '', false, row.session, asked));
     var actions = [];
-    if (row.next) actions.push(button(w('serveTickNext', row.next), function () { act(row.key, 'tick', row.next, '', '', '', row.fp); }, 'primary'));
+    if (row.next) {
+      var tickNext = button(w('serveTickNext', row.nextLabel || row.next), function () { act(row.key, 'tick', row.next, '', '', '', row.fp); }, 'primary');
+      if (row.nextLabel) tickNext.title = row.next;
+      actions.push(tickNext);
+    }
     if (row.canArchive) actions.push(button(w('serveArchive'), function () { act(row.key, 'archive', '', '', '', '', row.fp); }));
     if (row.canConfirm) actions.push(button(w('confirmDone'), function () { act(row.key, 'done', '', '', '', '', row.fp); }));
     if (row.resume) actions.push(button(w('serveCopyResume'), function () { copy(row.resume, row.key); }, '', true));
@@ -1275,7 +1318,7 @@ const PAGE_SCRIPT = String.raw`
       add(board, heading);
       var done = el('div', 'history');
       model.recent.forEach(function (item) {
-        var line = add(el('div'), el('span', 's-done', '✓'), el('span', 't-quiet', [item.project, item.title, item.when].filter(Boolean).join(' · ')));
+        var line = add(el('div'), el('span', 's-done', '✓'), clipped(item.line ? [item.project, item.line, item.when].filter(Boolean).join(' · ') : '', [item.project, item.title, item.when].filter(Boolean).join(' · '), 't-quiet', 'recent:' + item.project + ':' + item.title));
         (item.questions || []).forEach(function (question) { add(line, el('p', 't-quiet', question)); });
         add(done, tracked(line, ['recent'], item));
       });
