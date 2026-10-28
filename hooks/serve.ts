@@ -1362,7 +1362,7 @@ const PAGE_SCRIPT = String.raw`
     keepCopyFocus(function () { renderBoard(model); });
   }
   const pg = { pick: 'needs', tab: 'open', repo: '', shown: {}, older: {}, order: [], model: null, sources: {}, targets: {}, drafts: {}, hits: [], mark: W.group === 'agent' ? document.getElementById('fresh-mark') : null }
-  const pgPlural = (key, n) => w(n === 1 ? key + 'One' : key, n)
+  const pgPlural = (key, n) => { const word = n === 1 ? key + 'One' : key; return w(word, n) }
   // The first screen describes work, so diagnostic identifiers and logs stay out of its labels.
   const pgText = value => {
     let text = String(value || '').trim()
