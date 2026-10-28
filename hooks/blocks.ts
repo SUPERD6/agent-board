@@ -435,12 +435,16 @@ export const confirmTask = (text: string, ref: ConfirmRef, now: number, s: Strin
     lines[step.line] = raw.slice(0, index) + 'x' + raw.slice(index + 1)
   }
   if (span !== undefined) {
-    let marker = lines[span.start] ?? ''
+    // Only the attributes are edited: FORMAT.md accepts a marker with no space before `-->`
+    // and spaces after it, so a bare `[^\s]+` value would take the `-->` with it (#142).
+    const marker = lines[span.start] ?? ''
+    const end = marker.lastIndexOf('-->')
+    let attrs = end < 0 ? marker : marker.slice(0, end).trimEnd()
     for (const [name, value] of [['state', 'done'], ['updated', new Date(now).toISOString()]]) {
       const attr = new RegExp(`\\b${name}=(?:"[^"]*"|'[^']*'|[^\\s]+)`)
-      marker = attr.test(marker) ? marker.replace(attr, `${name}=${value}`) : marker.replace(/\s*-->$/, ` ${name}=${value} -->`)
+      attrs = attr.test(attrs) ? attrs.replace(attr, `${name}=${value}`) : `${attrs} ${name}=${value}`
     }
-    lines[span.start] = marker
+    lines[span.start] = end < 0 ? attrs : `${attrs} ${marker.slice(end)}`
   }
   const after = lines.join(eolOf(text)) + (text.endsWith('\n') ? eolOf(text) : '')
   const changed = parseProgress(after).flatMap(project => project.tasks).find(one => one.line === task.line)
