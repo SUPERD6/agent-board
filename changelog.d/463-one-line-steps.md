@@ -30,3 +30,7 @@
 - **The HTML board shows a question that is in an agent block and in the inbox once (#463).** The
   test that pinned the old duplicate now pins one card and a count of one.
   Tests: `the HTML board shows a question that is in both an agent block and the inbox once, like the terminal board and --serve`.
+- **The read-only-file journey finds a long step's Done button by its title (#463).** The button
+  now shows the step's first words, so the journey looks it up by the whole step in its title and
+  checks that the label is clipped.
+  Tests: `L5 read-only file: a failed tick writes no journal line and shows a one-line reason`.
