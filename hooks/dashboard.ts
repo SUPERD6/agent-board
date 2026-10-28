@@ -6,6 +6,7 @@ import type { Palette } from './palette'
 import { agentMark, agentMarkCss, boardMark, pageBaseCss, pageTokens, themeHead, themeSwitch } from './page-look'
 import type { Strings } from './i18n'
 import type { Focus, TaskRow, View, ViewStep, WaitingItem } from './view'
+import { OLDER_SHOWN } from './view'
 
 // progress.html: the same view as the pane, as a page any browser keeps open in a window of
 // its own, beside progress.md. Built from the file and pending inbox turns, without a session's
@@ -75,6 +76,7 @@ const row = (it: TaskRow, s: Strings, showProject: boolean): string => {
     `<details class="row" data-key="${esc(it.key)}"><summary><span class="title">${esc(it.title)}</span>` +
     `<span class="tail" style="color:var(--${it.due === null ? 'muted' : toneVar(it.due.tone)})">${esc(it.due === null ? `${it.done}/${it.total}` : it.due.left)}</span>` +
     `<span class="meta" style="color:var(--${toneVar(it.tone)})">${agentMark(it.agent, it.auto === null)}${bar(it.done, it.total)} ${esc(meta.join(' · '))}</span></summary>` +
+    (it.runs === undefined ? '' : `<p class="quiet">${esc(it.runs)}</p>`) +
     (it.context === '' ? '' : `<p class="quiet">${esc(s.contextLine(it.context))}</p>`) +
     steps(it.steps) +
     '</details>'
@@ -213,11 +215,13 @@ ${section(
   true,
 )}
 ${section('waiting', s.sectionWaiting, view.waiting.length, 'waiting', '', view.waiting.map(item => waitingItem(item, s)).join(''), true)}
+${(view.stoppedAsking ?? 0) > 0 ? `<p class="quiet"><button type="button" data-section="dash-older">${esc(s.stoppedAsking(view.stoppedAsking!))}</button></p>` : ''}
 ${section('reminder', s.sectionQuestionReminders, view.reminder?.length ?? 0, 'muted', s.questionAgingHint, (view.reminder ?? []).map(item => waitingItem(item, s)).join(''), false)}
-${section('older', s.sectionOlderQuestions, view.older?.length ?? 0, 'muted', s.questionAgingHint, (view.older ?? []).map(item => waitingItem(item, s)).join(''), false)}
+${section('older', s.sectionOlderQuestions, view.older?.length ?? 0, 'muted', s.questionAgingHint, (view.older ?? []).slice(0, OLDER_SHOWN).map(item => waitingItem(item, s)).join('') + ((view.older?.length ?? 0) > OLDER_SHOWN ? `<details class="more" data-key="older:more"><summary>${esc(s.showAllQuestions(view.older!.length))}</summary>${view.older!.slice(OLDER_SHOWN).map(item => waitingItem(item, s)).join('')}</details>` : ''), false)}
 ${view.hidden.length === 0 ? '' : `<p class="quiet">${esc(s.hiddenCount(view.hidden.length))}</p>`}
 ${view.idle.length === 0 ? '' : `<details class="section" data-key="section:idle"><summary><span class="quiet">${esc(s.idleCount(view.idle.length))}</span></summary>${view.idle.map(it => row(it, s, true)).join('')}</details>`}
 ${view.stopped.length === 0 ? '' : `<details class="section" data-key="section:stopped"><summary><span class="quiet">${esc(s.stoppedCount(view.stopped.length))}</span></summary>${view.stopped.map(it => row(it, s, true)).join('')}</details>`}
+${view.background === undefined ? '' : `<p class="quiet">${esc(view.background)}</p>`}
 ${section('due', s.sectionDue, view.due.length, 'soon', nearest === undefined ? '' : s.nearestDue(nearest.title, nearest.due?.left ?? ''), view.due.map(it => row(it, s, true)).join(''), false)}
 ${section(
   'others',

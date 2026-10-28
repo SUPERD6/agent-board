@@ -15,7 +15,8 @@ import { observeQuestions, pendingQuestionSlot, questionScope, questionSlot, que
 import type { QuestionLedger, QuestionProofs } from './questions'
 import { questionAge } from './question-aging'
 import { closedCopies, mergeCopies } from './question-merge'
-import type { Copy } from './question-merge'
+import { foldRuns, mergeGroups, sessionIdentity, startersOf } from './runs'
+import type { RunGroup } from './runs'
 import type { PendingTurn } from './board'
 
 // What the pane shows, worked out from the file and this session's own list, so the
@@ -46,6 +47,8 @@ export type CurrentView = {
   done: number
   total: number
   steps: ViewStep[]
+  // The runs this session started for itself, as one line; absent when it started none (#399).
+  runs?: string
 }
 
 // A step of a hand-kept task, addressed so a press can tick exactly the line it showed.
@@ -53,7 +56,9 @@ export type StepRef = { project: string; title: string; step: string; line: numb
 
 // What a row's 封存 press takes out: a session's block by its id, or a hand-kept task by its
 // heading line, checked against the title so a task that moved is still found once.
-export type TaskRef = { project: string; title: string; line: number; session: string | null }
+// `isDuplicate` marks the older block of two for one session (#399): its archive is allowed
+// while it still looks live, once the file shows a newer block for the same agent and id.
+export type TaskRef = { project: string; title: string; line: number; session: string | null; isDuplicate?: true }
 
 // Another agent's session, as its block names it: its block id, the session id its hook gave
 // (`resume=`), the folder it ran in (`dir=`), and whether it has closed (`state=ended`). The
@@ -103,8 +108,11 @@ export type WaitingItem = {
   // What the person's Answered press keeps, to hide the question until the session asks
   // something else (`answeredKey`); '' for a hand-kept step, which is ticked instead.
   hideKey: string
-  // A retained source without a current producer is available for review, not a new hide.
+  // A retained source without a current producer is available for review, not a new hide. One kept
+  // from an archived block can be hidden (#400): hiding writes only the hidden list, never the source.
   canHide?: boolean
+  // Kept for review after its session's block was archived: nothing is running that could be archived.
+  isKept?: true
   // A hand-kept step can be ticked from the pane; another session's cannot.
   step: StepRef | null
   // Another agent's session the question came from; null for Claude's and hand-kept ones.
@@ -156,6 +164,9 @@ export type TaskRow = {
   confirm?: ConfirmRef | null
   // Another agent's session the row is; null for Claude's and hand-kept ones.
   target: AgentTarget | null
+  // The runs this session started for itself, as one line (`+3 runs by Codex, last 20 min ago`);
+  // absent when it started none (#399).
+  runs?: string
 }
 
 // This session's pull request, for the card.
@@ -190,7 +201,12 @@ export type View = {
   hidden: WaitingItem[]
   reminder?: WaitingItem[]
   older?: WaitingItem[]
+  // Unanswered questions of stopped sessions, each counted once; Waiting shows one line.
+  stoppedAsking?: number
   hasPendingQuestions?: boolean
+  // The runs agents started for themselves that no session is known for, as one folded line
+  // (`Background runs: 4, last 20 min ago`); absent when there are none (#399).
+  background?: string
   idle: TaskRow[]
   stopped: TaskRow[]
   due: TaskRow[]
@@ -204,6 +220,7 @@ const MINUTE = 60 * 1000
 const HOUR = 60 * MINUTE
 const DAY = 24 * HOUR
 export const IDLE_MS = 7 * DAY
+export const OLDER_SHOWN = 10
 
 export const relativeTime = (then: number, now: number, s: Strings = ZH_TW): string => {
   if (then <= 0) return ''
@@ -728,6 +745,10 @@ export const manualDoneSeen = (projects: readonly ProgressProject[], seen: Reado
 
 const whereRank = (item: WaitingItem): number => (item.where === 'here' ? 0 : 1)
 
+// The agents of some runs as a person names them (`Codex / Claude Code`), the busiest first.
+const runAgents = (group: RunGroup, s: Strings): string => group.agents.map(agent => s.agentNames[agent] ?? agentName(agent)).join(' / ')
+const runsText = (group: RunGroup, now: number, s: Strings): string => s.runsLine(group.count, runAgents(group, s), relativeTime(group.last, now, s))
+
 export const buildView = (
   projects: readonly ProgressProject[],
   here: readonly string[],
@@ -748,8 +769,12 @@ export const buildView = (
   frozen: ReadonlySet<string> = new Set(),
   observe: typeof observeQuestions = observeQuestions,
 ): View => {
-  const observed = questions === undefined ? null : observe(questions, projects, mine, answered, now, false, 'preview', proofs ?? { retired: [], consumed: [] }, pending, [], frozen)
+  // A run an agent started for itself is no row and asks no one (#399); the older block of a twin
+  // pair is no second row. What is left is what the rows, the questions and the counts read.
+  const folded = foldRuns(projects)
+  const observed = questions === undefined ? null : observe(questions, folded.projects, mine, answered, now, false, 'preview', proofs ?? { retired: [], consumed: [] }, pending, [], frozen)
   const marked = new Set(proofs === null ? [] : observed?.marked ?? answered)
+  const recordsById = new Map((observed?.ledger.records ?? []).map(record => [record.id, record]))
   const ownId = mine === null ? '' : shortId(mine.sessionId)
   const waiting: WaitingItem[] = []
   const inactiveHidden: WaitingItem[] = []
@@ -762,6 +787,14 @@ export const buildView = (
   const inactiveScopes = new Map<string, number>()
   const liveScopes = new Set<string>()
   let order = 0
+  // The parents whose rows carry their runs line; the runs of any other go to the background line.
+  const placed = new Set<ProgressTask>()
+  // The runs of the session this view belongs to: its row is the current card, not a listed row.
+  let ownRuns: RunGroup | null = null
+  // A run's own question is no question for anyone: its saved records stay in the ledger but are not asked again.
+  const keptTasks = new Set(folded.projects.flatMap(project => project.tasks))
+  const keptScopes = new Set(folded.projects.flatMap(project => project.tasks.flatMap(task => task.auto === null ? [] : [questionScope(project.name, task.auto.agent, task.auto.session)])))
+  const foldedScopes = new Set(projects.flatMap(project => project.tasks.flatMap(task => task.auto === null || keptTasks.has(task) ? [] : [questionScope(project.name, task.auto.agent, task.auto.session)])).filter(scope => !keptScopes.has(scope)))
   const repeats = new Map<string, number>()
   // How many tasks share each project and title, counted once rather than for every row (#371).
   const twins = new Map<string, number>()
@@ -772,11 +805,18 @@ export const buildView = (
     }
   }
 
-  for (const project of projects) {
+  for (const project of folded.projects) {
     const name = project.name || s.uncategorized
     const isHere = isHereProject(name, here)
     for (const task of project.tasks) {
-      if (task.auto !== null && task.auto.session === ownId) continue
+      if (task.auto !== null && task.auto.session === ownId) {
+        const own = folded.runs.get(task)
+        if (own !== undefined) {
+          ownRuns = own
+          placed.add(task)
+        }
+        continue
+      }
       order += 1
       const title = task.title || s.unnamed
       // A repeated title gets #2, #3, … so its row and buttons are its own.
@@ -901,6 +941,7 @@ export const buildView = (
               ? { status: task.steps.some((step, index) => step.status === 'waiting' && stageOf(index) === 'reminder') ? s.sectionQuestionReminders : s.sectionOlderQuestions, tone: 'quiet' as const }
               : stepPhrase(task, s, isPrompt)
       const open = task.steps[currentStepIndex(task)]
+      const group = folded.runs.get(task)
       const row: TaskRow = {
         key,
         project: name,
@@ -940,12 +981,15 @@ export const buildView = (
               : null,
         target: targetOf(task.auto),
         ...(task.auto === null ? {} : { nativeSession: task.auto.resume ?? task.auto.session }),
+        ...(group === undefined ? {} : { runs: runsText(group, now, s) }),
       }
 
       if (isComplete) {
         completed.push({ row, updated, recent: completion })
         continue
       }
+      // A finished session draws no row, so its runs are counted with the background runs instead.
+      if (group !== undefined) placed.add(task)
       if (auto === 'ended' && unresolved.length > 0) {
         stopped.push({ row, updated })
         continue
@@ -965,6 +1009,33 @@ export const buildView = (
       }
       active.push({ ...row, rank: isHere ? 0 : 1, order })
     }
+  }
+
+  // The older block of two for one session: no row of its own, but the person may take it out.
+  for (const { project, task } of folded.duplicates) {
+    const auto = task.auto
+    if (auto === null) continue
+    const name = project.name || s.uncategorized
+    const title = task.title || s.unnamed
+    const base = `${name}::${title}`
+    const repeat = (repeats.get(base) ?? 0) + 1
+    repeats.set(base, repeat)
+    const updated = observedTime(auto, now, seen).updated
+    const { done, total } = countSteps(task)
+    stopped.push({
+      updated,
+      row: {
+        key: repeat === 1 ? base : `${base}#${repeat}`,
+        project: name, title, context: '', done, total, status: s.duplicateSession, tone: 'quiet',
+        when: relativeTime(updated, now, s), isHere: false, auto: 'ended', steps: [], left: [], next: null, due: null, pr: '',
+        agent: auto.agent === 'claude' ? '' : auto.agent, resume: null, question: null, handoff: '',
+        archive: { project: name, title: task.title, line: task.line, session: auto.session, isDuplicate: true }, target: null,
+      },
+    })
+  }
+  let background: RunGroup | null = folded.background
+  for (const [task, group] of folded.runs) {
+    if (!placed.has(task)) background = mergeGroups(background, group)
   }
 
   due.sort((a, b) => a.days - b.days)
@@ -1038,9 +1109,26 @@ export const buildView = (
   const onShelf = new Set([...stopped.flatMap(({ row }) => row.questions ?? []), ...shownRecent.flatMap(item => item.questions ?? [])].flatMap(item => item.questionId === undefined ? [] : [item.questionId]))
   const shownQuestions = new Set([...all, ...hidden].flatMap(item => item.questionId === undefined ? [] : [item.questionId]))
   const retained: WaitingItem[] = []
+  const stoppedQuestions = new Set<string>()
+  const keptSessions = new Set([...keptTasks].flatMap(task => task.auto === null ? [] : [sessionIdentity(task.auto)]).filter(identity => identity !== null))
+  const runSessions = new Set(projects.flatMap(project => project.tasks.flatMap(task => task.auto?.isRun === true ? [sessionIdentity(task.auto)] : [])).filter(identity => identity !== null))
+  const starterOf = startersOf(projects)
   for (const record of observed?.ledger.records ?? []) {
-    if (!record.isUnresolved || record.source === undefined || onShelf.has(record.id) || shownQuestions.has(record.id)) continue
+    if (!record.isUnresolved || record.source === undefined || onShelf.has(record.id) || shownQuestions.has(record.id) || foldedScopes.has(record.scope)) continue
     const source = record.source
+    const saved = source.kind === 'block' ? sourceSnapshot(source.data) : null
+    let agent = source.agent
+    // A kept question whose block is gone is folded by its saved copy, as the live block was (#399): a
+    // copy of a session that is a row on the board today is that row's, which shows its own question;
+    // a copy of a run is listed under the agent of the session that started it, when that one is on
+    // the board.
+    if (saved !== null && saved.auto !== null && !liveScopes.has(record.scope) && !keptScopes.has(record.scope)) {
+      const identity = sessionIdentity(saved.auto)
+      if (identity !== null && keptSessions.has(identity)) continue
+      const isRun = saved.auto.isRun === true || identity !== null && runSessions.has(identity)
+      const starter = isRun ? starterOf(saved.auto) : null
+      if (starter !== null) agent = starter.agent
+    }
     const parts = splitNote(source.text)
     const age = questionAge(record.firstObserved, now)
     // A source copy still knows a stopped session after its block was removed or replaced.
@@ -1048,36 +1136,49 @@ export const buildView = (
     let isInactiveSource = false
     if (source.kind === 'block' && !liveScopes.has(record.scope)) {
       // Unknown historical source shapes retain the existing review behavior.
-      const saved = sourceSnapshot(source.data)
       isInactiveSource = saved !== null && saved.auto !== null && (saved.auto.state === 'ended' || saved.auto.state === 'done' || isStale(saved.auto, now, observedTime(saved.auto, now, seen).updated) || isMarksComplete(saved.steps))
     }
-    const stage = record.isArchived || isInactiveSource || inactiveScopes.has(record.scope) ? 'older' : age.stage
-    const item: WaitingItem = { key: `retained::${record.id}`, questionId: record.id, ageStage: stage, project: source.project, task: source.task, context: source.context, ...parts, when: age.age === null ? s.questionAgeUnknown : relativeTime(record.firstObserved, now, s), ...askOf(parts.text, parts.note), where: 'other', agent: source.agent === 'claude' ? '' : source.agent, session: source.session, sessionId: null, resumeVia: null, reopen: null, hideKey: record.id, canHide: false, step: null, target: null }
+    const isStopped = record.isArchived || isInactiveSource || inactiveScopes.has(record.scope)
+    const stage = isStopped ? 'older' : age.stage
+    const item: WaitingItem = { key: `retained::${record.id}`, questionId: record.id, ageStage: stage, project: source.project, task: source.task, context: source.context, ...parts, when: age.age === null ? s.questionAgeUnknown : relativeTime(record.firstObserved, now, s), ...askOf(parts.text, parts.note), where: 'other', agent: agent === 'claude' ? '' : agent, session: source.session, sessionId: null, resumeVia: null, reopen: null, hideKey: record.id, canHide: record.isArchived === true, ...(record.isArchived === true ? { isKept: true as const } : {}), step: null, target: null }
     if (marked.has(record.id)) hidden.push(item)
-    else retained.push(item)
+    else {
+      retained.push(item)
+      if (isStopped) stoppedQuestions.add(record.id)
+    }
+  }
+  // A question that sits on a Stopped or recent row is also listed under Older, with the age it was
+  // first asked, so the stopped-sessions line in Waiting has one list to open (#400). The row keeps its
+  // own copy. A question the ledger loop already put there is not listed twice, and every stopped
+  // question is counted once by its id. A board that first looks at a long-quiet block cannot have
+  // seen the question before the block's last write, so the question is at least that old: the age
+  // is taken from the earlier of the two, and never reads "just now" for a month-old block.
+  const olderIds = new Set([...all.filter(item => !isMarked(item)), ...retained].flatMap(item => item.ageStage === 'older' && item.questionId !== undefined ? [item.questionId] : []))
+  const askedOn = [...stopped.map(({ row, updated }) => ({ questions: row.questions ?? [], updated })), ...shownRecent.map(item => ({ questions: item.questions ?? [], updated: 0 }))]
+  const onRows: WaitingItem[] = []
+  for (const { questions, updated } of askedOn) {
+    for (const question of questions) {
+      const id = question.questionId
+      if (id === undefined || marked.has(id)) continue
+      const record = recordsById.get(id)
+      if (record?.isUnresolved === false) continue
+      stoppedQuestions.add(id)
+      if (olderIds.has(id)) continue
+      const first = record?.firstObserved ?? 0
+      const askedAt = updated > 0 && updated < first ? updated : first
+      onRows.push({ ...question, key: `older::${question.key}`, ageStage: 'older', when: questionAge(first, now).age === null ? s.questionAgeUnknown : relativeTime(askedAt, now, s) })
+      olderIds.add(id)
+    }
   }
   // The same question asked in several blocks or captures is one card (#463): the newest copy that
-  // can be acted on, with the age of the oldest. The copies of stopped sessions are in the mix, so
-  // a stopped session's copy neither shows beside a live one nor keeps a card open after the
-  // question is closed; the other copies stay in the question list.
-  const staleOf = new Map<WaitingItem, WaitingItem>()
-  const stale: Copy[] = [...stopped.flatMap(({ row }) => row.questions ?? []), ...shownRecent.flatMap(item => item.questions ?? [])].map(item => {
-    const ghost = aged(item)
-    staleOf.set(ghost, item)
-    return { item: ghost, ...seenAs(item), isStale: true }
-  })
-  const merged = mergeCopies([...all.filter(item => !isMarked(item)), ...retained].map(item => ({ item, ...seenAs(item), isStale: false })).concat(stale), closedCopies(observed?.ledger.records ?? [], marked))
-  const asks: WaitingItem[] = merged.shown.filter(item => item.ageStage === 'pending')
-  const reminder: WaitingItem[] = merged.shown.filter(item => item.ageStage === 'reminder')
-  const older: WaitingItem[] = merged.shown.filter(item => item.ageStage === 'older')
-  if (merged.dropped.size > 0) {
-    const dropped = new Set([...merged.dropped].map(ghost => staleOf.get(ghost)))
-    for (const { row } of stopped) {
-      row.questions = row.questions?.filter(item => !dropped.has(item))
-      row.question = row.questions?.[0]?.text ?? null
-    }
-    for (const item of shownRecent) item.questions = item.questions?.filter(question => !dropped.has(question))
-  }
+  // can be acted on, with the age of the oldest. The copies a stopped session's row lists under
+  // Older are in the mix, so a live card does not repeat them; the other copies stay in the
+  // question list, and the row keeps its own.
+  const merged = mergeCopies([...all.filter(item => !isMarked(item)), ...retained, ...onRows].map(item => ({ item, ...seenAs(item), isStopped: item.questionId !== undefined && stoppedQuestions.has(item.questionId) })), closedCopies(observed?.ledger.records ?? [], marked))
+  const asks: WaitingItem[] = merged.filter(item => item.ageStage === 'pending')
+  const reminder: WaitingItem[] = merged.filter(item => item.ageStage === 'reminder')
+  const older: WaitingItem[] = merged.filter(item => item.ageStage === 'older')
+  const stoppedAsking = older.filter(item => item.questionId !== undefined && stoppedQuestions.has(item.questionId)).length
   const dueRows = due.map(({ days: _days, ...row }) => row)
   const now1 = asks.find(item => askRank(item.kind) < 2)
   const today1 = due.find(row => row.days <= 1)
@@ -1095,6 +1196,10 @@ export const buildView = (
             : null
 
   const current = mine === null ? null : currentOf(mine, s)
+  if (ownRuns !== null) {
+    if (current === null) background = mergeGroups(background, ownRuns)
+    else current.runs = runsText(ownRuns, now, s)
+  }
   if (current !== null && !asks.some(item => item.where === 'here') && all.some(item => item.where === 'here' && item.ageStage !== 'pending')) {
     current.status = reminder.some(item => item.where === 'here') ? s.sectionQuestionReminders : s.sectionOlderQuestions
     current.tone = 'quiet'
@@ -1111,7 +1216,9 @@ export const buildView = (
     hidden,
     reminder,
     older,
+    ...(stoppedAsking > 0 ? { stoppedAsking } : {}),
     hasPendingQuestions: questions !== undefined,
+    ...(background === null ? {} : { background: s.backgroundRuns(background.count, relativeTime(background.last, now, s)) }),
     idle,
     stopped: stopped.map(item => item.row),
     due: dueRows,

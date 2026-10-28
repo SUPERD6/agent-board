@@ -2622,6 +2622,7 @@ const pageDom = async (html, first, { post, confirm, messaging, copyAllowed = fa
     }
     focus() { document.activeElement = this }
     blur() { if (document.activeElement === this) document.activeElement = null }
+    scrollIntoView() { this.scrolled = true }
     setSelectionRange() {}
     select() { this.isSelected = true }
   }
@@ -2699,8 +2700,10 @@ const pageDom = async (html, first, { post, confirm, messaging, copyAllowed = fa
   }
   await flush()
   const boardButtons = node => node.childNodes.flatMap(child => [...(child.tag === 'button' ? [child] : []), ...boardButtons(child)])
+  // The buttons that only open or reveal something already drawn (the stopped-sessions line, Show all) are not card actions.
+  const cardButtons = node => boardButtons(node).filter(button => button.getAttribute('data-nav') === null)
   return {
-    buttons: () => boardButtons(get('board')),
+    buttons: () => cardButtons(get('board')),
     boxes: () => get('board').querySelectorAll(),
     send: () => boardButtons(get('board')).find(button => button.textContent === 'Send to Grok Build'),
     requests, copies,
@@ -3352,6 +3355,70 @@ test("a refusal caused by another agent's change stays next to the page card aft
     await dom.redraw({ ...base, asks: [{ ...ask, fp: 'after' }] })
     const results = pageCardResults(dom, ask.key).filter(node => node.textContent !== '')
     assert.deepEqual(results.map(node => node.textContent), ['That line just changed'])
+  } finally { await board.close() }
+})
+
+test('the page line for questions in stopped sessions opens the Older shelf, and Show all draws the rest without the server', async () => {
+  const board = await page()
+  try {
+    const html = (await board.call('GET', `/?t=${board.token}`)).body
+    const words = JSON.parse(html.match(/<script[^>]*id="words"[^>]*>([\s\S]*?)<\/script>/)[1])
+    const older = Array.from({ length: 12 }, (_, index) => ({ key: `older:retained::synthetic-${index}@synthetic-${index}`, canHide: false, project: 'Demo', agent: 'codex', task: `Plan ${index}`, text: `Synthetic question ${index}, OK?`, note: '', context: '', when: '4 days ago', questionId: `synthetic-${index}` }))
+    const model = { counts: { waiting: 0, active: 0, due: 0, today: 0 }, groups: [], hidden: [], idle: [], stopped: [], turns: [], recent: [], asks: [], reminder: [], older, stoppedAsking: 12 }
+    const dom = await pageDom(html, model, { post: async () => { throw new Error('synthetic offline') } })
+    const walk = node => node.childNodes.flatMap(child => [child, ...walk(child)])
+    const shelf = () => walk(dom.node('board')).find(node => node.tag === 'details' && node.className === 'card shelf')
+    const shown = () => walk(shelf()).filter(node => node.className === 'q').length
+    const navigation = () => walk(dom.node('board')).filter(node => node.tag === 'button' && node.getAttribute('data-nav') !== null)
+    const line = words.stoppedAsking.replace('\u0001', '12')
+    const showAll = words.showAllQuestions.replace('\u0001', '12')
+    assert.deepEqual(navigation().map(button => button.textContent), [line, showAll])
+    assert.equal(shelf().open, false)
+    assert.equal(shown(), 10)
+    navigation()[0].click()
+    await dom.flush()
+    assert.equal(shelf().open, true)
+    assert.equal(shelf().scrolled, true)
+    const all = navigation().find(button => button.textContent === showAll)
+    assert.ok(all)
+    all.click()
+    await dom.flush()
+    assert.equal(shown(), 12)
+    assert.equal(navigation().some(button => button.textContent === showAll), false)
+    // The line belongs to Waiting: it shows under All and Waiting and hides under Due.
+    assert.equal(navigation()[0].hidden, false)
+    const due = dom.allButtons().find(button => button.textContent.startsWith(words.sectionDue))
+    assert.ok(due)
+    due.click()
+    await dom.flush()
+    assert.equal(navigation()[0].hidden, true)
+    // The choice survives the next redraw, and none of this reached the server.
+    await dom.redraw({ ...model })
+    assert.equal(shown(), 12)
+    assert.deepEqual(dom.requests, [])
+  } finally { await board.close() }
+})
+
+test('the page offers Already answered, hide on an Older question that can be hidden, and says review only on one that cannot', async () => {
+  const board = await page()
+  try {
+    const html = (await board.call('GET', `/?t=${board.token}`)).body
+    const words = JSON.parse(html.match(/<script[^>]*id="words"[^>]*>([\s\S]*?)<\/script>/)[1])
+    const entry = (index, canHide) => ({ key: `older:retained::synthetic-${index}@synthetic-${index}`, canHide, project: 'Demo', agent: 'codex', task: `Plan ${index}`, text: `Synthetic question ${index}, OK?`, note: '', context: '', when: '9 days ago', questionId: `synthetic-${index}` })
+    const model = { counts: { waiting: 0, active: 0, due: 0, today: 0 }, groups: [], hidden: [], idle: [], stopped: [], turns: [], recent: [], asks: [], reminder: [], older: [entry(0, true), entry(1, false)], stoppedAsking: 2 }
+    const dom = await pageDom(html, model, { post: async () => ({ ok: true, json: async () => ({ ok: true, note: 'Hidden' }) }) })
+    const walk = node => node.childNodes.flatMap(child => [child, ...walk(child)])
+    const cards = walk(dom.node('board')).filter(node => node.tag === 'div' && node.getAttribute('data-card-key') !== null)
+    const textOf = card => walk(card).filter(node => node.tag === 'button' || node.className === 'quiet').map(node => node.textContent)
+    assert.deepEqual(cards.map(card => card.getAttribute('data-card-key')), ['older:retained::synthetic-0@synthetic-0', 'older:retained::synthetic-1@synthetic-1'])
+    assert.ok(textOf(cards[0]).includes(words.answeredHide))
+    assert.ok(!textOf(cards[0]).includes(words.questionReviewOnly))
+    assert.ok(!textOf(cards[1]).includes(words.answeredHide))
+    assert.ok(textOf(cards[1]).includes(words.questionReviewOnly))
+    walk(cards[0]).find(node => node.tag === 'button' && node.textContent === words.answeredHide).click()
+    await dom.flush()
+    await dom.flush()
+    assert.deepEqual(dom.requests.map(one => [one.path, one.body.key, one.body.type]), [['/api/act', 'older:retained::synthetic-0@synthetic-0', 'hide']])
   } finally { await board.close() }
 })
 
@@ -5897,18 +5964,21 @@ test('--tidy tells the blocks of two sessions with one title apart when it keeps
   assert.deepEqual(archivedCopies(swept.files).map(copy => copy.record.words), ['First session question, OK?'])
 })
 
-test('--tidy keeps a working or waiting block that asks, however old, while the ledger holds its question', () => {
+test('--tidy archives a working or waiting block that asks after seven days without a report and keeps it inside them, with the question kept', () => {
   const at = Date.now()
   const block = (session, state, hours) => `<!-- auto session=${session} agent=codex state=${state} updated=${new Date(at - hours * 3600000).toISOString()} -->\n### Plan ${session}\n- [?] Question of ${session}, OK?\n<!-- /auto session=${session} -->\n`
-  const board = `## Synthetic\n${block('a1b2c341', 'waiting', 100)}${block('a1b2c342', 'working', 24 * 40)}${block('a1b2c343', 'ended', 100)}`
+  const board = `## Synthetic\n${block('a1b2c341', 'waiting', 100)}${block('a1b2c342', 'working', 24 * 40)}${block('a1b2c343', 'ended', 100)}${block('a1b2c344', 'waiting', 144)}${block('a1b2c345', 'waiting', 24 * 8)}`
   const seed = chatRun(['--keys', ''], { file: () => board, inspect: sweepFiles })
   assert.equal(seed.status, 0, seed.stderr)
   const swept = chatRun(['--tidy'], { file: () => board, beside: seed.files, inspect: sweepFiles })
   assert.equal(swept.status, 0, swept.stderr)
-  assert.equal(swept.stdout, 'Archived 1 task.\n')
-  assert.ok(swept.board.includes('a1b2c341') && swept.board.includes('a1b2c342'), swept.board)
-  assert.ok(!swept.board.includes('a1b2c343'), swept.board)
-  assert.deepEqual(archivedCopies(swept.files).map(copy => copy.record.words), ['Question of a1b2c343, OK?'])
+  assert.equal(swept.stdout, 'Archived 3 tasks.\n')
+  assert.ok(swept.board.includes('a1b2c341') && swept.board.includes('a1b2c344'), swept.board)
+  for (const session of ['a1b2c342', 'a1b2c343', 'a1b2c345']) {
+    assert.ok(!swept.board.includes(session), swept.board)
+    assert.ok(swept.archive.includes(`Question of ${session}, OK?`), swept.archive)
+  }
+  assert.deepEqual(archivedCopies(swept.files).map(copy => copy.record.words).sort(), ['Question of a1b2c342, OK?', 'Question of a1b2c343, OK?', 'Question of a1b2c345, OK?'])
 })
 
 test('--tidy reports scheduled ages in every language and takes precedence over interactive modes', () => {
@@ -7161,6 +7231,116 @@ test('the terminal board keeps group headings, --all question shelves and the du
       assert.ok(badgeLine?.includes('…'), `the complete due badge stays after the clipped status: ${screen}`)
     }
   }
+})
+
+// One grouped fixture test keeps its checker and known product TODO together.
+test('the synthetic big board has the shape of a heavy user\'s board', async t => {
+  const { bigBoard, bigBoardNow, bigBoardFirstObserved } = await import('./fixtures/big-board.mjs')
+  const { neverShown } = await import('./fixtures/never-shown.mjs')
+  const { boardText, buildView, parseProgress } = await sourceBoard()
+  const { emptyQuestions, observeQuestions } = await import('../hooks/questions.ts')
+  const started = performance.now()
+  const source = bigBoard(460)
+  assert.ok(performance.now() - started < 2000, 'the generator finishes within two seconds')
+  assert.equal(bigBoard(460), source)
+  assert.notEqual(bigBoard(461), source)
+  assert.doesNotMatch(source, /\r/)
+  assert.ok(source.endsWith('\n'))
+  assert.throws(() => bigBoard(-1), RangeError)
+  const projects = parseProgress(source)
+  const tasks = projects.flatMap(project => project.tasks)
+  const questions = tasks.flatMap(task => task.steps.filter(step => step.status === 'waiting'))
+  assert.equal(projects.length, 50)
+  assert.equal(tasks.length, 300)
+  assert.equal(tasks.filter(task => task.auto?.state === 'ended').length, 200)
+  assert.equal(questions.length, 500)
+  assert.deepEqual([...new Set(tasks.map(task => task.auto.agent))].sort(), ['claude', 'codex', 'cursor', 'gemini', 'grok', 'hermes', 'muse', 'opencode'])
+  assert.equal(new Set(tasks.map(task => task.auto.session)).size, 300)
+  assert.ok(projects.every(project => /^fixture-repo-\d-\d+$/.test(project.name)))
+  assert.ok(projects.every(project => project.tasks[0].title.startsWith('Main session') && project.tasks[1].title.startsWith('Helper run')))
+  assert.ok(tasks.filter(task => task.steps.some(step => step.text.length > 2000)).length >= 3)
+  assert.equal(questions.filter(step => step.text === 'Should the repeated synthetic comparison use plan A?').length, 2)
+  assert.match(source, /核對合成資料/)
+  assert.match(source, /Compare synthetic totals/)
+  assert.ok(tasks.some(task => task.steps.some(step => step.text.startsWith('{"event":"synthetic-turn"'))))
+  // Ask age comes from first observation, never the writer's updated field.
+  const ledger = observeQuestions(emptyQuestions(), projects, null, [], bigBoardFirstObserved).ledger
+  assert.equal(ledger.records.length, 500)
+  assert.ok(ledger.records.every(record => record.firstObserved === bigBoardFirstObserved))
+  const view = buildView(projects, [], null, bigBoardNow, 0, {}, EN, [], {}, ledger)
+  assert.equal(view.older.length, 100, 'live sessions retain their older unanswered questions')
+
+  const it = t.test.bind(t)
+  await it('the never-shown check finds hashes, paths, session ids, raw JSON and long lines', () => {
+    const uuid = '12345678-abcd-4000-8000-123456789abc'
+    const samples = [
+      ['hash', 'a'.repeat(40)], ['commit-id', 'abcdef0'], ['commit-id', 'ABCDEF012345'],
+      ['path', 'C:\\synthetic\\repo-1'], ['path', 'C:/synthetic/repo-1'],
+      ['path', '/Users/synthetic/repo-1'], ['path', '/home/synthetic/repo-1'],
+      ['path', 'C:\\'], ['path', '/Users/'], ['path', '/home/'],
+      ['session-id', uuid], ['session-id', 'session: abc12345'],
+      ['session-id', 'session=12345678'], ['session-id', `session=${uuid}`],
+      ['raw-json', '{"a":{"b":"quoted } brace and \\" quote"}}'],
+      ['raw-json', '{\n  "synthetic": true\n}'], ['raw-json', '{}'],
+      ['long-line', '中'.repeat(301)], ['long-line', '🧪'.repeat(301)],
+    ]
+    assert.deepEqual(samples.filter(([kind, sample]) => !neverShown(sample).some(one => one.kind === kind)), [], 'every unsafe sample is detected')
+    const cases = [
+      ['{"key":', ['raw-json']],
+      ['○ 3 {"event":"synthetic-turn","session":"c13dc1a4-90bd-4000-8000-228bee76…', ['raw-json', 'session-id']],
+      ['Total 1234567 bytes', []],
+      ['Build 20261025', []],
+      ['Epoch 1761393600000', []],
+      ['deadbeef', []],
+      ['defaced', []],
+      ['This session: done', []],
+      ['Session: Claude is working', []],
+      ['Replace {} with null', []],
+      ['{}', ['raw-json']],
+      ['result:{}', ['raw-json']],
+      ['session=short-id-460', []],
+      ['session=s1', []],
+      ['session: short', []],
+      ['session=s', []],
+      [`session=${'s'.repeat(65)}`, []],
+      ['session=abcdef0', ['commit-id']],
+      ['session=deadbeef', []],
+      ['session=abc12345word', []],
+      ['session=abc12345-extra', ['commit-id']],
+      ['1'.repeat(40), ['hash']],
+      ['a'.repeat(40), ['hash']],
+    ]
+    for (const [sample, kinds] of cases) assert.deepEqual(neverShown(sample).map(one => one.kind), kinds, sample)
+    assert.deepEqual(neverShown(`session=${uuid}`), [{ kind: 'session-id', line: 1, column: 9, value: uuid }])
+    assert.deepEqual(neverShown('session: abc12345'), [{ kind: 'session-id', line: 1, column: 10, value: 'abc12345' }])
+    assert.deepEqual(neverShown('session=12345678'), [{ kind: 'session-id', line: 1, column: 9, value: '12345678' }])
+    const clipped = 'c13dc1a4-90bd-4000-8000-228bee76…'
+    assert.deepEqual(neverShown(`é🧪 ${clipped}`), [{ kind: 'session-id', line: 1, column: 4, value: clipped }])
+    assert.deepEqual(neverShown('é🧪 {"key":'), [{ kind: 'raw-json', line: 1, column: 4, value: '{"key":' }])
+    for (const root of ['C:\\', '/Users/', '/home/']) assert.deepEqual(neverShown(root), [{ kind: 'path', line: 1, column: 1, value: root }])
+    assert.deepEqual(neverShown('Compare 42 reports\nabcdef\nnotabcdef0word\n../fixtures/board.md\n../home/synthetic\nhttps://example.test/home/synthetic\n{choose one}\n' + '中'.repeat(300)), [], 'ordinary text, short hex and relative links are allowed')
+    assert.deepEqual(neverShown('../home/\n../Users/\nhttps://example.test/home/\nhttps://example.test/Users/'), [], 'root matching still excludes relative paths and URL components')
+    assert.deepEqual(neverShown('session=\nsession: '), [], 'an empty session label does not consume the next line')
+    const nested = neverShown('前言\r\n\x1b[31m{"a":{"b":"}"}}\x1b[0m')
+    assert.deepEqual(nested, [{ kind: 'raw-json', line: 2, column: 1, value: '{"a":{"b":"}"}}' }])
+    assert.deepEqual(neverShown('{broken "log\n{"valid":true}'), [{ kind: 'raw-json', line: 2, column: 1, value: '{"valid":true}' }])
+    assert.deepEqual(neverShown('x'.repeat(300) + '\r\n'), [], 'CRLF is not a content character')
+    const long = neverShown('\x1b[32m' + '🧪'.repeat(301) + '\x1b[0m\r\n')
+    assert.equal(long.length, 1)
+    assert.equal(long[0].kind, 'long-line')
+    assert.deepEqual(neverShown('é🧪 abcdef0')[0], { kind: 'commit-id', line: 1, column: 4, value: 'abcdef0' })
+  })
+  await it('the terminal board\'s first screen of the big board shows nothing from the never-shown list', context => {
+    // An 80-column, 24-row terminal at its default collapsed shelves. This does
+    // not cover the browser, interactive navigation or installed host sessions.
+    const screen = boardText(view, [], EN, { width: 80, isColor: false }).split('\n').slice(0, 24).join('\n')
+    assert.equal(screen.split('\n').length, 24, 'the heavy fixture fills the first screen')
+    assert.match(screen, /fixture-repo-/, 'real fixture project rows are drawn')
+    const findings = neverShown(screen)
+    context.diagnostic(JSON.stringify({ columns: 80, rows: 24, findings }))
+    if (findings.length > 0) context.todo(`#460 known first-screen findings: ${findings.map(one => `${one.kind} at ${one.line}:${one.column}`).join(', ')}`)
+    assert.deepEqual(findings, [])
+  })
 })
 
 test('an emoji counts as two columns when a board line is cut to the width', async () => {

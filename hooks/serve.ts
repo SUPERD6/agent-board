@@ -1,5 +1,5 @@
 import type { AskKind } from './ask'
-import { answersOf, boardItems, fingerprint, remainingInbox } from './board'
+import { answersOf, boardItems, fingerprint, olderKey, remainingInbox } from './board'
 import type { BoardItem, PendingTurn } from './board'
 import { clipLine, LABEL_ROOM, LINE_ROOM } from './clip'
 import { htmlLang } from './dashboard'
@@ -9,8 +9,8 @@ import type { Strings } from './i18n'
 import { agentLabel } from './strings'
 import type { Tone } from './palette'
 import { RESUME } from './parse'
-import { replyHint, wayBackText } from './view'
-import type { AgentTarget, StepRef, TaskRef, View } from './view'
+import { OLDER_SHOWN, replyHint, wayBackText } from './view'
+import type { AgentTarget, StepRef, TaskRef, View, WaitingItem } from './view'
 import type { Connection, Message } from './messaging'
 
 // The board's page: what `agent-board.mjs --serve` shows in a browser for agents other than
@@ -155,6 +155,8 @@ export type ServeRow = {
   archiveNote: string
   resume: string | null
   handoff: string
+  // The runs this session started for itself, as one line; '' when none (#399).
+  runs: string
   // Its session still asks the person something (not marked answered): the card opens by itself.
   isAsking: boolean
   // That question, as a reply from the page names it; '' when none.
@@ -171,7 +173,8 @@ export type ServeRow = {
 
 // A question marked answered, listed so it can be shown again.
 export type ServeHidden = { key: string; project: string; agent: string; isOwn?: true; task: string; text: string; questionId?: string }
-export type ServeRetained = { project: string; agent: string; isOwn?: true; task: string; text: string; note: string; context: string; when: string; questionId?: string }
+// key names the line in the action route; canHide is false for a retained source that is only for review.
+export type ServeRetained = { key: string; canHide: boolean; project: string; agent: string; isOwn?: true; task: string; text: string; note: string; context: string; when: string; questionId?: string }
 
 export type ServeTurn = { key: string; project: string; agent: string; text: string; isQuestion: boolean; info: string }
 
@@ -180,11 +183,14 @@ export type ServeModel = {
   details?: string
   isLarge?: true
   isCleanable?: true
+  // Runs agents started for themselves that no session is known for, as one folded line (#399).
+  background?: string
   counts: { waiting: number; active: number; due: number; today: number }
   asks: ServeAsk[]
   hidden: ServeHidden[]
   reminder: ServeRetained[]
   older: ServeRetained[]
+  stoppedAsking?: number
   idle: ServeRow[]
   stopped: ServeRow[]
   groups: Array<{ project: string; rows: ServeRow[] }>
@@ -214,6 +220,22 @@ const lined = (text: string): { line?: string } => {
 // The keys are the terminal board's (`boardItems`), so a press names the line it was on.
 // `isLan`: the page as a phone sees it on the local network, where a reply that would run an
 // agent on the computer is offered as a copy instead.
+// A question on the reminder or Older shelf. The page may hide it under the key the action route names,
+// unless it is a retained source kept for review only.
+const retainedOf = (item: WaitingItem): ServeRetained => ({
+  key: olderKey(item),
+  canHide: item.hideKey !== '' && item.canHide !== false,
+  project: item.project,
+  agent: item.agent,
+  ...(item.where === 'manual' ? { isOwn: true as const } : {}),
+  task: item.task,
+  text: item.text,
+  note: item.note,
+  context: item.context,
+  when: item.when,
+  ...(item.questionId === undefined ? {} : { questionId: item.questionId }),
+})
+
 export const serveModel = (view: View, pending: readonly PendingTurn[], s: Strings = ZH_TW, sending: ReadonlySet<string> = new Set(), isLan = false, messaging?: Messaging, allowResume = false): ServeModel => {
   const isSending = (target: AgentTarget | null): boolean => target !== null && sending.has(sendKey(target))
   const onLan = (mode: SendMode): SendMode => (isLan && mode === 'send' ? 'open' : mode)
@@ -305,6 +327,7 @@ export const serveModel = (view: View, pending: readonly PendingTurn[], s: Strin
         // The command to resume a session names its folder, and the account with it: the computer's only.
         resume: isLan ? null : row.resume,
         handoff: row.handoff,
+        runs: row.runs ?? '',
         isAsking: row.question !== null,
         question: row.question ?? '',
         send,
@@ -336,12 +359,14 @@ export const serveModel = (view: View, pending: readonly PendingTurn[], s: Strin
     ...(view.details === undefined ? {} : { details: view.details }),
     ...(view.isLarge ? { isLarge: true } : {}),
     ...(view.isCleanable ? { isCleanable: true } : {}),
+    ...(view.background === undefined ? {} : { background: view.background }),
     asks,
+    ...((view.stoppedAsking ?? 0) > 0 ? { stoppedAsking: view.stoppedAsking } : {}),
     idle,
     stopped,
     hidden: view.hidden.map(item => ({ key: `hidden:${item.hideKey}`, project: item.project, agent: item.agent, ...(item.where === 'manual' ? { isOwn: true as const } : {}), task: item.task, text: item.text, ...(item.questionId === undefined ? {} : { questionId: item.questionId }) })),
-    reminder: (view.reminder ?? []).map(({ project, agent, where, task, text, note, context, when, questionId }) => ({ project, agent, ...(where === 'manual' ? { isOwn: true as const } : {}), task, text, note, context, when, ...(questionId === undefined ? {} : { questionId }) })),
-    older: (view.older ?? []).map(({ project, agent, where, task, text, note, context, when, questionId }) => ({ project, agent, ...(where === 'manual' ? { isOwn: true as const } : {}), task, text, note, context, when, ...(questionId === undefined ? {} : { questionId }) })),
+    reminder: (view.reminder ?? []).map(retainedOf),
+    older: (view.older ?? []).map(retainedOf),
     groups: [...groups].map(([project, rows]) => ({ project, rows })),
     turns,
     recent: view.recent.map(item => ({ project: item.project, title: item.title, ...lined(item.title), when: item.when, questions: item.questions?.map(question => [question.text, question.note].filter(Boolean).join(' — ')) })),
@@ -511,6 +536,8 @@ const PAGE_WORDS = [
   'sectionWaiting',
   'sectionQuestionReminders',
   'sectionOlderQuestions',
+  'stoppedAsking',
+  'showAllQuestions',
   'questionAgingHint',
   'questionReviewOnly',
   'nothingForYou',
@@ -843,6 +870,12 @@ const PAGE_SCRIPT = String.raw`
     node.addEventListener('click', function () { if (!isLocal && isUnreachable) return; if (!isView) beginPress(); onPress(); });
     return node;
   }
+  // A button that only opens or reveals something already on the page: it works without the server and is no action on a card.
+  function navButton(label, onPress) {
+    var node = button(label, onPress, '', true, true);
+    node.setAttribute('data-nav', '');
+    return node;
+  }
   // fp: the fingerprint the line was drawn with, which the server checks before it writes.
   function act(key, type, text, waiting, session, asked, fp) {
     if (isUnreachable) return Promise.resolve();
@@ -1027,6 +1060,7 @@ const PAGE_SCRIPT = String.raw`
     if (row.pr) add(body, el('div', 'quiet', row.pr));
     if (row.steps.length) add(body, stepsList(row.steps, row.key));
     if (row.handoff) add(body, el('div', 'quiet small', row.handoff));
+    if (row.runs) add(body, el('div', 'quiet small', row.runs));
     if (row.send === 'send' || row.send === 'connected') add(body, replyBox(row.key, w('serveMessagePlaceholder', agentName(row.agent)), row.send, row.agent, row.where, row.isSending, row.session, asked, row.fp, row.delivery));
     else if (row.hasCopyBox) add(body, replyBox(row.key, w('serveReplyPlaceholder'), 'copy', row.agent, '', false, row.session, asked));
     var actions = [];
@@ -1248,18 +1282,46 @@ const PAGE_SCRIPT = String.raw`
     nothing = model.asks.length === 0 ? el('div', 'n-today', w('nothingForYou')) : null;
     add(board, waitingHead, nothing);
     model.asks.forEach(function (ask) { add(board, tracked(askCard(ask), ['waiting'], ask)); });
+    var olderShelf = null;
+    // Like the questions beside it, the line shows under All and Waiting only.
+    if (model.stoppedAsking > 0) add(board, tracked(navButton(w('stoppedAsking', model.stoppedAsking), function () {
+      opened['older:'] = true;
+      if (olderShelf) {
+        olderShelf.open = true;
+        olderShelf.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    }), ['waiting'], {}, '', true));
     [['reminder', 'sectionQuestionReminders'], ['older', 'sectionOlderQuestions']].forEach(function (pair) {
       var questions = model[pair[0]] || [];
       if (!questions.length) return;
       var from = filterNodes.length;
       var retained = el('details', 'card shelf');
+      if (pair[0] === 'older') olderShelf = retained;
       retained.open = opened[pair[0] + ':'] === true;
       retained.addEventListener('toggle', function () { opened[pair[0] + ':'] = retained.open; });
-      add(retained, add(el('summary'), el('span', 'quiet', w(pair[1]) + ' (' + questions.length + ')')), el('p', 'quiet', w('questionAgingHint')), el('p', 'quiet', w('questionReviewOnly')));
-      questions.forEach(function (one) {
-        add(retained, tracked(add(el('div'), add(el('div', 'where'), agentMark(who(one)), el('span', '', [one.project, brand(who(one)), one.task, one.when].filter(Boolean).join(' · '))), el('div', 'q', one.text), el('div', '', one.note), el('div', 'quiet', one.context)), ['waiting'], one, '', true));
-      });
+      add(retained, add(el('summary'), el('span', 'quiet', w(pair[1]) + ' (' + questions.length + ')')), el('p', 'quiet', w('questionAgingHint')));
+      var shown = pair[0] === 'older' && !opened['older:all'] ? ${OLDER_SHOWN} : questions.length;
+      function appendQuestion(one) {
+        // A question that can be hidden has the same button as a live one; a retained source kept for review only says so.
+        var card = add(el('div'), add(el('div', 'where'), agentMark(who(one)), el('span', '', [one.project, brand(who(one)), one.task, one.when].filter(Boolean).join(' · '))), el('div', 'q', one.text), el('div', '', one.note), el('div', 'quiet', one.context), one.canHide ? add(el('div', 'actions'), button(w('answeredHide'), function () { act(one.key, 'hide'); })) : el('div', 'quiet', w('questionReviewOnly')));
+        resultSlot(card, one.key, one.text, one.task);
+        add(retained, tracked(card, ['waiting'], one, '', true));
+      }
+      questions.slice(0, shown).forEach(appendQuestion);
       groupVisibility(retained, from);
+      if (shown < questions.length) {
+        var more = navButton(w('showAllQuestions', questions.length), function () {
+          opened['older:all'] = true;
+          var next = filterNodes.length;
+          questions.slice(shown).forEach(appendQuestion);
+          filterGroups.forEach(function (group) {
+            if (group.node === retained || group.node === waitingHead) group.entries = group.entries.concat(filterNodes.slice(next));
+          });
+          retained.removeChild(more);
+          applyPick();
+        });
+        add(retained, more);
+      }
       add(board, retained);
     });
     if (model.hidden.length) {
@@ -1298,6 +1360,8 @@ const PAGE_SCRIPT = String.raw`
       groupVisibility(stoppedShelf, from);
       add(board, stoppedShelf);
     }
+    // Runs no session is known for are one line, never a row or a count.
+    if (model.background) add(board, el('div', 'quiet small', model.background));
     model.groups.forEach(function (group) {
       var from = filterNodes.length;
       var heading = el('h2', 'where', '▸ ' + group.project);

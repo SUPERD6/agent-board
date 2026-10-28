@@ -60,18 +60,16 @@ export const closedCopies = (records: readonly QuestionRecord[], marked: Readonl
   return closed
 }
 
-// `scope`: the session that asked it ('' when the ledger has no record of it). `isStale`: it
-// belongs to a session that has stopped, and is listed under that session rather than as a card of
-// its own.
-export type Copy = { item: WaitingItem; at: number; rank: number; scope: string; isStale: boolean }
+// `scope`: the session that asked it ('' when the ledger has no record of it). `isStopped`: its
+// session has stopped, so a live copy, when there is one, is the one to answer.
+export type Copy = Seen & { item: WaitingItem; scope: string; isStopped?: boolean }
 
-// The card each question keeps. It is the newest copy that can be acted on, so a reply goes to
-// the session that asked last, and it carries the age of the oldest copy still open. The cards of
-// questions that are not repeated come back as they were, in the order they came. `dropped` holds
-// the stopped sessions' copies that are now shown by a card, or covered, so their sessions do not
-// list them a second time. A copy with no known time is never covered, and never the newest one
-// while another has a time. Copies of one session stay as they are, each its own card.
-export const mergeCopies = (copies: readonly Copy[], closed: ReadonlyMap<string, ReadonlyMap<string, Seen>>): { shown: WaitingItem[]; dropped: Set<WaitingItem> } => {
+// The card each question keeps. It is the newest copy that can be acted on, of a session that has
+// not stopped when there is one, so a reply goes to the session that asked last, and it carries the age of the oldest copy still open. The cards of
+// questions that are not repeated come back as they were, in the order they came. A copy with no
+// known time is never covered, and never the newest one while another has a time. Copies of one
+// session stay as they are, each its own card.
+export const mergeCopies = (copies: readonly Copy[], closed: ReadonlyMap<string, ReadonlyMap<string, Seen>>): WaitingItem[] => {
   const groups = new Map<string, Copy[]>()
   for (const copy of copies) {
     const key = itemKey(copy.item)
@@ -90,10 +88,11 @@ export const mergeCopies = (copies: readonly Copy[], closed: ReadonlyMap<string,
     const isCovered = (copy: Copy): boolean => copy.at > 0 && closedHere.some(([scope, seen]) => scope !== copy.scope && isBefore(copy, seen))
     const open = group.filter(copy => !isCovered(copy))
     for (const copy of group) if (!open.includes(copy)) gone.add(copy.item)
-    const live = open.filter(copy => !copy.isStale)
-    if (live.length === 0) continue
-    const actionable = live.filter(copy => copy.item.canHide !== false)
-    const newest = (actionable.length > 0 ? actionable : live).reduce((best, copy) => (isBefore(best, copy) ? copy : best))
+    if (open.length === 0) continue
+    const running = open.filter(copy => copy.isStopped !== true)
+    const pool = running.length > 0 ? running : open
+    const actionable = pool.filter(copy => copy.item.canHide !== false)
+    const newest = (actionable.length > 0 ? actionable : pool).reduce((best, copy) => (isBefore(best, copy) ? copy : best))
     const known = open.filter(copy => copy.at > 0)
     const [first = newest, ...rest] = known.length > 0 ? known : open
     const oldest = rest.reduce((best, copy) => (copy.at < best.at ? copy : best), first)
@@ -101,8 +100,5 @@ export const mergeCopies = (copies: readonly Copy[], closed: ReadonlyMap<string,
     if (oldest.item !== newest.item) carried.set(newest.item, { ...newest.item, when: oldest.item.when })
   }
 
-  return {
-    shown: copies.filter(copy => !copy.isStale && !gone.has(copy.item)).map(copy => carried.get(copy.item) ?? copy.item),
-    dropped: new Set(copies.filter(copy => copy.isStale && gone.has(copy.item)).map(copy => copy.item)),
-  }
+  return copies.filter(copy => !gone.has(copy.item)).map(copy => carried.get(copy.item) ?? copy.item)
 }

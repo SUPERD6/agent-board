@@ -132,6 +132,7 @@ const rowLines = (row: TaskRow, s: Strings, o: BoardOptions): string[] => {
   const who = row.agent === '' ? '' : ` · ${row.agent}`
   const count = row.total > 0 ? `${row.done}/${row.total} ` : ''
   const lines = [`  ${c('bold', fit(row.title, o.width - 4))}`, `    ${c('quiet', fit(`${count}${row.status}${who}${row.when ? ` · ${row.when}` : ''}`, o.width - 6))}`]
+  if (row.runs) lines.push(`    ${c('quiet', fit(row.runs, o.width - 6))}`)
   if (row.context) lines.push(`    ${c('quiet', fit(row.context, o.width - 6))}`)
   for (const step of row.steps) {
     const tone = step.status === 'waiting' ? 'waiting' : step.status === 'blocked' ? 'alert' : step.isCurrent ? 'accent' : step.status === 'done' ? 'quiet' : null
@@ -187,6 +188,8 @@ export const boardText = (view: View, pending: readonly PendingTurn[], s: String
     lines.push(...hidden.map(line => `  ${line}`), '')
   }
 
+  if ((view.stoppedAsking ?? 0) > 0) lines.push(c('quiet', s.stoppedAsking(view.stoppedAsking!)), '')
+
   if (view.due.length > 0) {
     lines.push(c('alert', `⚑ ${s.sectionDue}`))
     for (const row of view.due) lines.push(`  ${fit(`${row.project} › ${row.title}${row.due ? ` · ${row.due.left}` : ''}`, o.width - 4)}`)
@@ -228,6 +231,8 @@ export const boardText = (view: View, pending: readonly PendingTurn[], s: String
   }
 
   if (view.groups.every(group => group.rows.length === 0) && asks.length === 0 && news.length === 0 && view.idle.length === 0 && view.stopped.length === 0 && view.due.length === 0 && recentQuestions.length === 0) lines.push(c('quiet', s.empty), '')
+  // Runs agents started for themselves, with no session known: one folded line, never in the counts (#399).
+  if (view.background) lines.push(c('quiet', fit(view.background, o.width)), '')
   for (const line of view.health ?? []) lines.push(...wrapNote(line, o.width - 2).map(part => c('quiet', part)))
 
   return `${lines.join('\n').replace(/\n+$/, '')}\n`
@@ -387,19 +392,22 @@ export const chatText = (
     items.push([...(index === 0 ? ['', `● ${s.sectionWaiting}`] : []), line(ask.where + (ask.task ? ` › ${ask.task}` : ''), 2), line(ask.text, 4)].join('\n'))
   })
   if (asks.length > 0 && hidden !== null) items.push(`  ${hidden}`)
+  if ((view.stoppedAsking ?? 0) > 0) items.push(line(s.stoppedAsking(view.stoppedAsking!)))
   const news = pending.filter(turn => !turn.isQuestion)
   news.forEach((turn, index) => {
     const at = turn.sourceAt ?? turn.at
     const when = now !== undefined && Number.isFinite(at) && at > 0 && at <= now ? relativeTime(at, now, s) : ''
     items.push([...(index === 0 ? ['', `◐ ${s.chatPendingReports}`] : []), line(`${[named(turn.project), turn.agent].filter(part => part !== '').join(' · ')} · ${s.chatReportTime(when)}`, 2), line(turn.hasSummary === false ? s.chatNoSummary : turn.text, 4)].join('\n'))
   })
-  for (const [title, shelf] of [[s.sectionQuestionReminders, view.reminder ?? []], [s.sectionOlderQuestions, view.older ?? []]] as const) {
+  // The copies of a stopped row's questions (`older::`) are told once below, under their row.
+  for (const [title, shelf] of [[s.sectionQuestionReminders, view.reminder ?? []], [s.sectionOlderQuestions, (view.older ?? []).filter(item => !item.key.startsWith('older::'))]] as const) {
     if (shelf.length === 0) continue
     items.push(`\n${title} (${shelf.length})`)
     for (const item of shelf) items.push(line(`${named(item.project)} › ${item.task} · ${item.when}`, 2), line(`${item.text}${item.note ? ` — ${item.note}` : ''}`, 4))
   }
   if (view.idle.length > 0) items.push(line(s.idleCount(view.idle.length)))
   if (view.stopped.length > 0) items.push(line(s.stoppedCount(view.stopped.length)))
+  if (view.background) items.push(line(view.background))
   for (const row of view.stopped.filter(row => (row.questions?.length ?? 0) > 0)) {
     items.push(line(`${named(row.project)} › ${row.title} · ${row.when}`, 2))
     for (const question of row.questions ?? []) items.push(line(`${question.text}${question.note ? ` — ${question.note}` : ''}`, 4))
@@ -416,7 +424,7 @@ export const chatText = (
   const isNext = (step: ViewStep): boolean => step.number !== null && !['done', 'cancelled', 'waiting'].includes(step.status)
   rows.forEach(({ row, mark }, index) => {
     const next = (row.steps.find(step => step.isCurrent && isNext(step)) ?? row.steps.find(isNext))?.text
-    const words = `${mark} ${named(row.project)} › ${row.title}${row.hasFutureTime ? ` · ${row.when}` : ''}${row.due === null ? '' : ` · ${row.due.left}`}${next === undefined ? '' : ` — ${s.reportNext(next)}`}`
+    const words = `${mark} ${named(row.project)} › ${row.title}${row.hasFutureTime ? ` · ${row.when}` : ''}${row.due === null ? '' : ` · ${row.due.left}`}${next === undefined ? '' : ` — ${s.reportNext(next)}`}${row.runs ? ` · ${row.runs}` : ''}`
     items.push(`${index === 0 ? '\n' : ''}${line(words)}`)
   })
   if (asks.length === 0 && rows.length === 0 && news.length === 0 && view.idle.length === 0 && view.stopped.length === 0 && recentQuestions.length === 0) items.push(s.empty)
@@ -478,6 +486,9 @@ const chosen = (state: BoardState, items: readonly BoardItem[]): number => {
 
 // In the order the screen shows them: what waits on you, each project's work, then turns
 // no Claude Code session has taken in.
+// The key of a question on the reminder or Older shelf: the page names the line it drew by it.
+export const olderKey = (ask: WaitingItem): string => `older:${ask.key}@${ask.questionId}`
+
 // The full action catalog includes idle rows for the page server. Terminal callers pass
 // their shelf state so only rows the person can see are selectable.
 export const boardItems = (view: View, pending: readonly PendingTurn[], isIdleOpen = true, isOlderOpen = false): BoardItem[] => {
@@ -488,7 +499,7 @@ export const boardItems = (view: View, pending: readonly PendingTurn[], isIdleOp
     // A question's key holds its words, so a press made while it showed one question is refused
     // once the same step asks another, rather than taken as the answer to the new one.
     ...view.waiting.map(ask => ({ type: 'ask' as const, key: ask.hideKey === '' ? `ask:${ask.key}` : `ask:${ask.key}@${ask.hideKey}`, ask })),
-    ...(isOlderOpen ? [...(view.reminder ?? []), ...(view.older ?? [])].map(ask => ({ type: 'ask' as const, key: `older:${ask.key}@${ask.questionId}`, ask })) : []),
+    ...(isOlderOpen ? [...(view.reminder ?? []), ...(view.older ?? [])].map(ask => ({ type: 'ask' as const, key: olderKey(ask), ask })) : []),
     ...rows.map(row => ({ type: 'row' as const, key: `row:${row.key}`, row })),
     ...remainingInbox(view, pending).map((turn, index) => ({ type: 'turn' as const, key: `turn:${turn.agent}:${turn.project}:${index}`, turn })),
   ]
@@ -632,6 +643,7 @@ export const boardScreen = (view: View, pending: readonly PendingTurn[], state: 
     `${c('bold', s.paneTitle)}  ${c('waiting', `● ${waiting} ${s.countWaiting}`)}  ${c('accent', `▸ ${active} ${s.countActive}`)}  ${c('alert', `⚑ ${due} ${s.countDue}`)}  ${c('done', `✓ ${today} ${s.countToday}`)}`,
     ...(view.warning ? [c('alert', view.warning)] : []),
     ...(view.details ? [c('quiet', view.details)] : []),
+    ...((view.stoppedAsking ?? 0) > 0 ? [c('quiet', `${s.stoppedAsking(view.stoppedAsking!)} · ${s.boardKeyOlder}`)] : []),
     ...(view.hidden.length === 0 ? [] : [c('quiet', `${s.hiddenCount(view.hidden.length)} · ${s.boardKeyShowHidden}`)]),
     ...((view.reminder?.length ?? 0) + (view.older?.length ?? 0) === 0 ? [] : [c('quiet', `${s.sectionQuestionReminders}: ${view.reminder?.length ?? 0} · ${s.sectionOlderQuestions}: ${view.older?.length ?? 0} · ${s.boardKeyOlder}`)]),
     ...(view.idle.length + view.stopped.length === 0 ? [] : [c('quiet', [
@@ -639,6 +651,7 @@ export const boardScreen = (view: View, pending: readonly PendingTurn[], state: 
       view.stopped.length === 0 ? '' : s.stoppedCount(view.stopped.length),
       s.boardKeyIdle,
     ].filter(part => part !== '').join(' · '))]),
+    ...(view.background ? [c('quiet', fit(view.background, o.width))] : []),
     '',
   ]
   const result = state.result
@@ -673,7 +686,7 @@ export const boardScreen = (view: View, pending: readonly PendingTurn[], state: 
       lines.push(`    ${c('project', fit(where + (ask.task ? ` › ${ask.task}` : ''), o.width - 6))}`)
       if (isOpen || isHere) {
         if (ask.canHide === false) lines.push(`    ${c('quiet', fit(s.questionReviewOnly, o.width - 6))}`)
-        else if (ask.where !== 'manual') lines.push(`    ${c('quiet', fit(s.archiveLive, o.width - 6))}`)
+        else if (ask.where !== 'manual' && ask.isKept !== true) lines.push(`    ${c('quiet', fit(s.archiveLive, o.width - 6))}`)
         if (ask.note) lines.push(`    ${fit(ask.note, o.width - 6)}`)
         answersOf(ask, s).forEach((answer, n) => lines.push(`    ${c('accent', ask.kind === 'confirm' ? (n === 0 ? 'y' : 'n') : String(n + 1))} ${fit(answer, o.width - 8)}`))
         if (ask.command !== null) lines.push(`    ${c('accent', fit(`$ ${ask.command}`, o.width - 6))}`)
@@ -693,6 +706,7 @@ export const boardScreen = (view: View, pending: readonly PendingTurn[], state: 
       const badge = row.due ? `⚑ ${row.due.left}` : ''
       const reserve = badge === '' ? 0 : displayColumns(badge) + 2
       lines.push(`    ${c('quiet', fit(`${count}${row.status}${who}${row.when ? ` · ${row.when}` : ''}`, o.width - 6 - reserve))}${badge === '' ? '' : `  ${c('alert', badge)}`}`)
+      if (row.runs) lines.push(`    ${c('quiet', fit(row.runs, o.width - 6))}`)
       if ((isOpen || isHere) && (row.auto === 'working' || row.auto === 'waiting')) lines.push(`    ${c('quiet', fit(s.archiveLive, o.width - 6))}`)
       if (isOpen) {
         if (row.question) lines.push(`    ${fit(row.question, o.width - 6)}`)

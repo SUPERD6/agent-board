@@ -378,6 +378,12 @@ export const ZH_TW = {
   hiddenCount: (n: number): string => `已回覆、隱藏的 ${n} 項`,
   idleCount: (n: number): string => `${n} 項超過 7 天沒動`,
   stoppedCount: (n: number): string => `${n} 項已停止`,
+  // The runs an agent started for itself (#399): one line on the row of the session that started
+  // them, one folded line for runs no session is known for, and the status of the older block of
+  // two for one session. `when` is empty when no write time is readable.
+  runsLine: (n: number, agents: string, when: string): string => `另有 ${n} 次 ${agents} 執行${when === '' ? '' : when === '剛剛' || when === '昨天' ? `，${when}` : `，最近 ${when}`}`,
+  backgroundRuns: (n: number, when: string): string => `背景執行 ${n} 次${when === '' ? '' : when === '剛剛' || when === '昨天' ? `，${when}` : `，最近 ${when}`}`,
+  duplicateSession: '與較新的一列是同一場對話，可封存這份',
   tickStep: '完成這步',
   handOver: '交給 Claude',
   nothingForYou: '✓ 現在沒有要你做的事',
@@ -401,6 +407,8 @@ export const ZH_TW = {
   sectionWaiting: '等你處理',
   sectionQuestionReminders: '較早的未答問題',
   sectionOlderQuestions: '更早、尚未回答的問題',
+  stoppedAsking: (n: number): string => `${n} 個未回答，在已停止的對話`,
+  showAllQuestions: (n: number): string => `顯示全部（${n}）`,
   questionAgingHint: '仍未回答；展開可查看。查看不會重設時間，也不代表核准或完成。',
   questionReviewOnly: '此處僅供查看保留的問題，不會變更原始資料或記錄「已回覆」。',
   resolveQuestion: '結案',
@@ -456,7 +464,7 @@ export const ZH_TW = {
   legendClose: '收起說明',
   legendDue: '⚑ 兩週內截止',
   legendAsk: '〔確認〕好或不要 · 〔選一個〕按選項 · 〔填資料〕打字回覆 · 〔動手〕做完按做好了 · 〔看一下〕看完回覆 · 〔等別人〕到了再按',
-  legendCleanup: '半天沒動靜的對話算已停。未答問題依三／七天政策分組，仍有未答問題的區塊不自動封存；明確封存須先安全保存完整問題。其他完成、停止及手寫工作的清理期限維持不變。',
+  legendCleanup: '半天沒動靜的對話算已停。未答問題依三／七天政策分組。仍有未答問題的區塊，已結束或完成的滿三天、工作中或等待中的滿七天沒有新報告，才會自動封存；問題會先完整保存並留在更早的問題清單。明確封存同樣先保存完整問題。其他完成、停止及手寫工作的清理期限維持不變。',
   answered: (text: string): string => `已回覆 Claude：${text}`,
   commandOf: (step: string): string => `「${step}」要跑的指令`,
   resumeOf: (title: string): string => `回到「${title}」的指令，貼到終端機執行`,

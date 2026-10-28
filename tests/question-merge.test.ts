@@ -130,14 +130,24 @@ test('a stopped session\'s copy joins the live card instead of listing the quest
   // Before the live copy came, the stopped session's task held the question.
   expect(viewOf(stopped, ledgerOf([{ text: stopped, at: old }])).stopped[0]?.question).toBe(QUESTION)
   const view = viewOf(text, ledger)
-  // One card for the live session, with the age of the stopped session's copy; the stopped task
-  // no longer asks the same question a second time.
+  // One card for the live session, with the age of the stopped session's copy; Older does not list
+  // the stopped copy a second time, and the stopped task keeps its own.
   expect(view.waiting).toHaveLength(1)
   expect(view.waiting[0]?.key).toContain('Task bbbb2222')
   expect(view.waiting[0]?.when).toBe(relativeTime(old, NOW, EN))
+  expect(view.older ?? []).toHaveLength(0)
+  expect(view.stoppedAsking).toBeUndefined()
   expect(view.stopped).toHaveLength(1)
-  expect(view.stopped[0]?.questions).toEqual([])
-  expect(view.stopped[0]?.question).toBe(null)
+  expect(view.stopped[0]?.questions?.map(item => item.text)).toEqual([QUESTION])
+  // Without the live copy, the stopped copy is listed under Older once.
+  const alone = viewOf(stopped, ledgerOf([{ text: stopped, at: old }]))
+  expect(alone.older?.map(item => item.text)).toEqual([QUESTION])
+  expect(alone.stoppedAsking).toBe(1)
+  // A stopped copy recorded after the live one does not take the card: the live session is the one to answer.
+  const later = viewOf(text, ledgerOf([{ text: block('bbbb2222', 'codex', 'demo', QUESTION), at: START }, { text, at: START + HOUR }]))
+  expect(later.waiting.map(item => item.key)).toEqual([expect.stringContaining('Task bbbb2222')])
+  expect(later.overview.waiting).toBe(1)
+  expect(later.older ?? []).toHaveLength(0)
 })
 
 test('two retained copies of one question show once under Older', () => {
