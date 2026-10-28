@@ -157,6 +157,8 @@ export type ServeRow = {
   archiveNote: string
   resume: string | null
   handoff: string
+  // The runs this session started for itself, as one line; '' when none (#399).
+  runs: string
   // Its session still asks the person something (not marked answered): the card opens by itself.
   isAsking: boolean
   // That question, as a reply from the page names it; '' when none.
@@ -223,6 +225,8 @@ export type ServeModel = {
   details?: string
   isLarge?: true
   isCleanable?: true
+  // Runs agents started for themselves that no session is known for, as one folded line (#399).
+  background?: string
   counts: { waiting: number; active: number; due: number; today: number }
   asks: ServeAsk[]
   hidden: ServeHidden[]
@@ -366,6 +370,7 @@ export const serveModel = (view: View, pending: readonly PendingTurn[], s: Strin
         // The command to resume a session names its folder, and the account with it: the computer's only.
         resume: isLan ? null : row.resume,
         handoff: row.handoff,
+        runs: row.runs ?? '',
         isAsking: row.question !== null,
         question: row.question ?? '',
         send,
@@ -398,6 +403,7 @@ export const serveModel = (view: View, pending: readonly PendingTurn[], s: Strin
     ...(view.details === undefined ? {} : { details: view.details }),
     ...(view.isLarge ? { isLarge: true } : {}),
     ...(view.isCleanable ? { isCleanable: true } : {}),
+    ...(view.background === undefined ? {} : { background: view.background }),
     asks,
     ...((view.stoppedAsking ?? 0) > 0 ? { stoppedAsking: view.stoppedAsking } : {}),
     idle,
@@ -1176,6 +1182,7 @@ const PAGE_SCRIPT = String.raw`
     if (row.pr) add(body, el('div', 'quiet', row.pr));
     if (row.steps.length) add(body, stepsList(row.steps));
     if (row.handoff) add(body, el('div', 'quiet small', row.handoff));
+    if (row.runs) add(body, el('div', 'quiet small', row.runs));
     if (row.send === 'send' || row.send === 'connected') add(body, replyBox(row.key, w('serveMessagePlaceholder', agentName(row.agent)), row.send, row.agent, row.where, row.isSending, row.session, asked, row.fp, row.delivery));
     else if (row.hasCopyBox) add(body, replyBox(row.key, w('serveReplyPlaceholder'), 'copy', row.agent, '', false, row.session, asked));
     var actions = [];
@@ -1869,6 +1876,8 @@ const PAGE_SCRIPT = String.raw`
       groupVisibility(stoppedShelf, from);
       add(board, stoppedShelf);
     }
+    // Runs no session is known for are one line, never a row or a count.
+    if (model.background) add(board, el('div', 'quiet small', model.background));
     model.groups.forEach(function (group) {
       var from = filterNodes.length;
       var heading = el('h2', 'where', '▸ ' + group.project);
