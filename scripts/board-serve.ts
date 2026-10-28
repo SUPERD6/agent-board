@@ -6,19 +6,20 @@
 import { spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { existsSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { createServer } from 'node:http'
 import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { homedir, networkInterfaces } from 'node:os'
-import { basename, delimiter, isAbsolute, join } from 'node:path'
+import { basename, delimiter, dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import { boardItems } from '../hooks/board'
 import type { BoardAction, PendingTurn } from '../hooks/board'
 import type { Strings } from '../hooks/i18n'
 import { agentLabel } from '../hooks/strings'
-import { lanAddress, localHosts, pagePolicy, requestProblem, sendKey, sendPlan, serveAction, serveModel, servePage } from '../hooks/serve'
+import { lanAddress, localHosts, pagePolicy, requestProblem, sendKey, sendPlan, serveAction, serveModel, servePage, worktreeRepoName } from '../hooks/serve'
 import type { SendPlan } from '../hooks/serve'
 import type { AgentTarget, View } from '../hooks/view'
+import { RELEASED } from '../hooks/released'
 import { createMessaging } from './board-messaging'
 import type { ProgressBinding } from '../hooks/messaging'
 
@@ -64,6 +65,21 @@ const MAX_WAIT = 10 * 60 * 1000
 const KILL_WAIT = 15 * 1000
 
 const HEADERS = { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer' }
+
+const versionParts = (version: string): number[] => version.split('.').map(Number)
+const isNewerVersion = (candidate: string, current: string): boolean => {
+  const next = versionParts(candidate)
+  const held = versionParts(current)
+  for (let index = 0; index < 3; index += 1) {
+    if ((next[index] ?? 0) !== (held[index] ?? 0)) return (next[index] ?? 0) > (held[index] ?? 0)
+  }
+  return false
+}
+const boardVersion = RELEASED.reduce((highest, release) => {
+  return isNewerVersion(release.version, highest) ? release.version : highest
+}, '0.0.0')
+const packageVersionValue = process.env.AGENT_BOARD_PACKAGE_VERSION ?? ''
+const packageVersion = /^\d+\.\d+\.\d+$/.test(packageVersionValue) ? packageVersionValue : null
 
 const json = (res: ServerResponse, status: number, body: unknown): void => {
   res.writeHead(status, { ...HEADERS, 'content-type': 'application/json; charset=utf-8' })
@@ -233,6 +249,31 @@ export const startServer = (o: ServeOptions): void => {
   const messaging = o.messagesDirectory ? createMessaging(o.messagesDirectory) : null
   const token = randomBytes(24).toString('base64url')
   const sending = new Set<string>()
+  // A folder with a repository keeps its name; one without is looked at again after a while,
+  // since a worktree may be made after the first look.
+  const repos = new Map<string, { repo: string | null; at: number }>()
+  const REPO_RETRY = 30 * 1000
+  const repoOf = (dir: string): string | null => {
+    const known = repos.get(dir)
+    const now = Date.now()
+    if (known !== undefined && (known.repo !== null || now - known.at < REPO_RETRY)) return known.repo
+    let repo: string | null = null
+    try {
+      if (!isAbsolute(dir)) throw new Error('a folder the file names without its full path')
+      const gitFile = readFileSync(join(dir, '.git'), 'utf8')
+      const first = gitFile.split(/\r?\n/, 1)[0]?.trim() ?? ''
+      const named = /^gitdir:\s*(.+)$/i.exec(first)?.[1]?.trim()
+      if (named !== undefined) {
+        const gitDir = isAbsolute(named) ? named : resolve(dir, named.replace(/[\\/]/g, sep))
+        const commonDir = readFileSync(join(gitDir, 'commondir'), 'utf8')
+        const common = commonDir.trim().replace(/[\\/]/g, sep)
+        const commonGit = isAbsolute(common) ? common : resolve(gitDir, common)
+        if (isFolder(dirname(commonGit))) repo = worktreeRepoName(dir, gitFile, commonDir)
+      }
+    } catch {}
+    repos.set(dir, { repo, at: now })
+    return repo
+  }
   // The last answer of each session the page sent to, until the next send to that session. One
   // entry per session at most; the page shows those that came after it loaded.
   const replies = new Map<string, Result & { at: number; key: string }>()
@@ -346,15 +387,22 @@ export const startServer = (o: ServeOptions): void => {
     if (isPage) {
       const nonce = randomBytes(16).toString('base64')
       res.writeHead(200, { ...HEADERS, 'content-type': 'text/html; charset=utf-8', 'content-security-policy': pagePolicy(nonce), 'x-frame-options': 'DENY' })
-      res.end(servePage(o.s, nonce, isLan, o.idleMs))
+      res.end(servePage(o.s, nonce, isLan, o.idleMs, url.searchParams.get('group') === 'agent'))
       return
     }
     if (req.method === 'GET') {
       if (url.pathname === '/api/board') {
         // A file the board cannot read is named on the page, which would otherwise say it is offline.
         try {
-          const state = isLan ? undefined : messaging?.snapshot(Date.now(), o.reports?.())
-          return json(res, 200, { model: serveModel(o.view(), o.pending(false), o.s, sending, isLan, state, o.allowResume), replies: [...replies.values()], messaging: isLan ? undefined : state ?? { enabled: false, connections: [], messages: [] }, now: Date.now() })
+          if (url.searchParams.get('group') !== 'agent') {
+            const state = isLan ? undefined : messaging?.snapshot(Date.now(), o.reports?.())
+            return json(res, 200, { model: serveModel(o.view(), o.pending(false), o.s, sending, isLan, state, o.allowResume), replies: [...replies.values()], messaging: isLan ? undefined : state ?? { enabled: false, connections: [], messages: [] }, now: Date.now() })
+          }
+          const now = Date.now()
+          const state = isLan ? undefined : messaging?.snapshot(now, o.reports?.())
+          const view = o.view()
+          const group = { now, repoOf, versions: { board: boardVersion, package: packageVersion }, unreadable: view.unreadable ?? [] }
+          return json(res, 200, { model: serveModel(view, o.pending(false), o.s, sending, isLan, state, o.allowResume, group), replies: [...replies.values()], messaging: isLan ? undefined : state ?? { enabled: false, connections: [], messages: [] }, now })
         } catch (error) {
           const note = o.failure(error, isLan)
           if (note === null) {

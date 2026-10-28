@@ -67,6 +67,8 @@ export type WaitingItem = {
   questionId?: string
   ageStage?: 'pending' | 'reminder' | 'older'
   nativeSession?: string
+  at?: number
+  dir?: string | null
   key: string
   project: string
   // The task it belongs to, its background, and what it needs from the person.
@@ -122,6 +124,8 @@ export type Focus =
 
 export type TaskRow = {
   nativeSession?: string
+  at?: number
+  dir?: string | null
   key: string
   project: string
   title: string
@@ -200,6 +204,8 @@ export type View = {
   active: TaskRow[]
   groups: RowGroup[]
   recent: DoneItem[]
+  finished?: Array<DoneItem & { at: number; agent: string; isOwn?: true; dir: string | null }>
+  unreadable?: string[]
   health?: string[]
 }
 
@@ -761,11 +767,13 @@ export const buildView = (
   const due: Array<TaskRow & { days: number }> = []
   const active: Array<TaskRow & { rank: number; order: number }> = []
   const recent: Array<DoneItem & { at: number }> = []
+  const finished: Array<DoneItem & { at: number; agent: string; isOwn?: true; dir: string | null }> = []
   const idle: TaskRow[] = []
   const stopped: Array<{ row: TaskRow; updated: number }> = []
   const completed: Array<{ row: TaskRow; updated: number; recent: DoneItem & { at: number } | null }> = []
   const inactiveScopes = new Map<string, number>()
   const liveScopes = new Set<string>()
+  const unreadable = new Set<string>()
   let order = 0
   const repeats = new Map<string, number>()
   // How many tasks share each project and title, counted once rather than for every row (#371).
@@ -797,6 +805,7 @@ export const buildView = (
       const scope = questionScope(project.name, task.auto?.agent ?? 'manual', task.auto?.session ?? task.title)
       const isFrozen = frozen.has(scope)
       const lastActive = hasTime(updated) ? updated : seen[taskFingerprint(project.name, task)]
+      if (isFrozen && task.auto !== null) unreadable.add(task.auto.agent)
       const days = task.due === null ? null : dueDays(task.due, now)
       const isDue = task.due !== null && days !== null && days <= 14
       const isIdle = !isComplete && !isDue && hasTime(lastActive) && now - lastActive > IDLE_MS
@@ -855,6 +864,8 @@ export const buildView = (
           context,
           ...parts,
           when,
+          ...(lastActive === undefined ? {} : { at: lastActive }),
+          dir: task.auto?.dir ?? null,
           ...askOf(parts.text, parts.note),
           where: isManual ? 'manual' : 'other',
           agent: task.auto === null || task.auto.agent === 'claude' ? '' : task.auto.agent,
@@ -882,6 +893,19 @@ export const buildView = (
       if (isComplete) {
         const doneAt = doneSeen[doneKey(name, title)]
         const seen = isManual ? doneAt === null ? null : doneAt ?? now : updated
+        if (seen !== null && now - seen < 7 * DAY) {
+          finished.push({
+            key,
+            project: name,
+            title,
+            when: clock.isFuture ? when : relativeTime(seen, now, s),
+            at: seen,
+            agent: task.auto === null || task.auto.agent === 'claude' ? '' : task.auto.agent,
+            ...(isManual ? { isOwn: true as const } : {}),
+            dir: task.auto?.dir ?? null,
+            questions: isInactive ? unresolved : [],
+          })
+        }
         if (seen !== null && now - seen < DAY) {
           completion = { key, project: name, title, when: clock.isFuture ? when : relativeTime(seen, now, s), at: seen, questions: isInactive ? unresolved : [] }
           recent.push(completion)
@@ -915,6 +939,8 @@ export const buildView = (
         total,
         ...phrase,
         when: isIdle && !clock.isFuture ? relativeTime(lastActive ?? 0, now, s) : when,
+        ...(lastActive === undefined ? {} : { at: lastActive }),
+        dir: task.auto?.dir ?? null,
         ...(clock.isFuture ? { hasFutureTime: true } : {}),
         isHere,
         auto,
@@ -975,6 +1001,7 @@ export const buildView = (
   due.sort((a, b) => a.days - b.days)
   active.sort((a, b) => a.rank - b.rank || a.order - b.order)
   recent.sort((a, b) => b.at - a.at)
+  finished.sort((a, b) => b.at - a.at)
   const shownRecent = recent.slice(0, 3)
   for (const item of completed) {
     if (item.recent === null || !shownRecent.includes(item.recent)) stopped.push({ row: item.row, updated: item.updated })
@@ -1010,14 +1037,14 @@ export const buildView = (
     const id = observed?.keys[pendingQuestionSlot(scope, turn.text)] ?? observed?.ledger.records.find(record => record.scope === scope && record.isUnresolved && record.producerSources?.includes(JSON.stringify(turn)))?.id
     if (id === undefined || waiting.some(item => item.questionId === id)) return []
     const parts = splitNote(turn.text)
-    return [{ key: `inbox::${id}`, questionId: id, project: turn.project, task: '', context: '', ...parts, when: '', ...askOf(parts.text, parts.note), where: 'other' as const, agent: turn.agent, session: turn.id ?? '', sessionId: null, resumeVia: null, reopen: null, hideKey: id, step: null, target: null }]
+    return [{ key: `inbox::${id}`, questionId: id, project: turn.project, task: '', context: '', ...parts, when: '', at: turn.at, dir: null, ...askOf(parts.text, parts.note), where: 'other' as const, agent: turn.agent, session: turn.id ?? '', sessionId: null, resumeVia: null, reopen: null, hideKey: id, step: null, target: null }]
   })
   const own = mine === null ? [] : ownWaiting(mine, observed?.keys).map(item => ({ ...item, questionId: item.hideKey }))
   const isResolved = (item: WaitingItem): boolean => observed?.ledger.records.find(record => record.id === item.questionId)?.isUnresolved === false
   const all = [...own, ...waiting, ...inbox].filter(item => !isResolved(item)).map(item => {
     const record = observed?.ledger.records.find(row => row.id === item.questionId)
     const age = questionAge(record?.firstObserved ?? 0, now)
-    return { ...item, ageStage: age.stage, when: age.age === null ? s.questionAgeUnknown : relativeTime(record?.firstObserved ?? 0, now, s) }
+    return { ...item, ageStage: age.stage, when: age.age === null ? s.questionAgeUnknown : relativeTime(record?.firstObserved ?? 0, now, s), ...(item.at === undefined && record !== undefined ? { at: record.firstObserved } : {}), ...(item.dir === undefined ? { dir: null } : {}) }
   }).sort(
     (a, b) => whereRank(a) - whereRank(b) || askRank(a.kind) - askRank(b.kind),
   )
@@ -1041,15 +1068,15 @@ export const buildView = (
     const age = questionAge(record.firstObserved, now)
     // A source copy still knows a stopped session after its block was removed or replaced.
     // Keep that orphaned copy for review without offering it as a live question again.
+    const saved = source.kind === 'block' ? sourceSnapshot(source.data) : null
     let isInactiveSource = false
     if (source.kind === 'block' && !liveScopes.has(record.scope)) {
       // Unknown historical source shapes retain the existing review behavior.
-      const saved = sourceSnapshot(source.data)
       isInactiveSource = saved !== null && saved.auto !== null && (saved.auto.state === 'ended' || saved.auto.state === 'done' || isStale(saved.auto, now, observedTime(saved.auto, now, seen).updated) || isMarksComplete(saved.steps))
     }
     const isStopped = record.isArchived || isInactiveSource || inactiveScopes.has(record.scope)
     const stage = isStopped ? 'older' : age.stage
-    const item: WaitingItem = { key: `retained::${record.id}`, questionId: record.id, ageStage: stage, project: source.project, task: source.task, context: source.context, ...parts, when: age.age === null ? s.questionAgeUnknown : relativeTime(record.firstObserved, now, s), ...askOf(parts.text, parts.note), where: 'other', agent: source.agent === 'claude' ? '' : source.agent, session: source.session, sessionId: null, resumeVia: null, reopen: null, hideKey: record.id, canHide: record.isArchived === true, ...(record.isArchived === true ? { isKept: true as const } : {}), step: null, target: null }
+    const item: WaitingItem = { key: `retained::${record.id}`, questionId: record.id, ageStage: stage, project: source.project, task: source.task, context: source.context, ...parts, when: age.age === null ? s.questionAgeUnknown : relativeTime(record.firstObserved, now, s), at: record.firstObserved, dir: saved?.auto?.dir ?? null, ...askOf(parts.text, parts.note), where: 'other', agent: source.agent === 'claude' ? '' : source.agent, session: source.session, sessionId: null, resumeVia: null, reopen: null, hideKey: record.id, canHide: record.isArchived === true, ...(record.isArchived === true ? { isKept: true as const } : {}), step: null, target: null }
     if (marked.has(record.id)) hidden.push(item)
     else if (stage === 'pending') asks.push(item)
     else if (stage === 'reminder') reminder.push(item)
@@ -1121,6 +1148,8 @@ export const buildView = (
     active: rows,
     groups,
     recent: shownRecent.map(({ at: _at, ...item }) => item),
+    finished,
+    ...(unreadable.size === 0 ? {} : { unreadable: [...unreadable] }),
   }
 }
 
