@@ -27,7 +27,7 @@ import { boardKey, boardScreen, boardText, CHAT_MAX, chatText, doneToday, emptyB
 import type { BoardAction, BoardState } from '../hooks/board'
 import { LOG_TAIL, isInboxFile } from '../hooks/inbox'
 import { dashboardHtml } from '../hooks/dashboard'
-import { appendJournal, archivePath, countDay, hasArchiveEntry, journalLine, journalPath, localDay, parseJournal } from '../hooks/journal'
+import { appendJournal, archivePath, countDay, journalLine, journalPath, localDay, missingEntries, parseJournal, unwrittenEntries } from '../hooks/journal'
 import { currentPart, monthParts, sizeWarnings, storageDetails } from '../hooks/retention'
 import { parseProgress, progressTail } from '../hooks/parse'
 import { qrModules, qrText } from '../hooks/qr'
@@ -641,12 +641,7 @@ const archiveOut = (take: (text: string, isLast: boolean) => { text: string; ent
     const taken = take(text, isLast)
     if (taken === AGAIN) return AGAIN
     if (taken === null) return text
-    const seen = new Map<string, number>()
-    const fresh = taken.entries.filter(entry => {
-      const nth = (seen.get(entry) ?? 0) + 1
-      seen.set(entry, nth)
-      return nth > (archived.get(entry) ?? 0)
-    })
+    const fresh = unwrittenEntries(taken.entries, archived)
     if (fresh.length > 0) {
       const part = partOf(archivePath(path, now))
       // A previous try may have saved to the part before, the one that then reached 1 MB.
@@ -654,7 +649,7 @@ const archiveOut = (take: (text: string, isLast: boolean) => { text: string; ent
       const before = earlier === undefined ? '' : read(earlier)
       const kept = rewrite(part, past => {
         // A previous process may have saved the archive but failed to remove the task.
-        const missing = fresh.filter(entry => !hasArchiveEntry(past, entry) && !hasArchiveEntry(before, entry))
+        const missing = missingEntries([past, before], fresh, archived)
         return missing.length === 0 ? past : `${past.trim() === '' ? `${s.archiveTitle}\n\n` : past.replace(/\s*$/, '\n\n')}${missing.join('\n\n')}\n`
       })
       if (kept === null) return null

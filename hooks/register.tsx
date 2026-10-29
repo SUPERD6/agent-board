@@ -46,6 +46,7 @@ import {
   parseJournal,
   previousMonth,
   progressReport,
+  unwrittenEntries,
 } from './journal'
 import type { JournalEntry } from './journal'
 import {
@@ -2916,7 +2917,9 @@ const archiveOld = async ($: EngineInterface, isNow = false, isCleanUp = false):
   // A person's Clean up goes by the record on disk alone: one that stopped reading since the press
   // began moves no hand-kept task, rather than falling back to the times the pane kept in memory.
   const observed = isCleanUp ? (parseSeen(await readText($, seenPath(path))) ?? {}) : await read($, firstSeen)
-  const archived = new Set<string>()
+  // Counted with their number: two done blocks with the same title and steps make one entry text,
+  // and both leave (#231).
+  const archived = new Map<string, number>()
   const keys = new Set<string>()
   // The blocks that ask which a try has archived, by session, with the lines they had then.
   const moved = new Map<string, string>()
@@ -2950,8 +2953,9 @@ const archiveOld = async ($: EngineInterface, isNow = false, isCleanUp = false):
     const entries = [...blocks.entries, ...manual.entries]
     if (entries.length === 0) return null
     // Made again after another session's write, the same blocks are not archived twice.
-    await appendArchive($, archivePath(path, at), entries.filter(entry => !archived.has(entry)), s)
-    for (const entry of entries) archived.add(entry)
+    const fresh = unwrittenEntries(entries, archived)
+    await appendArchive($, archivePath(path, at), fresh, s)
+    for (const entry of fresh) archived.set(entry, (archived.get(entry) ?? 0) + 1)
     for (const key of manual.keys) keys.add(key)
     for (const { span, text: lines } of asking) if (kept.has(span.start)) moved.set(span.session, lines)
     return manual.text
@@ -2966,7 +2970,7 @@ const archiveOld = async ($: EngineInterface, isNow = false, isCleanUp = false):
   }
   await poll($)
 
-  return archived.size
+  return [...archived.values()].reduce((sum, one) => sum + one, 0)
 }
 
 // What the explicit archive checks before it takes a block that asks (#174): the ledger settled
