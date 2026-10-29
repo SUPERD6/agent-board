@@ -318,6 +318,17 @@ test('Confirm done adds state=done to a stale marker with spaces after -->', () 
   expect(auto?.updated).toBe(now)
 })
 
+test('Confirm done edits state= and updated= themselves, not an attribute whose name ends in them', () => {
+  const now = Date.parse('2026-10-19T12:00:00Z')
+  const marker = '<!-- auto session=a1b2c3d4 agent=codex backup-state=working old-updated=2026-10-18T11:00:00Z state=ended updated=2026-10-19T11:00:00Z-->'
+  const file = `## demo\n${marker}\n### Ship\n- [ ] finish\n<!-- /auto session=a1b2c3d4 -->\n`
+  const row = boardItems(buildView(parseProgress(file), [], null, now, 0, {}, STRINGS.en), []).find(item => item.type === 'row' && item.row.title === 'Ship')
+  if (row?.type !== 'row' || row.row.confirm == null) throw new Error('Missing synthetic row')
+  const result = confirmTask(file, row.row.confirm, now, STRINGS.en)
+  expect(result?.text.split('\n')[1]).toBe('<!-- auto session=a1b2c3d4 agent=codex backup-state=working old-updated=2026-10-18T11:00:00Z state=done updated=2026-10-19T12:00:00.000Z -->')
+  expect(parseProgress(result?.text ?? '')[0]?.tasks[0]?.auto?.state).toBe('done')
+})
+
 test('a hand-kept task with no open step is not offered Confirm done on any surface', () => {
   const now = Date.parse('2026-10-19T12:00:00Z')
   const file = '## demo\n### Ship\n\n## demo\n### Open\n- [ ] finish\n'

@@ -437,12 +437,14 @@ export const confirmTask = (text: string, ref: ConfirmRef, now: number, s: Strin
   if (span !== undefined) {
     // Only the attributes are edited: FORMAT.md accepts a marker with no space before `-->`
     // and spaces after it, so a bare `[^\s]+` value would take the `-->` with it (#142).
+    // A name counts only at the start or after whitespace: `-` is not a word character, so
+    // `\b` would also find `state=` inside `backup-state=`.
     const marker = lines[span.start] ?? ''
     const end = marker.lastIndexOf('-->')
     let attrs = end < 0 ? marker : marker.slice(0, end).trimEnd()
     for (const [name, value] of [['state', 'done'], ['updated', new Date(now).toISOString()]]) {
-      const attr = new RegExp(`\\b${name}=(?:"[^"]*"|'[^']*'|[^\\s]+)`)
-      attrs = attr.test(attrs) ? attrs.replace(attr, `${name}=${value}`) : `${attrs} ${name}=${value}`
+      const attr = new RegExp(`(^|\\s)${name}=(?:"[^"]*"|'[^']*'|[^\\s]+)`)
+      attrs = attr.test(attrs) ? attrs.replace(attr, `$1${name}=${value}`) : `${attrs} ${name}=${value}`
     }
     lines[span.start] = end < 0 ? attrs : `${attrs} ${marker.slice(end)}`
   }
